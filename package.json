@@ -16,6 +16,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "comlink": "^4.4.2",
     "lucide-react": "^0.367.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"

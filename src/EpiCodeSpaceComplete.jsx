@@ -23,9 +23,82 @@ import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
 import {
   STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODE_KEY,
-  loadJSON, storeJSON, loadFS, saveFS,
+  loadJSON, storeJSON,
 } from './lib/storage.js';
 import { AGENT_REGISTRY } from './lib/agentRegistry.js';
+import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
+import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
+
+/* ─── OPFS Toggle (advanced storage) ─────────────────────────────────────────
+ * Tapping the toggle is a direct user gesture, which is what Safari requires
+ * for `navigator.storage.persist()` to succeed. We do both in the same click
+ * handler: flip the feature flag and request persistence, then ask the user
+ * to reload so `useFileSystem` can boot the worker and run the migration.
+ */
+function OpfsToggle({ onNotify }) {
+  const [on, setOn] = React.useState(() => { try { return isOpfsEnabled(); } catch { return false; } });
+  const [persisted, setPersisted] = React.useState(null);
+
+  // Best-effort read of the current persistence status for the tooltip.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await navigator.storage?.persisted?.();
+        if (!cancelled) setPersisted(!!p);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleToggle = async () => {
+    const next = !on;
+    setOn(next);
+    try {
+      if (next) {
+        localStorage.setItem('EPICODESPACE_USE_OPFS', '1');
+        // Must run in the same turn as the click. Safari denies this when
+        // invoked later (e.g. after `await`-chains with no prior gesture).
+        let granted = false;
+        try { granted = await navigator.storage?.persist?.() ?? false; } catch { granted = false; }
+        setPersisted(granted);
+        onNotify?.({
+          kind: 'info',
+          message: granted
+            ? 'OPFS enabled + storage marked persistent. Reload to migrate your workspace.'
+            : 'OPFS enabled. The browser declined to mark storage persistent — your files may be evicted under pressure. Reload to migrate.',
+        });
+      } else {
+        localStorage.removeItem('EPICODESPACE_USE_OPFS');
+        onNotify?.({ kind: 'info', message: 'OPFS disabled. Reload to return to localStorage mode.' });
+      }
+    } catch (err) {
+      onNotify?.({ kind: 'error', message: `Toggle failed: ${err?.message || err}` });
+    }
+  };
+
+  const title = on
+    ? `Advanced storage ON${persisted === true ? ' · persistent' : persisted === false ? ' · not persistent' : ''} — tap to disable`
+    : 'Advanced storage OFF — tap to enable OPFS + persistent storage';
+
+  return (
+    <button
+      type="button"
+      onClick={handleToggle}
+      role="switch"
+      aria-checked={on}
+      aria-label="Toggle OPFS advanced storage"
+      title={title}
+      className={`px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-wider transition-colors border ${
+        on
+          ? 'bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40 hover:bg-fuchsia-500/30'
+          : 'bg-transparent text-purple-400/70 border-purple-500/20 hover:bg-[#25104a] hover:text-purple-200'
+      }`}
+    >
+      OPFS {on ? 'ON' : 'OFF'}
+    </button>
+  );
+}
 
 /* ─── Error Boundary ────────────────────────────────────────────────────────── */
 class ErrorBoundary extends Component {
@@ -320,8 +393,19 @@ function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
   const toast = useToast();
 
-  // ── File system ───────────────────────────────────────────────────────────
-  const [fileSystem, setFileSystem] = useState(loadFS);
+  // ── File system (OPFS-aware hook) ─────────────────────────────────────────
+  const {
+    fileSystem,
+    mode: fsMode,            // 'memory' | 'opfs-pending' | 'opfs'
+    isReady: fsReady,
+    initError: fsInitError,
+    getLatest,
+    replaceAll,
+    writeFile,
+    patchFile,
+    renameFile: hookRenameFile,
+    deleteFile: hookDeleteFile,
+  } = useFileSystem();
   const [projectName, setProjectName] = useState(() => loadJSON('epicodespace_project_v1', 'My Project'));
   const firstFile = Object.keys(fileSystem)[0] || null;
   const [activeFile, setActiveFile] = useState(firstFile);
@@ -406,11 +490,27 @@ function EpiCodeSpaceApp() {
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
 
-  // ── Persist on change (debounced to avoid thrashing on every keystroke) ────
+  // ── Persistence is now owned by useFileSystem (localStorage debounced in
+  //    memory mode, per-path diff sync in OPFS mode). Keep tabs / active file
+  //    in sync when the underlying FS snapshot replaces wholesale (e.g. right
+  //    after OPFS init loads the on-disk tree, or after importing a project).
   useEffect(() => {
-    const t = setTimeout(() => saveFS(fileSystem), 400);
-    return () => clearTimeout(t);
+    setOpenTabs(prev => {
+      const next = prev.filter(t => fileSystem[t]);
+      return next.length === prev.length ? prev : next;
+    });
+    setActiveFile(cur => (cur && !fileSystem[cur]) ? (Object.keys(fileSystem)[0] || null) : cur);
   }, [fileSystem]);
+
+  // Surface OPFS init failures once so the user knows why we silently fell
+  // back to memory mode.
+  const didReportInitErr = useRef(false);
+  useEffect(() => {
+    if (fsInitError && !didReportInitErr.current) {
+      didReportInitErr.current = true;
+      toast?.error?.(`OPFS init failed (${fsInitError.code}): ${fsInitError.message}. Running in localStorage mode.`);
+    }
+  }, [fsInitError, toast]);
   useEffect(() => {
     const t = setTimeout(() => storeJSON(CONVOS_KEY, conversations), 400);
     return () => clearTimeout(t);
@@ -582,9 +682,9 @@ function EpiCodeSpaceApp() {
   }, [fileSystem]);
 
   const handleEditorChange = useCallback((e) => {
-    const value = e.target.value;
-    setFileSystem(prev => ({ ...prev, [activeFile]: { ...prev[activeFile], content: value } }));
-  }, [activeFile]);
+    if (!activeFile) return;
+    patchFile(activeFile, e.target.value);
+  }, [activeFile, patchFile]);
 
   const handleSave = useCallback(() => {
     setSavedIndicator(true);
@@ -594,12 +694,12 @@ function EpiCodeSpaceApp() {
   const handleNewFile = useCallback(() => {
     setUntitledCount(prev => {
       const newPath = `untitled-${prev}.js`;
-      setFileSystem(fs => ({ ...fs, [newPath]: { name: `untitled-${prev}.js`, language: 'javascript', content: '' } }));
-      setOpenTabs(tabs => [...tabs, newPath]);
+      writeFile(newPath, '', 'javascript');
+      setOpenTabs(tabs => tabs.includes(newPath) ? tabs : [...tabs, newPath]);
       setActiveFile(newPath);
       return prev + 1;
     });
-  }, []);
+  }, [writeFile]);
 
   // Create a file at an explicit path (used by FileExplorer for nested + duplicate)
   const handleCreateFileAt = useCallback((path, content = '', language) => {
@@ -613,24 +713,21 @@ function EpiCodeSpaceApp() {
       html: 'html', htm: 'html',
       json: 'json', md: 'markdown',
     }[ext] || 'text');
-    setFileSystem(prev => prev[path] ? prev : ({ ...prev, [path]: { name, language: lang, content } }));
+    // Only create when missing — duplicate-file flow relies on this no-op.
+    if (!getLatest()[path]) writeFile(path, content, lang);
     setOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
     setActiveFile(path);
-  }, []);
+  }, [getLatest, writeFile]);
 
   // Move a file to a new path (used by drag & drop and cut/paste)
   const handleMoveFile = useCallback((oldPath, newPath) => {
     if (!oldPath || !newPath || oldPath === newPath) return;
-    setFileSystem(prev => {
-      if (!prev[oldPath] || prev[newPath]) return prev;
-      const n = { ...prev };
-      n[newPath] = { ...n[oldPath], name: newPath.split('/').pop() };
-      delete n[oldPath];
-      return n;
-    });
+    const snap = getLatest();
+    if (!snap[oldPath] || snap[newPath]) return;
+    hookRenameFile(oldPath, newPath);
     setOpenTabs(prev => prev.map(t => t === oldPath ? newPath : t));
     setActiveFile(cur => cur === oldPath ? newPath : cur);
-  }, []);
+  }, [getLatest, hookRenameFile]);
 
   useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
   useEffect(() => { handleNewFileRef.current = handleNewFile; }, [handleNewFile]);
@@ -657,31 +754,28 @@ function EpiCodeSpaceApp() {
       },
     };
     const newFS = templates[template] || templates.empty;
-    setFileSystem(newFS);
+    replaceAll(newFS);
     const firstKey = Object.keys(newFS)[0] || null;
     setOpenTabs(firstKey ? [firstKey] : []);
     setActiveFile(firstKey);
     setProjectName(template === 'empty' ? 'New Project' : `${template}-app`);
-  }, []);
+  }, [replaceAll]);
 
   const handleDeleteFile = useCallback((path) => {
-    setFileSystem(prev => { const n = { ...prev }; delete n[path]; return n; });
+    hookDeleteFile(path);
     setOpenTabs(prev => prev.filter(t => t !== path));
-    setActiveFile(cur => cur === path ? (Object.keys(fileSystem).find(k => k !== path) || null) : cur);
-  }, [fileSystem]);
+    setActiveFile(cur => cur === path ? (Object.keys(getLatest()).find(k => k !== path) || null) : cur);
+  }, [hookDeleteFile, getLatest]);
 
   const handleRenameFile = useCallback((oldPath, newPath) => {
-    if (!newPath || newPath === oldPath || fileSystem[newPath]) return;
-    setFileSystem(prev => {
-      const n = { ...prev };
-      n[newPath] = { ...n[oldPath], name: newPath.split('/').pop() };
-      delete n[oldPath];
-      return n;
-    });
+    if (!newPath || newPath === oldPath) return;
+    const snap = getLatest();
+    if (!snap[oldPath] || snap[newPath]) return;
+    hookRenameFile(oldPath, newPath);
     setOpenTabs(prev => prev.map(t => t === oldPath ? newPath : t));
     setActiveFile(cur => cur === oldPath ? newPath : cur);
     setRenamingFile(null);
-  }, [fileSystem]);
+  }, [getLatest, hookRenameFile]);
 
   const handleExportProject = useCallback(() => {
     const files = Object.entries(fileSystem);
@@ -721,7 +815,7 @@ function EpiCodeSpaceApp() {
                 cleanFS[k] = { name: k.split('/').pop(), language: f.language || 'text', content: f.content };
               }
             });
-            setFileSystem(cleanFS);
+            replaceAll(cleanFS);
             setProjectName(data.name || file.name.replace(/\.epicode\.json$|\.json$/, ''));
             const first = Object.keys(cleanFS)[0] || null;
             setOpenTabs(first ? [first] : []);
@@ -737,13 +831,13 @@ function EpiCodeSpaceApp() {
   // ── Clipboard operations ──────────────────────────────────────────────────
   const editorCut = useCallback(() => {
     const ta = editorRef.current;
-    if (!ta) return;
+    if (!ta || !activeFile) return;
     const selected = ta.value.substring(ta.selectionStart, ta.selectionEnd);
     if (!selected) return;
     navigator.clipboard?.writeText(selected).catch(() => {});
     const newVal = ta.value.substring(0, ta.selectionStart) + ta.value.substring(ta.selectionEnd);
-    setFileSystem(prev => ({ ...prev, [activeFile]: { ...prev[activeFile], content: newVal } }));
-  }, [activeFile]);
+    patchFile(activeFile, newVal);
+  }, [activeFile, patchFile]);
 
   const editorCopy = useCallback(() => {
     const ta = editorRef.current;
@@ -754,11 +848,11 @@ function EpiCodeSpaceApp() {
   const editorPaste = useCallback(() => {
     navigator.clipboard?.readText().then(text => {
       const ta = editorRef.current;
-      if (!ta) return;
+      if (!ta || !activeFile) return;
       const newVal = ta.value.substring(0, ta.selectionStart) + text + ta.value.substring(ta.selectionEnd);
-      setFileSystem(prev => ({ ...prev, [activeFile]: { ...prev[activeFile], content: newVal } }));
+      patchFile(activeFile, newVal);
     }).catch(() => {});
-  }, [activeFile]);
+  }, [activeFile, patchFile]);
 
   const editorSelectAll = useCallback(() => { editorRef.current?.focus(); editorRef.current?.select(); }, []);
 
@@ -963,7 +1057,7 @@ function EpiCodeSpaceApp() {
             const { newFS, changed, cmdsToRun } = applyToolMutations(data.tool_calls, toolResults, currentFS);
             if (changed) {
               currentFS = newFS;
-              setFileSystem(newFS);
+              replaceAll(newFS);
               data.tool_calls.forEach(tc => {
                 if (tc.name === 'writeFile') {
                   setOpenTabs(prev => prev.includes(tc.arguments.path) ? prev : [...prev, tc.arguments.path]);
@@ -1176,8 +1270,8 @@ function EpiCodeSpaceApp() {
       touch: () => {
         if (!args[1]) return ['touch: missing file operand'];
         if (!fileSystem[args[1]]) {
-          setFileSystem(prev => ({ ...prev, [args[1]]: { name: args[1], language: 'text', content: '' } }));
-          setOpenTabs(prev => [...prev, args[1]]);
+          writeFile(args[1], '', 'text');
+          setOpenTabs(prev => prev.includes(args[1]) ? prev : [...prev, args[1]]);
           setActiveFile(args[1]);
         }
         return [`Created: ${args[1]}`];
@@ -1187,7 +1281,7 @@ function EpiCodeSpaceApp() {
         if (!args[1]) return ['rm: missing operand'];
         const target = args[1] === '-rf' ? args[2] : args[1];
         if (target && fileSystem[target]) {
-          setFileSystem(prev => { const n = { ...prev }; delete n[target]; return n; });
+          hookDeleteFile(target);
           setOpenTabs(prev => prev.filter(t => t !== target));
           return [`Removed: ${target}`];
         }
@@ -1195,23 +1289,18 @@ function EpiCodeSpaceApp() {
       },
       mv: () => {
         if (!args[1] || !args[2]) return ['mv: missing operand'];
-        if (fileSystem[args[1]]) {
-          setFileSystem(prev => {
-            const n = { ...prev };
-            n[args[2]] = { ...n[args[1]], name: args[2].split('/').pop() };
-            delete n[args[1]];
-            return n;
-          });
-          setOpenTabs(prev => prev.map(t => t === args[1] ? args[2] : t));
-          setActiveFile(cur => cur === args[1] ? args[2] : cur);
-          return [`Renamed ${args[1]} → ${args[2]}`];
-        }
-        return [`mv: cannot stat '${args[1]}': No such file`];
+        if (!fileSystem[args[1]]) return [`mv: cannot stat '${args[1]}': No such file`];
+        if (fileSystem[args[2]]) return [`mv: target '${args[2]}' already exists`];
+        hookRenameFile(args[1], args[2]);
+        setOpenTabs(prev => prev.map(t => t === args[1] ? args[2] : t));
+        setActiveFile(cur => cur === args[1] ? args[2] : cur);
+        return [`Renamed ${args[1]} → ${args[2]}`];
       },
       cp: () => {
         if (!args[1] || !args[2]) return ['cp: missing operand'];
-        if (fileSystem[args[1]]) {
-          setFileSystem(prev => ({ ...prev, [args[2]]: { ...prev[args[1]], name: args[2].split('/').pop() } }));
+        const src = fileSystem[args[1]];
+        if (src) {
+          writeFile(args[2], src.content ?? '', src.language);
           return [`Copied ${args[1]} → ${args[2]}`];
         }
         return [`cp: cannot stat '${args[1]}': No such file`];
@@ -1525,6 +1614,7 @@ function EpiCodeSpaceApp() {
           </div>
         </div>
         <div className="flex items-center gap-1 sm:gap-2">
+          <OpfsToggle onNotify={(n) => toast?.[n.kind === 'error' ? 'error' : 'info']?.(n.message)} />
           <button
             onClick={() => setRightSidebarOpen(!rightSidebarOpen)}
             className={`p-2 sm:p-1.5 rounded-md transition-colors ${rightSidebarOpen ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'hover:bg-[#25104a] text-purple-300'}`}
@@ -1537,6 +1627,25 @@ function EpiCodeSpaceApp() {
 
       {/* ── Main Workspace ────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
+        {/* Skeleton shown while OPFS is still initialising / migrating.
+            Blocks the Explorer + Editor so the user can't mutate a ghost
+            state that would then race with the on-disk tree load. */}
+        {!fsReady && fsMode === 'opfs-pending' && (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-label="Loading workspace from advanced storage"
+            className="absolute inset-0 z-40 flex items-center justify-center bg-[#0a0412]/90 backdrop-blur-sm"
+          >
+            <div className="flex flex-col items-center gap-3 px-6 py-5 rounded-xl border border-fuchsia-500/20 bg-[#15092a]/80">
+              <Loader2 size={22} className="animate-spin text-fuchsia-300" />
+              <div className="text-xs text-fuchsia-100 font-semibold">Initialising advanced storage…</div>
+              <div className="text-[11px] text-purple-300/70 max-w-xs text-center leading-relaxed">
+                Migrating your workspace into the browser's persistent filesystem. This runs once.
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Left Sidebar */}
         {sidebarOpen && (
@@ -1629,20 +1738,59 @@ function EpiCodeSpaceApp() {
               >
                 <pre className="m-0 leading-relaxed" aria-hidden="true">{getLineNumbers}</pre>
               </div>
-              <textarea
-                ref={editorRef}
-                value={fileSystem[activeFile]?.content ?? ''}
-                onChange={handleEditorChange}
-                onKeyUp={handleCursorMove}
-                onClick={handleCursorMove}
-                onSelect={handleCursorMove}
-                onScroll={(e) => { if (lineNumRef.current) lineNumRef.current.scrollTop = e.target.scrollTop; }}
-                spellCheck={false}
-                aria-label={`Editor: ${fileSystem[activeFile]?.name}`}
-                aria-multiline="true"
-                className="flex-1 w-full h-full bg-[#0a0412] text-purple-100 font-mono leading-relaxed p-4 resize-none focus:outline-none border-none overflow-auto"
-                style={{ tabSize: 2, fontSize, whiteSpace: wordWrap ? 'pre-wrap' : 'pre' }}
-              />
+              {(() => {
+                const entry = fileSystem[activeFile];
+                const fileBytes = entry?.size ?? (entry?.content?.length ?? 0);
+                // Trust `isLarge` when the hook set it; otherwise compute at
+                // render time from the content length so large content pasted
+                // through the legacy setState path is still flagged.
+                const isLarge = !!entry?.isLarge || fileBytes > MAX_INLINE_READ_BYTES;
+                if (isLarge) {
+                  const mb = (fileBytes / (1024 * 1024)).toFixed(2);
+                  const ceilingMb = (MAX_INLINE_READ_BYTES / (1024 * 1024)).toFixed(0);
+                  return (
+                    <div className="flex-1 flex flex-col bg-[#0a0412]">
+                      <div
+                        role="alert"
+                        className="flex items-start gap-3 px-4 py-3 border-b border-fuchsia-500/20 bg-gradient-to-r from-fuchsia-500/10 via-purple-500/5 to-transparent"
+                      >
+                        <AlertCircle size={16} className="text-fuchsia-300 shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-semibold text-fuchsia-100">
+                            Large file — inline editor disabled
+                          </div>
+                          <div className="text-[11px] text-purple-300/80 mt-0.5 leading-relaxed">
+                            <span className="font-mono text-fuchsia-300">{entry?.name}</span> is{' '}
+                            <span className="font-mono">{mb} MB</span>, above the{' '}
+                            <span className="font-mono">{ceilingMb} MB</span> inline ceiling.
+                            Editing this file in the textarea would pin it in memory and risk a tab crash on iPad.
+                            Use streamed reads (<span className="font-mono text-fuchsia-300">readLargeChunk</span>) or split the file into smaller modules.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex-1 flex items-center justify-center text-purple-500/40 text-xs font-mono px-6 text-center">
+                        Preview not rendered. This file stays on disk to protect main-thread memory.
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <textarea
+                    ref={editorRef}
+                    value={entry?.content ?? ''}
+                    onChange={handleEditorChange}
+                    onKeyUp={handleCursorMove}
+                    onClick={handleCursorMove}
+                    onSelect={handleCursorMove}
+                    onScroll={(e) => { if (lineNumRef.current) lineNumRef.current.scrollTop = e.target.scrollTop; }}
+                    spellCheck={false}
+                    aria-label={`Editor: ${entry?.name}`}
+                    aria-multiline="true"
+                    className="flex-1 w-full h-full bg-[#0a0412] text-purple-100 font-mono leading-relaxed p-4 resize-none focus:outline-none border-none overflow-auto"
+                    style={{ tabSize: 2, fontSize, whiteSpace: wordWrap ? 'pre-wrap' : 'pre' }}
+                  />
+                );
+              })()}
               </>
               )}
             </div>
