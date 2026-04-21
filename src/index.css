@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background: #0a0412;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+
+/* Safe area insets for notched iPads / phones */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+/* Hide scrollbars but keep scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Prevent text selection on drag handles */
+.drag-handle { touch-action: none; user-select: none; -webkit-user-select: none; }
+
+/* Mobile backdrop */
+.sidebar-backdrop {
+  position: fixed; inset: 0; z-index: 9;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* Smooth transitions for panels */
+@media (prefers-reduced-motion: no-preference) {
+  .panel-transition { transition: width 0.15s ease, height 0.15s ease, opacity 0.15s ease; }
+}
+
+/* iPad-specific: prevent double-tap zoom on buttons */
+button, [role="button"] { touch-action: manipulation; }
+
+/* Textarea on iOS: prevent zoom on focus (iOS zooms in when font < 16px) */
+@supports (-webkit-touch-callout: none) {
+  textarea, input[type="text"], input[type="search"] {
+    font-size: max(16px, 1em) !important;
+  }
+}
+
+/* ── Full-height layout: use dvh (dynamic viewport height) so the app fills  ─
+   the real visible area on iPad Safari even when the toolbar is shown/hidden. ─
+   Falls back to 100vh on older browsers.                                      */
+#root, .app-shell {
+  height: 100dvh;
+  height: 100vh; /* fallback for browsers without dvh */
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* Ensure scrollable inner panels handle iOS rubber-band correctly */
+.scroll-touch {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Minimum touch target: 44×44px (Apple HIG) */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Drag handle: larger touch zone on iPad, visible affordance */
+.drag-handle-v {
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  min-width: 8px;
+}
+.drag-handle-h {
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  min-height: 8px;
+}
+
+/* Prevent callout (copy menu) on long-press in non-editable elements */
+.no-callout { -webkit-touch-callout: none; }
+
+/* Safe-area bottom padding utility — use on any fixed bottom bar */
+.pb-safe { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+.pt-safe { padding-top: max(0px, env(safe-area-inset-top)); }
+
+/* Status bar text on iPad split view / full screen */
+@media (display-mode: standalone) {
+  .app-shell {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Improve tab/button legibility on Retina iPad screens */
+@media (-webkit-min-device-pixel-ratio: 2) {
+  .font-mono, textarea, .editor-area {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* iPad landscape: give a bit more horizontal breathing room */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .chat-panel-width { min-width: 300px; }
+}
+
+/* Focus-visible ring for iPad keyboard navigation */
+:focus-visible {
+  outline: 2px solid #e879f9;
+  outline-offset: 2px;
+}
