@@ -2,10 +2,15 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import EpiCodeSpaceApp from './EpiCodeSpaceComplete.jsx';
+import { ToastProvider } from './components/Toaster.jsx';
 
 try {
   const root = createRoot(document.getElementById('root'));
-  root.render(<EpiCodeSpaceApp />);
+  root.render(
+    <ToastProvider>
+      <EpiCodeSpaceApp />
+    </ToastProvider>
+  );
 } catch (err) {
   // Build error UI with safe DOM construction — never use innerHTML with error details (XSS risk)
   const container = document.getElementById('root');

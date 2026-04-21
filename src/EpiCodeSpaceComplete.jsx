@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback, Component } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue, Suspense, lazy, Component } from 'react';
 import {
   Folder, File, Terminal, Menu, X, Play, Cpu,
   Send, Code2, ChevronRight, Settings, Sparkles, Plus,
@@ -14,7 +14,13 @@ import {
 
 // ─── Extracted modules (Amendment #6 — split monolith) ────────────────────────
 import CodeBlock from './components/CodeBlock.jsx';
-import MarkdownContent from './components/MarkdownContent.jsx';
+// Amendment #4 — Performance: lazy-load the Markdown renderer. It's only
+// needed for chat messages, which don't exist until after first interaction.
+const MarkdownContent = lazy(() => import('./components/MarkdownContent.jsx'));
+import FileExplorer from './components/FileExplorer.jsx';
+import PanelErrorBoundary from './components/ErrorBoundary.jsx';
+import { useToast } from './components/Toaster.jsx';
+import { logger } from './lib/logger.js';
 import {
   STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODE_KEY,
   loadJSON, storeJSON, loadFS, saveFS,
@@ -311,6 +317,9 @@ function buildAgentResponse(agentId, query, tools, fileSystem, activeFile) {
 
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
+  // ── Observability (Amendment #6) ──────────────────────────────────────────
+  const toast = useToast();
+
   // ── File system ───────────────────────────────────────────────────────────
   const [fileSystem, setFileSystem] = useState(loadFS);
   const [projectName, setProjectName] = useState(() => loadJSON('epicodespace_project_v1', 'My Project'));
@@ -463,14 +472,16 @@ function EpiCodeSpaceApp() {
   }, []);
 
   // ── Problems scanner (debounced — only runs 600ms after typing stops) ──────
+  // Amendment #4 — Performance: defer the heavy scan so keystrokes feel instant.
   const [debouncedFS, setDebouncedFS] = useState(fileSystem);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedFS(fileSystem), 600);
     return () => clearTimeout(t);
   }, [fileSystem]);
+  const deferredFS = useDeferredValue(debouncedFS);
   const allProblems = useMemo(() => {
     const results = [];
-    Object.entries(debouncedFS).forEach(([path, f]) => {
+    Object.entries(deferredFS).forEach(([path, f]) => {
       if (!f || typeof f.content !== 'string') return;
       f.content.split('\n').forEach((line, idx) => {
         if (line.trim().startsWith('//')) return;
@@ -483,7 +494,7 @@ function EpiCodeSpaceApp() {
       });
     });
     return results;
-  }, [debouncedFS]);
+  }, [deferredFS]);
 
   const errorCount = useMemo(() => allProblems.filter(p => p.severity === 'error').length, [allProblems]);
   const warningCount = useMemo(() => allProblems.filter(p => p.severity === 'warning').length, [allProblems]);
@@ -590,6 +601,37 @@ function EpiCodeSpaceApp() {
     });
   }, []);
 
+  // Create a file at an explicit path (used by FileExplorer for nested + duplicate)
+  const handleCreateFileAt = useCallback((path, content = '', language) => {
+    if (!path || typeof path !== 'string') return;
+    const name = path.split('/').pop();
+    const ext = name.split('.').pop()?.toLowerCase();
+    const lang = language || ({
+      js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+      ts: 'typescript', tsx: 'typescript',
+      css: 'css', scss: 'css',
+      html: 'html', htm: 'html',
+      json: 'json', md: 'markdown',
+    }[ext] || 'text');
+    setFileSystem(prev => prev[path] ? prev : ({ ...prev, [path]: { name, language: lang, content } }));
+    setOpenTabs(prev => prev.includes(path) ? prev : [...prev, path]);
+    setActiveFile(path);
+  }, []);
+
+  // Move a file to a new path (used by drag & drop and cut/paste)
+  const handleMoveFile = useCallback((oldPath, newPath) => {
+    if (!oldPath || !newPath || oldPath === newPath) return;
+    setFileSystem(prev => {
+      if (!prev[oldPath] || prev[newPath]) return prev;
+      const n = { ...prev };
+      n[newPath] = { ...n[oldPath], name: newPath.split('/').pop() };
+      delete n[oldPath];
+      return n;
+    });
+    setOpenTabs(prev => prev.map(t => t === oldPath ? newPath : t));
+    setActiveFile(cur => cur === oldPath ? newPath : cur);
+  }, []);
+
   useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
   useEffect(() => { handleNewFileRef.current = handleNewFile; }, [handleNewFile]);
 
@@ -669,9 +711,9 @@ function EpiCodeSpaceApp() {
           if (data.files && typeof data.files === 'object') {
             // Validate: must not exceed 500 files or 5 MB total
             const fileEntries = Object.entries(data.files);
-            if (fileEntries.length > 500) { alert('Import failed: too many files (max 500).'); return; }
+            if (fileEntries.length > 500) { toast.error('Import failed: too many files (max 500).'); return; }
             const totalSize = fileEntries.reduce((s, [, f]) => s + (typeof f?.content === 'string' ? f.content.length : 0), 0);
-            if (totalSize > 5_000_000) { alert('Import failed: project exceeds 5 MB.'); return; }
+            if (totalSize > 5_000_000) { toast.error('Import failed: project exceeds 5 MB.'); return; }
             // Sanitize each entry
             const cleanFS = {};
             fileEntries.forEach(([k, f]) => {
@@ -976,6 +1018,7 @@ function EpiCodeSpaceApp() {
         setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
       } catch (err) {
+        logger.error('chat', 'API call failed — falling back to local agent', { message: err?.message });
         // Fallback to local simulated response
         const tools = createAgentTools(fileSystem, activeFile);
         const { response: fallbackResponse } = buildAgentResponse(activeAgent, userMessage, tools, fileSystem, activeFile);
@@ -1050,11 +1093,11 @@ function EpiCodeSpaceApp() {
   // Doesn’t need a dev server — inlines everything from the virtual FS.
   const openPreviewTab = useCallback(() => {
     if (!previewDoc) {
-      alert('Add an index.html to your workspace first.');
+      toast.warn('Add an index.html to your workspace first.');
       return;
     }
     const tab = window.open('', '_blank');
-    if (!tab) { alert('Pop-up blocked. Please allow pop-ups for this site.'); return; }
+    if (!tab) { toast.error('Pop-up blocked. Please allow pop-ups for this site.'); return; }
     tab.document.open();
     tab.document.write(previewDoc);
     tab.document.close();
@@ -1499,110 +1542,25 @@ function EpiCodeSpaceApp() {
         {sidebarOpen && (
           <>
             {sm && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
-            <aside className="absolute md:relative z-10 h-full bg-[#15092a] border-r border-fuchsia-500/20 flex flex-col shrink-0 panel-transition" style={{ width: sm ? Math.min(leftWidth, screenWidth * 0.85) : leftWidth }}>
+            <aside className="absolute md:relative z-10 h-full bg-[#15092a] border-r border-fuchsia-500/20 flex flex-col shrink-0 panel-transition" style={{ width: sm ? Math.min(leftWidth, screenWidth * 0.85) : leftWidth }} aria-label="File explorer">
               {!sm && <div className="absolute top-0 -right-[2px] w-1.5 h-full cursor-col-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('left'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('left'); }} />}
-            <div className="px-4 py-2.5 flex justify-between items-center text-[10px] font-bold text-fuchsia-400/70 uppercase tracking-widest">
-              <span>Explorer</span>
-              <div className="flex items-center gap-0.5">
-                <button onClick={handleNewFile} aria-label="New file" className="p-1 hover:text-fuchsia-300 transition-colors" title="New File"><FilePlus size={13}/></button>
-                <button onClick={handleImportProject} aria-label="Import project" className="p-1 hover:text-fuchsia-300 transition-colors" title="Import Project"><FolderOpen size={13}/></button>
-                <button onClick={handleExportProject} aria-label="Export project" className="p-1 hover:text-fuchsia-300 transition-colors" title="Export Project"><Save size={13}/></button>
-              </div>
-            </div>
-            <div className="p-1 flex-1 overflow-y-auto -webkit-overflow-scrolling-touch">
-              <div className="px-2 py-1 flex items-center gap-1 text-xs font-semibold text-purple-200 mb-1">
-                <ChevronDown size={14} />
-                <span className="tracking-wide uppercase truncate" title={projectName} onDoubleClick={() => { const name = prompt('Rename project:', projectName); if (name) setProjectName(name); }}>{projectName}</span>
-              </div>
-              {Object.keys(fileSystem).length === 0 ? (
-                <div className="px-4 py-6 text-center">
-                  <div className="text-purple-500/50 text-xs mb-4">No files yet</div>
-                  <div className="space-y-2">
-                    <button onClick={handleNewFile} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors flex items-center gap-2 justify-center"><FilePlus size={12}/> New File</button>
-                    <button onClick={() => handleNewProject('react')} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors">⚛️ React Project</button>
-                    <button onClick={() => handleNewProject('node')} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors">🟢 Node.js Project</button>
-                    <button onClick={() => handleNewProject('html')} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors">🌐 HTML/CSS/JS Project</button>
-                    <button onClick={handleImportProject} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors flex items-center gap-2 justify-center"><FolderOpen size={12}/> Import Project</button>
-                  </div>
-                </div>
-              ) : (() => {
-                // Group files by directory
-                const folders = {};
-                const rootFiles = [];
-                Object.keys(fileSystem).forEach(path => {
-                  const parts = path.split('/');
-                  if (parts.length > 1) {
-                    const dir = parts.slice(0, -1).join('/');
-                    if (!folders[dir]) folders[dir] = [];
-                    folders[dir].push(path);
-                  } else {
-                    rootFiles.push(path);
-                  }
-                });
-                return (
-                  <>
-                    {rootFiles.map(path => {
-                      const fileName = path.split('/').pop();
-                      const isActive = activeFile === path;
-                      return (
-                        <div key={path} className="group">
-                          {renamingFile === path ? (
-                            <form onSubmit={(e) => { e.preventDefault(); handleRenameFile(path, renameValue); }} className="flex ml-2 px-2 py-1">
-                              <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => setRenamingFile(null)} className="bg-[#0a0412] border border-fuchsia-500/40 text-purple-100 text-xs px-2 py-0.5 rounded w-full outline-none" />
-                            </form>
-                          ) : (
-                            <div className="flex items-center">
-                              <button onClick={() => handleFileClick(path)} className={`flex-1 flex items-center gap-2 px-3 py-2 sm:py-1 ml-2 text-xs rounded-md transition-colors ${isActive ? 'bg-fuchsia-500/15 text-fuchsia-100 shadow-[inset_2px_0_0_rgba(232,121,249,1)]' : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'}`}>
-                                <File size={13} className={isActive ? (path.endsWith('.md') ? "text-cyan-400" : "text-fuchsia-400") : ""} />
-                                <span className="truncate">{fileName}</span>
-                              </button>
-                              <div className="flex gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => { setRenamingFile(path); setRenameValue(path); }} className="p-0.5 text-purple-500/40 hover:text-purple-200" title="Rename"><FileEdit size={11}/></button>
-                                <button onClick={() => handleDeleteFile(path)} className="p-0.5 text-purple-500/40 hover:text-red-400" title="Delete"><Trash2 size={11}/></button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {Object.entries(folders).map(([dir, files]) => (
-                      <div key={dir}>
-                        <div className="flex items-center gap-1 px-4 py-1 text-xs text-purple-400/80">
-                          <ChevronDown size={14} />
-                          <Folder size={14} className="text-fuchsia-400" />
-                          <span>{dir}</span>
-                        </div>
-                        {files.map(path => {
-                          const fileName = path.split('/').pop();
-                          const isActive = activeFile === path;
-                          return (
-                            <div key={path} className="group">
-                              {renamingFile === path ? (
-                                <form onSubmit={(e) => { e.preventDefault(); handleRenameFile(path, renameValue); }} className="flex ml-8 px-2 py-1">
-                                  <input autoFocus value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onBlur={() => setRenamingFile(null)} className="bg-[#0a0412] border border-fuchsia-500/40 text-purple-100 text-xs px-2 py-0.5 rounded w-full outline-none" />
-                                </form>
-                              ) : (
-                                <div className="flex items-center">
-                                  <button onClick={() => handleFileClick(path)} className={`flex-1 flex items-center gap-2 px-3 py-2 sm:py-1 ml-6 text-xs rounded-md transition-colors ${isActive ? 'bg-fuchsia-500/15 text-fuchsia-100 shadow-[inset_2px_0_0_rgba(232,121,249,1)]' : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'}`}>
-                                    <File size={13} className={isActive ? (path.endsWith('.md') ? "text-cyan-400" : "text-fuchsia-400") : ""} />
-                                    <span className="truncate">{fileName}</span>
-                                  </button>
-                                  <div className="flex gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button onClick={() => { setRenamingFile(path); setRenameValue(path); }} className="p-0.5 text-purple-500/40 hover:text-purple-200" title="Rename"><FileEdit size={11}/></button>
-                                    <button onClick={() => handleDeleteFile(path)} className="p-0.5 text-purple-500/40 hover:text-red-400" title="Delete"><Trash2 size={11}/></button>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </>
-                );
-              })()}
-            </div>
-          </aside>
+              <PanelErrorBoundary scope="Explorer">
+                <FileExplorer
+                  fileSystem={fileSystem}
+                  activeFile={activeFile}
+                  projectName={projectName}
+                  onFileClick={handleFileClick}
+                  onCreateFile={handleCreateFileAt}
+                  onDeleteFile={handleDeleteFile}
+                  onRenameFile={handleRenameFile}
+                  onMoveFile={handleMoveFile}
+                  onProjectRename={setProjectName}
+                  onImport={handleImportProject}
+                  onExport={handleExportProject}
+                  onNewProjectTemplate={handleNewProject}
+                />
+              </PanelErrorBoundary>
+            </aside>
           </>
         )}
 
@@ -1694,7 +1652,7 @@ function EpiCodeSpaceApp() {
           {terminalState === 'open' && (
             <div className="border-t border-fuchsia-500/20 bg-[#0a0412] flex flex-col shrink-0 relative" style={{ height: sm ? Math.min(termHeight, window.innerHeight * 0.4) : termHeight }}>
               <div className="absolute top-0 left-0 w-full h-3 sm:h-1.5 -mt-[2px] cursor-row-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('terminal'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('terminal'); }} />
-              <div className="flex items-center px-2 sm:px-4 pt-2 gap-1 sm:gap-3 shrink-0 overflow-x-auto no-scrollbar">
+              <div role="tablist" aria-label="Panel tabs" className="flex items-center px-2 sm:px-4 pt-2 gap-1 sm:gap-3 shrink-0 overflow-x-auto no-scrollbar">
                 {[
                   { id: 'problems', label: 'PROBLEMS', badge: allProblems.length > 0 ? allProblems.length : null },
                   { id: 'output', label: 'OUTPUT' },
@@ -1705,8 +1663,21 @@ function EpiCodeSpaceApp() {
                 ].map((tab) => (
                   <button
                     key={tab.id}
+                    role="tab"
+                    aria-selected={activeTerminalTab === tab.id}
+                    aria-controls={`panel-${tab.id}`}
+                    id={`tab-${tab.id}`}
+                    tabIndex={activeTerminalTab === tab.id ? 0 : -1}
                     onClick={() => setActiveTerminalTab(tab.id)}
-                    className={`text-[11px] font-semibold tracking-wider pb-2 border-b-2 transition-colors whitespace-nowrap px-1 ${activeTerminalTab === tab.id ? 'border-cyan-400 text-cyan-50 drop-shadow-[0_0_5px_rgba(34,211,238,0.5)]' : 'border-transparent text-purple-400/60 hover:text-purple-200'}`}
+                    onKeyDown={(e) => {
+                      const ids = ['problems','output','terminal','preview','debug','ports'];
+                      const cur = ids.indexOf(activeTerminalTab);
+                      if (e.key === 'ArrowRight') { e.preventDefault(); setActiveTerminalTab(ids[(cur + 1) % ids.length]); }
+                      else if (e.key === 'ArrowLeft') { e.preventDefault(); setActiveTerminalTab(ids[(cur - 1 + ids.length) % ids.length]); }
+                      else if (e.key === 'Home') { e.preventDefault(); setActiveTerminalTab(ids[0]); }
+                      else if (e.key === 'End') { e.preventDefault(); setActiveTerminalTab(ids[ids.length - 1]); }
+                    }}
+                    className={`text-[11px] font-semibold tracking-wider pb-2 border-b-2 transition-colors whitespace-nowrap px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400/60 rounded-sm ${activeTerminalTab === tab.id ? 'border-cyan-400 text-cyan-50 drop-shadow-[0_0_5px_rgba(34,211,238,0.5)]' : 'border-transparent text-purple-400/60 hover:text-purple-200'}`}
                   >
                     {tab.label}
                     {tab.badge && <span className="ml-1.5 bg-fuchsia-500/20 text-fuchsia-300 px-1.5 rounded-full text-[10px]">{tab.badge}</span>}
@@ -1870,7 +1841,11 @@ function EpiCodeSpaceApp() {
                       srcDoc={previewDoc}
                       className="flex-1 w-full border-none"
                       style={{ background: '#fff' }}
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads allow-top-navigation-by-user-activation"
+                      /* Amendment #2 — security: dropped `allow-same-origin` so preview scripts
+                         cannot read parent storage/cookies even though srcdoc shares origin.
+                         `referrerpolicy` prevents leaking the parent URL. */
+                      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-top-navigation-by-user-activation"
+                      referrerPolicy="no-referrer"
                       title="EpiCodeSpace Live Preview"
                     />
                   ) : (
@@ -2093,7 +2068,7 @@ function EpiCodeSpaceApp() {
                                 ><FileEdit size={10}/></button>
                                 <button
                                   title="Delete"
-                                  onClick={() => { if (window.confirm(`Delete "${c.name}"?`)) handleDeleteConvo(c.id); }}
+                                  onClick={async () => { if (await toast.confirm(`Delete "${c.name}"?`, { danger: true, confirmLabel: 'Delete' })) handleDeleteConvo(c.id); }}
                                   className="p-1 text-purple-500/60 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
                                 ><Trash2 size={10}/></button>
                               </div>
@@ -2169,7 +2144,9 @@ function EpiCodeSpaceApp() {
                     </div>
                   )}
                   <div className={`rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-[#1f0e40] border border-purple-500/30 text-purple-100 shadow-md' : 'bg-transparent border border-fuchsia-500/20 text-purple-200'} text-[13px]`}>
-                    <MarkdownContent content={msg.content} />
+                    <Suspense fallback={<div className="text-[11px] text-purple-500/50">Loading…</div>}>
+                      <MarkdownContent content={msg.content} />
+                    </Suspense>
                   </div>
                   {/* Tool calls summary */}
                   {msg.toolCalls && msg.toolCalls.length > 0 && (
@@ -2389,8 +2366,14 @@ function EpiCodeSpaceApp() {
 
       {/* About Modal */}
       {showAbout && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowAbout(false)}>
-          <div className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-8 w-80 text-center" onClick={e => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowAbout(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="about-title"
+        >
+          <div className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-8 w-80 text-center focus:outline-none" onClick={e => e.stopPropagation()} tabIndex={-1} ref={el => el?.focus()}>
             <div className="flex justify-center mb-4">
               <Cpu size={44} className="text-fuchsia-400 drop-shadow-[0_0_20px_rgba(232,121,249,0.9)]" />
             </div>
