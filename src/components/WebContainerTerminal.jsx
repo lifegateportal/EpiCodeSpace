@@ -101,11 +101,52 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
   const startShell = useCallback(async () => {
     const term = termRef.current;
     if (!term || !bridge.ready || processRef.current) return;
-    try {
+
+    // Wait for xterm to have non-zero dimensions — spawning with cols=0
+    // on iPadOS Safari reliably triggers "Process aborted".
+    let waited = 0;
+    while ((term.cols < 2 || term.rows < 2) && waited < 500) {
+      try { fitRef.current?.fit(); } catch { /* noop */ }
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 50));
+      waited += 50;
+    }
+    const cols = Math.max(term.cols || 80, 20);
+    const rows = Math.max(term.rows || 24, 6);
+
+    const trySpawn = async (withTerminal) => {
       const container = bridge.getContainer();
-      const cols = term.cols || 80;
-      const rows = term.rows || 24;
-      const proc = await container.spawn('jsh', [], { terminal: { cols, rows } });
+      const opts = withTerminal ? { terminal: { cols, rows } } : undefined;
+      return container.spawn('jsh', [], opts);
+    };
+
+    let proc = null;
+    try {
+      proc = await trySpawn(true);
+    } catch (err) {
+      const msg = String(err?.message || err);
+      logger.warn('terminal', `spawn (with terminal) failed: ${msg}`);
+      if (/abort/i.test(msg)) {
+        // iPadOS fallback: retry once without terminal option.
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          proc = await trySpawn(false);
+          term.writeln('\x1b[33m▶ fallback: spawned without PTY sizing\x1b[0m');
+        } catch (err2) {
+          logger.error('terminal', 'spawn retry failed', err2);
+          term.writeln(`\r\n\x1b[31m✖ shell unavailable: ${String(err2?.message || err2)}\x1b[0m`);
+          term.writeln('\x1b[90m# Tip: mount at least one file before booting, then try again.\x1b[0m');
+          setProcessRunning(false);
+          return;
+        }
+      } else {
+        term.writeln(`\r\n\x1b[31m✖ ${msg}\x1b[0m`);
+        setProcessRunning(false);
+        return;
+      }
+    }
+
+    try {
       processRef.current = proc;
       setProcessRunning(true);
 
@@ -121,13 +162,13 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
         writer.write(data).catch(() => {});
       });
       const resizeSub = term.onResize(({ cols: c, rows: r }) => {
-        try { proc.resize({ cols: c, rows: r }); } catch {}
+        try { proc.resize?.({ cols: c, rows: r }); } catch { /* older jsh has no resize */ }
       });
 
       const code = await proc.exit;
       dataSub.dispose();
       resizeSub.dispose();
-      try { writer.close(); } catch {}
+      try { writer.close(); } catch { /* noop */ }
       writerRef.current = null;
       processRef.current = null;
       setProcessRunning(false);
@@ -141,7 +182,7 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
         } catch (err) { logger.warn('terminal', 'auto-pull failed', err); }
       }
     } catch (err) {
-      logger.error('terminal', 'spawn failed', err);
+      logger.error('terminal', 'shell loop failed', err);
       term.writeln(`\r\n\x1b[31m✖ ${err?.message || err}\x1b[0m`);
       setProcessRunning(false);
     }

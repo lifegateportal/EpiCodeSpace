@@ -185,6 +185,25 @@ export function buildTreeFromFlat(
     cursor[leaf] = fileNode;
   }
 
+  // If the mount is empty (first boot, OPFS not yet populated, fresh
+  // project), seed a minimal scaffold. `jsh` on iPadOS Safari aborts
+  // with "Process aborted" if the container has nothing to chdir into —
+  // a package.json + README gives it a stable home.
+  if (Object.keys(root).length === 0) {
+    root['package.json'] = {
+      file: {
+        contents: JSON.stringify({
+          name: 'epicodespace-workspace',
+          version: '0.0.0',
+          private: true,
+        }, null, 2),
+      },
+    };
+    root['README.md'] = {
+      file: { contents: '# EpiCodeSpace workspace\n\nStart by creating files in the explorer.\n' },
+    };
+  }
+
   return root;
 }
 
