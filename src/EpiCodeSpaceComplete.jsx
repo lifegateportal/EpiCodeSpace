@@ -1137,6 +1137,15 @@ function EpiCodeSpaceApp() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // ── Patch utility: exact-match swap with ambiguity detection ───────────
+  const applyPatch = (content, oldText, newText) => {
+    if (!oldText) return { ok: false, error: 'oldText must not be empty' };
+    const occurrences = content.split(oldText).length - 1;
+    if (occurrences === 0) return { ok: false, error: 'oldText not found in file — the block may have already changed or the text is hallucinated. Read the file first, then retry with an exact verbatim match.' };
+    if (occurrences > 1) return { ok: false, error: `oldText is ambiguous — found ${occurrences} occurrences. Expand the snippet to make it unique.` };
+    return { ok: true, content: content.replace(oldText, newText ?? '') };
+  };
+
   // ── Execute tool calls against virtual filesystem ────────────────────────
   const executeToolCall = useCallback((name, args, currentFS) => {
     switch (name) {
@@ -1147,6 +1156,9 @@ function EpiCodeSpaceApp() {
         return { ok: true, path: args.path, content: safeContent, language: f.language, lines: safeContent.split('\n').length };
       }
       case 'writeFile': {
+        if (currentFS[args.path]) {
+          return { ok: false, error: `'${args.path}' already exists — use editFile with oldText/newText to patch specific sections instead of overwriting the whole file.` };
+        }
         const lang = args.path.endsWith('.jsx') || args.path.endsWith('.js') ? 'javascript'
           : args.path.endsWith('.tsx') || args.path.endsWith('.ts') ? 'typescript'
           : args.path.endsWith('.css') ? 'css'
@@ -1159,10 +1171,9 @@ function EpiCodeSpaceApp() {
       case 'editFile': {
         const f = currentFS[args.path];
         if (!f) return { ok: false, error: `File not found: ${args.path}` };
-        const existingContent = f.content ?? '';
-        if (!existingContent.includes(args.oldText ?? '')) return { ok: false, error: `Text not found in ${args.path}` };
-        const newContent = existingContent.replace(args.oldText ?? '', args.newText ?? '');
-        return { ok: true, action: 'edit', path: args.path, content: newContent, lines: newContent.split('\n').length };
+        const patch = applyPatch(f.content ?? '', args.oldText ?? '', args.newText ?? '');
+        if (!patch.ok) return patch;
+        return { ok: true, action: 'edit', path: args.path, content: patch.content, lines: patch.content.split('\n').length };
       }
       case 'deleteFile': {
         if (!currentFS[args.path]) return { ok: false, error: `File not found: ${args.path}` };
