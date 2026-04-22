@@ -91,7 +91,7 @@ You are an autonomous agent with access to the workspace file system via these t
 
 const MODE_INSTRUCTIONS = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: '\n\nMode: AGENT — You can directly read, write, edit, create, and delete files in the user\'s workspace using the provided tools. When the user asks you to build, fix, or change something, USE THE TOOLS to make the actual changes. Do not just show code — apply it. EDITING RULES: (1) Use editFile to patch ANY existing file — supply an exact verbatim oldText block (unique in the file) and newText; never rewrite a whole file when only part changes. (2) Use writeFile ONLY to create files that do not yet exist. Work iteratively: read files first, then make targeted edits. Confirm what you did after.',,
+  agent: '\n\nMode: AGENT — You can directly read, write, edit, create, and delete files in the user\'s workspace using the provided tools. When the user asks you to build, fix, or change something, USE THE TOOLS to make the actual changes. Do not just show code — apply it. EDITING RULES: (1) Use editFile to patch ANY existing file — supply an exact verbatim oldText block (unique in the file) and newText; never rewrite a whole file when only part changes. (2) Use writeFile ONLY to create files that do not yet exist. Work iteratively: read files first, then make targeted edits. Confirm what you did after.',
   plan: '\n\nMode: PLAN — First read relevant files with readFile/listFiles to understand the codebase. Then create a numbered step-by-step plan of what you will change. Format with checkboxes:\n- [ ] Step 1: ...\n- [ ] Step 2: ...\nDo NOT call writeFile/editFile/deleteFile until the user approves. Only use read tools for research.',
 };
 

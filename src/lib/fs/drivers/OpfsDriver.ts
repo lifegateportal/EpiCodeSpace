@@ -28,6 +28,11 @@ type FsDirHandle = FileSystemDirectoryHandle;
 type FsFileHandle = FileSystemFileHandle;
 type SyncHandle = FileSystemSyncAccessHandle;
 
+// Suffix appended to the file name while a write is in progress.
+// The file is only promoted to its final name once the write is fully
+// flushed and closed, so a tab kill can never leave a half-written file.
+const TMP_SUFFIX = '.__ecs_tmp__';
+
 // In-progress streaming writes. Keyed by opaque handle string returned to
 // the caller; the real SyncAccessHandle lives only inside the worker.
 interface ActiveStream {
@@ -112,10 +117,16 @@ async function probeSyncAccess(): Promise<boolean> {
 
 export const OpfsDriver = {
   async init() {
-    await getRoot(); // throws EUNSUPPORTED early if OPFS missing
+    const root = await getRoot(); // throws EUNSUPPORTED early if OPFS missing
     const supportsSyncAccess = await probeSyncAccess();
     if (!supportsSyncAccess) {
       throw fsError('EUNSUPPORTED', 'OPFS sync access handles are unavailable — cannot proceed safely');
+    }
+    // Recover any writes that were interrupted by a previous tab kill.
+    // Must run before any user-visible operation so the FS is consistent.
+    const recoveredTemps = await cleanupOrphanedTemps(root);
+    if (recoveredTemps > 0) {
+      console.info(`[OpfsDriver] init: recovered ${recoveredTemps} interrupted write(s)`);
     }
     return { driver: 'opfs' as const, supportsSyncAccess };
   },
@@ -137,10 +148,10 @@ export const OpfsDriver = {
   async list(dirPath: string): Promise<FsEntry[]> {
     const dir = await resolveDir(dirPath);
     const out: FsEntry[] = [];
-    // Skip our internal `.tmp` files from user-visible listings.
+    // Skip our internal staging files from user-visible listings.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for await (const [name, handle] of (dir as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
-      if (name.endsWith('.__ecs_tmp__')) continue;
+      if (name.endsWith(TMP_SUFFIX)) continue;
       out.push({
         name,
         path: dirPath ? `${dirPath}/${name}` : name,
@@ -240,7 +251,7 @@ export const OpfsDriver = {
     await guardQuota(text.length * 2); // UTF-16 worst case; UTF-8 is usually smaller
     const [parent, name] = split(path);
     const dir = await resolveDir(parent, true);
-    const tmpName = `${name}.__ecs_tmp__`;
+    const tmpName = `${name}${TMP_SUFFIX}`;
     const finalName = name;
 
     // Write temp file using a sync access handle (fastest + atomic from
@@ -269,7 +280,7 @@ export const OpfsDriver = {
   async writeStreamOpen(path: string): Promise<WriteHandle> {
     const [parent, name] = split(path);
     const dir = await resolveDir(parent, true);
-    const tmpName = `${name}.__ecs_tmp__`;
+    const tmpName = `${name}${TMP_SUFFIX}`;
     const tmp = await dir.getFileHandle(tmpName, { create: true });
     const sah = await tmp.createSyncAccessHandle();
     try {
@@ -374,6 +385,74 @@ async function guardQuota(requestedBytes: number): Promise<void> {
     // estimate() unsupported or failed — fall through; real writes will
     // still surface a QuotaExceededError from OPFS itself.
   }
+}
+
+/**
+ * Startup recovery: recursively scan `dir` for any `TMP_SUFFIX` orphans
+ * left behind by a previous tab kill and handle them:
+ *
+ *   tmpSize === 0  →  DELETE
+ *     The write was opened but the tab was killed before anything was
+ *     written. The original file was never touched — just discard the
+ *     empty staging file.
+ *
+ *   tmpSize  >  0  →  PROMOTE (copy tmp → final, then delete tmp)
+ *     The write completed its `flush() + close()` cycle, so the staging
+ *     file holds the correct, complete new content. The tab was killed
+ *     during the subsequent `copyWithin` call — which starts by calling
+ *     `dstSah.truncate(0)` — leaving the destination empty or partially
+ *     written. Promoting the staging file restores the intended state.
+ *
+ * Failures per-entry are swallowed so a single unrecoverable file cannot
+ * block the rest of startup.
+ *
+ * Returns the total number of staging files handled.
+ */
+async function cleanupOrphanedTemps(dir: FsDirHandle, depth = 0): Promise<number> {
+  // Guard against unexpectedly deep trees (symlink loops, etc.)
+  if (depth > 20) return 0;
+  let count = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for await (const [name, handle] of (dir as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
+    if (handle.kind === 'directory') {
+      count += await cleanupOrphanedTemps(handle as FsDirHandle, depth + 1);
+      continue;
+    }
+    if (!name.endsWith(TMP_SUFFIX)) continue;
+
+    const finalName = name.slice(0, -TMP_SUFFIX.length);
+    try {
+      const tmpFh = handle as FsFileHandle;
+      // Acquire a sync access handle to read the size without a full blob load.
+      const sah = await tmpFh.createSyncAccessHandle();
+      let tmpSize: number;
+      try {
+        tmpSize = sah.getSize();
+      } finally {
+        sah.close();
+      }
+
+      if (tmpSize === 0) {
+        // Empty staging file: write was aborted before any data was written.
+        // The original is unmodified — just clean up the trace.
+        try { await dir.removeEntry(name); } catch { /* non-fatal */ }
+        count++;
+        continue;
+      }
+
+      // Non-empty staging file: the write completed and was flushed to
+      // storage, but the copy-to-final was interrupted (or tmp removal
+      // failed). Promote the staging file to restore the correct content.
+      await copyWithin(dir, name, finalName);
+      try { await dir.removeEntry(name); } catch { /* non-fatal */ }
+      count++;
+    } catch (err) {
+      // Skip individual failures — a locked or unreadable orphan should
+      // not prevent the rest of the workspace from loading.
+      console.warn(`[OpfsDriver] cleanupOrphanedTemps: skipping ${name}`, err);
+    }
+  }
+  return count;
 }
 
 /** Copy `srcName` to `dstName` within the same directory using sync
