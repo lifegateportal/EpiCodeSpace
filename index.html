@@ -8,11 +8,11 @@
     <!-- Theme & color -->
     <meta name="theme-color" content="#0a0412" />
     <meta name="theme-color" content="#0a0412" media="(prefers-color-scheme: dark)" />
-    <!-- Security headers (Amendment #2): tight CSP, referrer hygiene, MIME sniffing off -->
-    <!-- Monaco is loaded from jsdelivr by @monaco-editor/react and spins up workers from blob: URLs.
-         WebContainers spawn workers from blob: URLs too. Both must be allow-listed or the editor
-         and preview iframe will hang on "Loading…". -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net blob:; worker-src 'self' blob:; frame-src 'self' blob: https:; object-src 'none'; base-uri 'self'; form-action 'self'" />
+    <!-- Security headers: CSP is served via vercel.json response headers
+         (see /vercel.json → "Content-Security-Policy"). We intentionally do NOT
+         set a <meta> CSP here — browsers enforce the intersection of meta + header
+         CSPs, so any meta policy would silently block *.webcontainer.io /
+         *.stackblitz.io / cdn.jsdelivr.net and break Monaco + the runtime. -->
     <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <!-- iOS / iPadOS PWA -->

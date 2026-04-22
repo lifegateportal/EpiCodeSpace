@@ -239,7 +239,19 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
           {bootError}
         </div>
       )}
-      <div ref={hostRef} className="flex-1 min-h-0 p-2" />
+      {/*
+       * Terminal viewport.
+       * - `overflow-hidden` prevents xterm's internal helper <textarea> (which
+       *   sits at the caret position) from being scrolled into view on iPadOS,
+       *   which is what created the big selectable "box" under the prompt.
+       * - `wc-term` scopes the xterm helper-textarea hiding rules in index.css.
+       * - `touch-manipulation` disables the 300 ms tap delay on iPad so the
+       *   terminal feels responsive to selection gestures.
+       */}
+      <div
+        ref={hostRef}
+        className="wc-term flex-1 min-h-0 p-2 overflow-hidden touch-manipulation"
+      />
     </div>
   );
 }

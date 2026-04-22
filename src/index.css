@@ -121,3 +121,52 @@ button, [role="button"] { touch-action: manipulation; }
   outline: 2px solid #e879f9;
   outline-offset: 2px;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   xterm.js inside the WebContainer terminal pane.
+
+   xterm creates a hidden <textarea> (`.xterm-helper-textarea`) positioned
+   at the caret. It MUST stay invisible and not receive the global
+   `font-size: max(16px, 1em)` / `:focus-visible` / selection styling we
+   apply elsewhere — otherwise it renders as a big tappable "ghost input"
+   under the prompt on iPadOS, blocking terminal selection.
+   ────────────────────────────────────────────────────────────────────── */
+.wc-term .xterm,
+.wc-term .xterm-viewport,
+.wc-term .xterm-screen {
+  width: 100% !important;
+  height: 100% !important;
+}
+.wc-term .xterm-helper-textarea {
+  /* Zero-size, zero-opacity, off-screen fallback */
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-height: 0 !important;
+  opacity: 0 !important;
+  z-index: -10 !important;
+  /* Undo the global iOS 16px override */
+  font-size: 1px !important;
+  line-height: 1 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: none !important;
+}
+.wc-term .xterm-helper-textarea:focus,
+.wc-term .xterm-helper-textarea:focus-visible {
+  outline: none !important;
+}
+/* Let touch users select terminal output */
+.wc-term .xterm-rows,
+.wc-term .xterm-selection-layer {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+/* Viewport shouldn't grow past the pane; fitAddon handles rows */
+.wc-term .xterm-viewport {
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
