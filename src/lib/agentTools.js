@@ -30,7 +30,7 @@ export function createAgentTools(fileSystem, activeFile) {
       execute: (pattern) => {
         const results = [];
         Object.entries(fileSystem).forEach(([path, f]) => {
-          f.content.split('\n').forEach((line, i) => {
+          (f.content ?? '').split('\n').forEach((line, i) => {
             if (line.toLowerCase().includes(pattern.toLowerCase())) {
               results.push({ file: path, line: i + 1, text: line.trim() });
             }
@@ -45,7 +45,7 @@ export function createAgentTools(fileSystem, activeFile) {
       execute: (path) => {
         const f = fileSystem[path || activeFile];
         if (!f) return { ok: false, error: 'File not found' };
-        const lines = f.content.split('\n');
+        const lines = (f.content ?? '').split('\n');
         const issues = [];
         const lang = f.language || 'text';
 
@@ -107,7 +107,7 @@ export function createAgentTools(fileSystem, activeFile) {
         });
 
         // ── Stack trace / error paste detector ──────────────────────
-        const content = f.content;
+        const content = f.content ?? '';
         const stackPatterns = [
           { re: /TypeError:\s.+/, label: 'TypeError' },
           { re: /ReferenceError:\s.+/, label: 'ReferenceError' },
@@ -154,7 +154,7 @@ export function createAgentTools(fileSystem, activeFile) {
         files: Object.entries(fileSystem).map(([p, f]) => ({
           path: p,
           language: f.language,
-          lines: f.content.split('\n').length,
+          lines: (f.content ?? '').split('\n').length,
         })),
       }),
     },

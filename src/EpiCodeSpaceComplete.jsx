@@ -143,7 +143,7 @@ function createAgentTools(fileSystem, activeFile) {
       execute: (pattern) => {
         const results = [];
         Object.entries(fileSystem).forEach(([path, f]) => {
-          f.content.split('\n').forEach((line, i) => {
+          (f.content ?? '').split('\n').forEach((line, i) => {
             if (line.toLowerCase().includes(pattern.toLowerCase())) {
               results.push({ file: path, line: i + 1, text: line.trim() });
             }
@@ -158,7 +158,7 @@ function createAgentTools(fileSystem, activeFile) {
       execute: (path) => {
         const f = fileSystem[path || activeFile];
         if (!f) return { ok: false, error: 'File not found' };
-        const lines = f.content.split('\n');
+        const lines = (f.content ?? '').split('\n');
         const issues = [];
         const lang = f.language || 'text';
 
@@ -220,7 +220,7 @@ function createAgentTools(fileSystem, activeFile) {
         });
 
         // ── Stack trace / error paste detector ────────────────────
-        const content = f.content;
+        const content = f.content ?? '';
         const stackPatterns = [
           { re: /TypeError:\s.+/, label: 'TypeError' },
           { re: /ReferenceError:\s.+/, label: 'ReferenceError' },
@@ -259,7 +259,7 @@ function createAgentTools(fileSystem, activeFile) {
         activeFile,
         totalFiles: Object.keys(fileSystem).length,
         files: Object.entries(fileSystem).map(([p, f]) => ({
-          path: p, language: f.language, lines: f.content.split('\n').length,
+          path: p, language: f.language, lines: (f.content ?? '').split('\n').length,
         })),
       }),
     },
@@ -1028,7 +1028,8 @@ function EpiCodeSpaceApp() {
       case 'readFile': {
         const f = currentFS[args.path];
         if (!f) return { ok: false, error: `File not found: ${args.path}` };
-        return { ok: true, path: args.path, content: f.content, language: f.language, lines: f.content.split('\n').length };
+        const safeContent = f.content ?? '';
+        return { ok: true, path: args.path, content: safeContent, language: f.language, lines: safeContent.split('\n').length };
       }
       case 'writeFile': {
         const lang = args.path.endsWith('.jsx') || args.path.endsWith('.js') ? 'javascript'
@@ -1037,13 +1038,15 @@ function EpiCodeSpaceApp() {
           : args.path.endsWith('.json') ? 'json'
           : args.path.endsWith('.md') ? 'markdown'
           : args.path.endsWith('.html') ? 'html' : 'text';
-        return { ok: true, action: 'write', path: args.path, language: lang, content: args.content, lines: args.content.split('\n').length };
+        const safeContent = args.content ?? '';
+        return { ok: true, action: 'write', path: args.path, language: lang, content: safeContent, lines: safeContent.split('\n').length };
       }
       case 'editFile': {
         const f = currentFS[args.path];
         if (!f) return { ok: false, error: `File not found: ${args.path}` };
-        if (!f.content.includes(args.oldText)) return { ok: false, error: `Text not found in ${args.path}` };
-        const newContent = f.content.replace(args.oldText, args.newText);
+        const existingContent = f.content ?? '';
+        if (!existingContent.includes(args.oldText ?? '')) return { ok: false, error: `Text not found in ${args.path}` };
+        const newContent = existingContent.replace(args.oldText ?? '', args.newText ?? '');
         return { ok: true, action: 'edit', path: args.path, content: newContent, lines: newContent.split('\n').length };
       }
       case 'deleteFile': {
@@ -1051,12 +1054,12 @@ function EpiCodeSpaceApp() {
         return { ok: true, action: 'delete', path: args.path };
       }
       case 'listFiles':
-        return { ok: true, files: Object.entries(currentFS).map(([p, f]) => ({ path: p, language: f.language, lines: f.content.split('\n').length })) };
+        return { ok: true, files: Object.entries(currentFS).map(([p, f]) => ({ path: p, language: f.language, lines: (f.content ?? '').split('\n').length })) };
       case 'searchCode': {
         const results = [];
         const pat = args.pattern?.toLowerCase() || '';
         Object.entries(currentFS).forEach(([p, f]) => {
-          f.content.split('\n').forEach((line, i) => {
+          (f.content ?? '').split('\n').forEach((line, i) => {
             if (line.toLowerCase().includes(pat)) results.push({ file: p, line: i + 1, text: line.trim().slice(0, 120) });
           });
         });
@@ -1094,7 +1097,9 @@ function EpiCodeSpaceApp() {
       const r = results[i]?.result;
       if (!r?.ok) return;
       if (tc.name === 'writeFile') {
-        newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: tc.arguments.content };
+        // Guard: some models omit `content` in tool arguments; default to '' to
+        // prevent downstream f.content.split crashes on the next tool round.
+        newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: tc.arguments.content ?? '' };
         changed = true;
       } else if (tc.name === 'editFile' && r.content) {
         newFS[tc.arguments.path] = { ...newFS[tc.arguments.path], content: r.content };
