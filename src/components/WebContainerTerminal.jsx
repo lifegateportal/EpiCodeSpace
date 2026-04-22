@@ -180,7 +180,22 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
 
       // WC → xterm
       proc.output.pipeTo(new WritableStream({
-        write(chunk) { term.write(chunk); },
+        write(chunk) {
+          term.write(chunk);
+          // Detect Node.js v22 WASM crash on Safari's Wasm engine.
+          // This is intermittent — retrying (Reboot) usually succeeds.
+          if (
+            typeof chunk === 'string' &&
+            (chunk.includes('Out of bounds memory access') || chunk.includes('RuntimeError'))
+          ) {
+            term.writeln(
+              '\r\n\x1b[33m⚠ Node.js WASM crash detected (intermittent on Safari)\x1b[0m'
+            );
+            term.writeln(
+              '\x1b[90m# Press Reboot ↺ to retry — it usually works on the second attempt.\x1b[0m'
+            );
+          }
+        },
       })).catch((err) => logger.warn('terminal', 'output pipe closed', err));
 
       // xterm → WC
