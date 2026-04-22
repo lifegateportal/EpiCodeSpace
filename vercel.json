@@ -14,7 +14,7 @@
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
         { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" },
         { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" },
         { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://stackblitz.com https://*.stackblitz.io https://*.webcontainer.io https: blob:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://stackblitz.com https://*.stackblitz.io https://*.webcontainer.io wss://*.webcontainer.io https: wss:; img-src 'self' data: blob: https:; font-src 'self' data: https:; worker-src 'self' blob:; frame-src 'self' blob: data: https://stackblitz.com https://*.stackblitz.io https://*.webcontainer.io; child-src 'self' blob: https://stackblitz.com https://*.stackblitz.io https://*.webcontainer.io;" }
       ]
@@ -23,7 +23,7 @@
       "source": "/api/(.*)",
       "headers": [
         { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" },
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }
       ]
     }
   ]

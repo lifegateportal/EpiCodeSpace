@@ -122,6 +122,10 @@ class TsLspBridge {
             '--prefer-offline',
             '--progress=false',
             '--loglevel=error',
+            '--fetch-retries=10',
+            '--fetch-retry-mintimeout=20000',
+            '--fetch-retry-maxtimeout=120000',
+            '--fetch-timeout=300000',
             'typescript@latest',
             'typescript-language-server@latest',
           ]);

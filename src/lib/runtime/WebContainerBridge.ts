@@ -93,7 +93,7 @@ class Bridge {
     this.bootPromise = (async () => {
       try {
         const bootOpts: Parameters<typeof WebContainer.boot>[0] = {
-          coep: 'require-corp',
+          coep: 'credentialless',
           workdirName: 'epicodespace',
         };
 
