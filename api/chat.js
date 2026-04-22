@@ -17,12 +17,13 @@ const PROVIDER_CONFIG = {
   claude: {
     url: 'https://api.anthropic.com/v1/messages',
     envKey: 'ANTHROPIC_API_KEY',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5-20250929',
     transform: 'anthropic',
   },
   gemini: {
-    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent',
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
     envKey: 'GOOGLE_AI_API_KEY',
+    model: 'gemini-2.5-pro',
     transform: 'gemini',
   },
   deepseek: {
@@ -146,12 +147,15 @@ async function callAnthropic(config, apiKey, systemPrompt, messages, useTools) {
 async function callGemini(config, apiKey, systemPrompt, messages, useTools) {
   const url = `${config.url}?key=${apiKey}`;
   const contents = [];
-  if (systemPrompt) { contents.push({ role: 'user', parts: [{ text: systemPrompt }] }); contents.push({ role: 'model', parts: [{ text: 'Ready.' }] }); }
   for (const m of messages) {
     if (m._geminiParts) { contents.push({ role: m._geminiRole, parts: m._geminiParts }); }
     else { contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }); }
   }
-  const body = { contents, generationConfig: { maxOutputTokens: 4096, temperature: 0.7 } };
+  const body = {
+    contents,
+    systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] },
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
+  };
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
 
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
