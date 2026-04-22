@@ -17,6 +17,7 @@ import CodeBlock from './components/CodeBlock.jsx';
 // Amendment #4 — Performance: lazy-load heavy panels only when needed.
 const MarkdownContent = lazy(() => import('./components/MarkdownContent.jsx'));
 const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
+const WebContainerTerminal = lazy(() => import('./components/WebContainerTerminal.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
 import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
@@ -405,6 +406,7 @@ function EpiCodeSpaceApp() {
     patchFile,
     renameFile: hookRenameFile,
     deleteFile: hookDeleteFile,
+    onMutation,
   } = useFileSystem();
   const [projectName, setProjectName] = useState(() => loadJSON('epicodespace_project_v1', 'My Project'));
   const firstFile = Object.keys(fileSystem)[0] || null;
@@ -468,6 +470,8 @@ function EpiCodeSpaceApp() {
   const [activeMenu, setActiveMenu] = useState(null);
   const [showAbout, setShowAbout] = useState(false);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
+  const [wcServerUrl, setWcServerUrl] = useState('');
+  const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const chatEndRef = useRef(null);
@@ -488,6 +492,23 @@ function EpiCodeSpaceApp() {
   }, []);
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
+
+  // ── WebContainer outbound sync: mirror file edits into the live container.
+  useEffect(() => {
+    if (!onMutation) return;
+    let cancelled = false;
+    let unsub = null;
+    (async () => {
+      try {
+        const mod = await import('./lib/runtime/syncOutbound.ts');
+        if (cancelled) return;
+        unsub = onMutation(mod.applyMutation);
+      } catch (err) {
+        logger.warn('runtime', 'outbound sync not loaded', err);
+      }
+    })();
+    return () => { cancelled = true; unsub?.(); };
+  }, [onMutation]);
 
   // ── Persistence is now owned by useFileSystem (localStorage debounced in
   //    memory mode, per-path diff sync in OPFS mode). Keep tabs / active file
@@ -1803,6 +1824,7 @@ function EpiCodeSpaceApp() {
                   { id: 'problems', label: 'PROBLEMS', badge: allProblems.length > 0 ? allProblems.length : null },
                   { id: 'output', label: 'OUTPUT' },
                   { id: 'terminal', label: 'TERMINAL' },
+                  { id: 'runtime', label: 'RUNTIME' },
                   { id: 'preview', label: 'PREVIEW' },
                   { id: 'debug', label: 'DEBUG CONSOLE' },
                   { id: 'ports', label: 'PORTS', badge: ports.filter(p => p.state === 'running').length || null },
@@ -1816,7 +1838,7 @@ function EpiCodeSpaceApp() {
                     tabIndex={activeTerminalTab === tab.id ? 0 : -1}
                     onClick={() => setActiveTerminalTab(tab.id)}
                     onKeyDown={(e) => {
-                      const ids = ['problems','output','terminal','preview','debug','ports'];
+                      const ids = ['problems','output','terminal','runtime','preview','debug','ports'];
                       const cur = ids.indexOf(activeTerminalTab);
                       if (e.key === 'ArrowRight') { e.preventDefault(); setActiveTerminalTab(ids[(cur + 1) % ids.length]); }
                       else if (e.key === 'ArrowLeft') { e.preventDefault(); setActiveTerminalTab(ids[(cur - 1 + ids.length) % ids.length]); }
@@ -1897,6 +1919,18 @@ function EpiCodeSpaceApp() {
                   ) : outputLog.map((line, i) => (
                     <div key={i} className={`leading-relaxed ${line.startsWith('✓') ? 'text-green-400' : line.startsWith('Error') ? 'text-red-400' : line.startsWith('dist/') ? 'text-cyan-300' : 'text-purple-300'}`}>{line || '\u00a0'}</div>
                   ))}
+                </div>
+              )}
+
+              {activeTerminalTab === 'runtime' && (
+                <div className="flex-1 min-h-0">
+                  <Suspense fallback={<div className="p-3 text-xs text-purple-400/60">Loading runtime…</div>}>
+                    <WebContainerTerminal
+                      files={fileSystem}
+                      sink={{ writeFile, getLatest: () => fileSystem }}
+                      onServerUrl={(url) => setPreviewUrl(url)}
+                    />
+                  </Suspense>
                 </div>
               )}
 

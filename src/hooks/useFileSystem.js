@@ -309,7 +309,23 @@ export function useFileSystem() {
 
   // ── Public actions ────────────────────────────────────────────────────
 
-  const replaceAll = useCallback((files) => dispatch({ type: 'set', files: files || {} }), []);
+  // Mutation subscribers (e.g. WebContainer outbound sync). Subscribers are
+  // invoked synchronously after each dispatch. Keep them fast and pure.
+  const mutationSubsRef = useRef(new Set());
+  const emit = useCallback((ev) => {
+    for (const cb of mutationSubsRef.current) {
+      try { cb(ev); } catch (err) { logger.error('useFileSystem', 'mutation subscriber threw', { err }); }
+    }
+  }, []);
+  const onMutation = useCallback((cb) => {
+    mutationSubsRef.current.add(cb);
+    return () => { mutationSubsRef.current.delete(cb); };
+  }, []);
+
+  const replaceAll = useCallback((files) => {
+    dispatch({ type: 'set', files: files || {} });
+    emit({ type: 'replaceAll', files: files || {} });
+  }, [emit]);
   const writeFile = useCallback((path, content = '', language) => {
     const size = typeof content === 'string' ? content.length : 0;
     const isLarge = size > MAX_INLINE_READ_BYTES;
@@ -323,11 +339,27 @@ export function useFileSystem() {
       );
     }
     dispatch({ type: 'write', path, content, language, size, isLarge });
-  }, []);
-  const patchFile = useCallback((path, content) => dispatch({ type: 'patch', path, content }), []);
-  const renameFile = useCallback((oldPath, newPath) => dispatch({ type: 'rename', oldPath, newPath }), []);
-  const deleteFile = useCallback((path) => dispatch({ type: 'delete', path }), []);
-  const deletePrefix = useCallback((prefix) => dispatch({ type: 'deletePrefix', prefix }), []);
+    emit({ type: 'write', path, content: content ?? '', isLarge });
+  }, [emit]);
+  const patchFile = useCallback((path, content) => {
+    dispatch({ type: 'patch', path, content });
+    emit({ type: 'patch', path, content: content ?? '' });
+  }, [emit]);
+  const renameFile = useCallback((oldPath, newPath) => {
+    const prev = fsRef.current[oldPath];
+    dispatch({ type: 'rename', oldPath, newPath });
+    emit({ type: 'rename', oldPath, newPath, content: prev?.content });
+  }, [emit]);
+  const deleteFile = useCallback((path) => {
+    dispatch({ type: 'delete', path });
+    emit({ type: 'delete', path });
+  }, [emit]);
+  const deletePrefix = useCallback((prefix) => {
+    const snap = fsRef.current;
+    const victims = Object.keys(snap).filter((p) => p === prefix || p.startsWith(prefix + '/'));
+    dispatch({ type: 'deletePrefix', prefix });
+    for (const p of victims) emit({ type: 'delete', path: p });
+  }, [emit]);
 
   // ── Large-file escape hatch ──────────────────────────────────────────
   // The UI uses this to render previews for files > 2 MB without ever
@@ -362,6 +394,9 @@ export function useFileSystem() {
     deleteFile,
     deletePrefix,
     dispatch,
+
+    // Subscription seam for WebContainer outbound sync.
+    onMutation,
   };
 }
 
