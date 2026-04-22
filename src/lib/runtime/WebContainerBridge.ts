@@ -121,7 +121,9 @@ class Bridge {
         // network / SAB failure with no way to recover besides reload.
         this.container = null;
         this.setState('idle');
-        logger.error('runtime', 'boot failed', err);
+        const msg = (err instanceof Error) ? err.message : String(err);
+        const stack = (err instanceof Error) ? err.stack : undefined;
+        logger.error('runtime', `boot failed: ${msg}`, { message: msg, stack, raw: String(err) });
         throw err;
       } finally {
         this.bootPromise = null;

@@ -13,8 +13,22 @@ const isDev = (() => {
   catch { return false; }
 })();
 
+function serializeData(data) {
+  if (data === undefined) return undefined;
+  if (data instanceof Error) return { message: data.message, name: data.name, stack: data.stack };
+  if (typeof data === 'object' && data !== null) {
+    // Shallow-clone so Error objects nested inside plain objects are also captured.
+    const out = {};
+    for (const k of Object.keys(data)) {
+      out[k] = data[k] instanceof Error ? { message: data[k].message, name: data[k].name } : data[k];
+    }
+    return out;
+  }
+  return data;
+}
+
 function emit(level, scope, message, data) {
-  const entry = { level, scope, message, data, ts: Date.now() };
+  const entry = { level, scope, message, data: serializeData(data), ts: Date.now() };
   buffer.push(entry);
   if (buffer.length > BUFFER_SIZE) buffer.shift();
   subscribers.forEach(fn => { try { fn(entry); } catch { /* ignore subscriber errors */ } });
