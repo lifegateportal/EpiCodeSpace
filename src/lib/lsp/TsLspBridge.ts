@@ -34,6 +34,8 @@ export type LspState =
 
 type Listener<T> = (v: T) => void;
 
+const INSTALL_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
 class TsLspBridge {
   private _state: LspState = 'idle';
   private _lastError: string | null = null;
@@ -41,6 +43,7 @@ class TsLspBridge {
   private proc: Awaited<ReturnType<Awaited<ReturnType<typeof wcBridge.boot>>['spawn']>> | null = null;
   private stateListeners = new Set<Listener<LspState>>();
   private diagnosticListeners = new Set<Listener<lsp.PublishDiagnosticsParams>>();
+  private logListeners = new Set<Listener<string>>();
   private startPromise: Promise<void> | null = null;
   private capabilities: lsp.ServerCapabilities | null = null;
 
@@ -58,6 +61,18 @@ class TsLspBridge {
   onDiagnostics(cb: Listener<lsp.PublishDiagnosticsParams>): () => void {
     this.diagnosticListeners.add(cb);
     return () => { this.diagnosticListeners.delete(cb); };
+  }
+
+  /** Subscribe to install/startup log lines so the terminal can mirror them. */
+  onLog(cb: Listener<string>): () => void {
+    this.logListeners.add(cb);
+    return () => { this.logListeners.delete(cb); };
+  }
+
+  private emitLog(line: string) {
+    for (const l of this.logListeners) {
+      try { l(line); } catch { /* noop */ }
+    }
   }
 
   private setState(s: LspState, err?: string) {
@@ -86,25 +101,75 @@ class TsLspBridge {
       }
       const container = wcBridge.getContainer();
 
-      // 1. Install (if not already present). Run silently — log only on error.
-      this.setState('installing');
+      // 1. Skip install if server binary already exists from a prior run.
+      let alreadyInstalled = false;
       try {
-        const install = await container.spawn('npm', [
-          'install',
-          '--no-audit',
-          '--no-fund',
-          '--silent',
-          'typescript@latest',
-          'typescript-language-server@latest',
-        ]);
-        const code = await install.exit;
-        if (code !== 0) {
-          this.setState('error', `npm install exited ${code}`);
+        const stat = await container.fs.readFile(
+          'node_modules/.bin/typescript-language-server',
+          'utf-8',
+        );
+        if (stat) alreadyInstalled = true;
+      } catch { /* not installed yet — fall through */ }
+
+      if (!alreadyInstalled) {
+        this.setState('installing');
+        this.emitLog('▶ Installing typescript + typescript-language-server (first-time, may take ~60s)…');
+        try {
+          const install = await container.spawn('npm', [
+            'install',
+            '--no-audit',
+            '--no-fund',
+            '--prefer-offline',
+            '--progress=false',
+            '--loglevel=error',
+            'typescript@latest',
+            'typescript-language-server@latest',
+          ]);
+
+          // CRITICAL: we MUST consume proc.output or WebContainer's internal
+          // buffers stall and the process appears to hang forever. Stream
+          // every line to log subscribers so the terminal can mirror it.
+          let lineBuf = '';
+          const pump = install.output.pipeTo(new WritableStream({
+            write: (chunk) => {
+              lineBuf += chunk;
+              let nl;
+              while ((nl = lineBuf.indexOf('\n')) >= 0) {
+                const line = lineBuf.slice(0, nl).replace(/\r$/, '');
+                lineBuf = lineBuf.slice(nl + 1);
+                if (line.trim()) this.emitLog(line);
+              }
+            },
+          })).catch(() => { /* swallow */ });
+
+          // Timeout guard: kill the install if it exceeds the budget.
+          let timedOut = false;
+          const timeout = new Promise<number>((resolve) => {
+            setTimeout(() => {
+              timedOut = true;
+              try { install.kill(); } catch { /* noop */ }
+              resolve(-1);
+            }, INSTALL_TIMEOUT_MS);
+          });
+
+          const code = await Promise.race([install.exit, timeout]);
+          try { await pump; } catch { /* noop */ }
+
+          if (timedOut) {
+            this.setState('error', `npm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s`);
+            return;
+          }
+          if (code !== 0) {
+            this.setState('error', `npm install exited ${code}`);
+            return;
+          }
+          this.emitLog('▶ install complete.');
+        } catch (err: any) {
+          this.setState('error', `install failed: ${err?.message || err}`);
           return;
         }
-      } catch (err: any) {
-        this.setState('error', `install failed: ${err?.message || err}`);
-        return;
+      } else {
+        this.emitLog('▶ typescript-language-server already installed, skipping npm install.');
       }
 
       // 2. Spawn the server.

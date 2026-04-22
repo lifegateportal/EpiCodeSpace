@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { RefreshCw, Square, Power, Loader2 } from 'lucide-react';
 import { bridge } from '../lib/runtime/WebContainerBridge.ts';
 import { autoPullRootNewFiles } from '../lib/runtime/syncInbound.ts';
+import { lspBridge } from '../lib/lsp/TsLspBridge.ts';
 import { logger } from '../lib/logger.js';
 
 /**
@@ -81,9 +82,23 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     const ro = new ResizeObserver(onResize);
     ro.observe(hostRef.current);
 
+    // When the panel becomes visible again after being hidden (tab
+    // switch), xterm's internal dimensions go stale. An IntersectionObserver
+    // catches the transition from display:none → visible and refits.
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          try { fit.fit(); } catch {}
+          try { term.refresh(0, term.rows - 1); } catch {}
+        }
+      }
+    });
+    io.observe(hostRef.current);
+
     return () => {
       window.removeEventListener('resize', onResize);
       ro.disconnect();
+      io.disconnect();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -96,6 +111,12 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     onServerUrl?.(url);
     termRef.current?.writeln(`\x1b[36m▶ server-ready: ${url}\x1b[0m`);
   }), [onServerUrl]);
+
+  // Mirror LSP install/startup progress into the terminal so the user
+  // can actually see what's happening during the slow first install.
+  useEffect(() => lspBridge.onLog((line) => {
+    termRef.current?.writeln(`\x1b[35m[lsp]\x1b[0m ${line}`);
+  }), []);
 
   // ── Start a shell after boot ──────────────────────────────────────────
   const startShell = useCallback(async () => {

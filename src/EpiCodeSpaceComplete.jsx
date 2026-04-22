@@ -1936,17 +1936,21 @@ function EpiCodeSpaceApp() {
                 </div>
               )}
 
-              {activeTerminalTab === 'runtime' && (
-                <div className="flex-1 min-h-0">
-                  <Suspense fallback={<div className="p-3 text-xs text-purple-400/60">Loading runtime…</div>}>
-                    <WebContainerTerminal
-                      files={fileSystem}
-                      sink={{ writeFile, getLatest: () => fileSystem }}
-                      onServerUrl={(url) => setPreviewUrl(url)}
-                    />
-                  </Suspense>
-                </div>
-              )}
+              {/* Runtime stays mounted across tab switches so xterm,
+                  the WebContainer process, and LSP connection survive.
+                  Hidden via CSS when another tab is active. */}
+              <div
+                className={`flex-1 min-h-0 ${activeTerminalTab === 'runtime' ? 'flex flex-col' : 'hidden'}`}
+                aria-hidden={activeTerminalTab !== 'runtime'}
+              >
+                <Suspense fallback={<div className="p-3 text-xs text-purple-400/60">Loading runtime…</div>}>
+                  <WebContainerTerminal
+                    files={fileSystem}
+                    sink={{ writeFile, getLatest: () => fileSystem }}
+                    onServerUrl={(url) => setPreviewUrl(url)}
+                  />
+                </Suspense>
+              </div>
 
               {activeTerminalTab === 'debug' && (
                 <div className="flex-1 flex flex-col overflow-hidden">
