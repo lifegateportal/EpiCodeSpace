@@ -1088,9 +1088,15 @@ function EpiCodeSpaceApp() {
               steps: allSteps,
               mode: chatMode,
               timestamp: Date.now(),
+              usage: data.usage,          // surface cache-hit telemetry
+              truncated: data._truncated, // set by the API on context-length fallback
             };
-            setMessages(prev => [...prev, assistantMsg]);
-            setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
+            // Functional update + filter stale _progress stubs from the
+            // previous tool round so history never gets corrupted.
+            setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+            setConversations(prev => prev.map(c => c.id === activeConvoId
+              ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
+              : c));
             return;
           }
 

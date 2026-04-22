@@ -46,8 +46,18 @@ export default defineConfig({
     exclude: ['@webcontainer/api'],
   },
   server: {
+    // Bind to all interfaces so Codespaces / Docker / LAN can forward the port.
+    // Without this `vite` only listens on 127.0.0.1 and the preview URL 404s.
+    host: true,
+    port: 5173,
+    strictPort: false,
     proxy: {
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
     },
+  },
+  preview: {
+    host: true,
+    port: 4173,
+    strictPort: false,
   },
 });

@@ -119,6 +119,14 @@ function buildContextMessage(context) {
 }
 
 // ── OpenAI / DeepSeek ──────────────────────────────────────────────────────
+// OpenAI & DeepSeek implement **automatic prefix caching** — any request
+// whose first N tokens exactly match a recent request is billed at a
+// discount (50% for OpenAI, up to 90% for DeepSeek). We therefore:
+//   • Always place the (stable) system prompt first.
+//   • Keep historical messages in insertion order (never re-sort).
+//   • Keep the "latest user query" as the final message — changing the
+//     tail does NOT invalidate the cached prefix.
+// No explicit cache_control field is required for these providers.
 async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
   // Reasoning-family models (o-series, gpt-5*) don't accept temperature and
   // use max_completion_tokens instead of max_tokens.
@@ -133,7 +141,7 @@ async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
   if (useTools) { body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })); body.tool_choice = 'auto'; }
 
   const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
-  if (!res.ok) { const err = await res.text(); throw new Error(`${config.model} error ${res.status}: ${err}`); }
+  if (!res.ok) { const err = await res.text(); const e = new Error(`${config.model} error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data = await res.json();
   const choice = data.choices?.[0];
   if (choice?.message?.tool_calls?.length) {
@@ -141,25 +149,82 @@ async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
       let args = {};
       try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
       return { id: tc.id, name: tc.function.name, arguments: args };
-    }), content: choice.message.content || null };
+    }), content: choice.message.content || null, usage: data.usage };
   }
-  return { type: 'text', content: choice?.message?.content || 'No response.' };
+  return { type: 'text', content: choice?.message?.content || 'No response.', usage: data.usage };
 }
 
 // ── Anthropic ──────────────────────────────────────────────────────────────
+// Anthropic requires **explicit** cache breakpoints via `cache_control:
+// { type: 'ephemeral' }`. A breakpoint marks "cache everything up to and
+// including this block"; the cache lives ~5 min and cuts input cost ~90%
+// on hits. Max 4 breakpoints per request. We place them on:
+//   1. The system prompt  (stable across every turn)
+//   2. The tool definitions  (stable across every turn)
+//   3. The LAST historical message  (stable until the next turn)
+// The "latest user query" is left uncached — it changes every turn.
 async function callAnthropic(config, apiKey, systemPrompt, messages, useTools) {
-  const body = { model: config.model, max_tokens: 4096, system: systemPrompt, messages };
-  if (useTools) { body.tools = WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })); }
+  // System prompt → array form so we can attach cache_control.
+  const system = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ];
 
-  const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }, body: JSON.stringify(body) });
-  if (!res.ok) { const err = await res.text(); throw new Error(`Claude error ${res.status}: ${err}`); }
+  // Split history vs. latest query. The "latest query" is the final
+  // user-role message; everything before it is cacheable history.
+  const cachedMessages = messages.map(m => ({ ...m }));
+  const lastUserIdx = findLastIndex(cachedMessages, m => m.role === 'user');
+  // Cache breakpoint = the message immediately BEFORE the latest user
+  // query (i.e. end of the static block). If the last message is the only
+  // user message, skip the history breakpoint.
+  const breakpointIdx = lastUserIdx > 0 ? lastUserIdx - 1 : -1;
+  if (breakpointIdx >= 0) {
+    const target = cachedMessages[breakpointIdx];
+    // Anthropic only allows cache_control on content blocks, not raw
+    // strings → promote string content to a single text block.
+    if (typeof target.content === 'string') {
+      target.content = [{ type: 'text', text: target.content, cache_control: { type: 'ephemeral' } }];
+    } else if (Array.isArray(target.content) && target.content.length) {
+      const last = target.content[target.content.length - 1];
+      target.content[target.content.length - 1] = { ...last, cache_control: { type: 'ephemeral' } };
+    }
+  }
+
+  const body = { model: config.model, max_tokens: 4096, system, messages: cachedMessages };
+  if (useTools) {
+    const tools = WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    // Cache the tool definitions too — they never change.
+    if (tools.length) tools[tools.length - 1].cache_control = { type: 'ephemeral' };
+    body.tools = tools;
+  }
+
+  const res = await fetch(config.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      // Older SDKs required this beta header; the feature is GA now but
+      // sending it is harmless and keeps older model snapshots working.
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { const err = await res.text(); const e = new Error(`Claude error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data = await res.json();
   const toolBlocks = data.content?.filter(b => b.type === 'tool_use') || [];
   const textBlocks = data.content?.filter(b => b.type === 'text') || [];
+  // usage.cache_creation_input_tokens / cache_read_input_tokens let the
+  // client surface cache-hit telemetry.
   if (toolBlocks.length > 0) {
-    return { type: 'tool_calls', tool_calls: toolBlocks.map(b => ({ id: b.id, name: b.name, arguments: b.input })), content: textBlocks.map(b => b.text).join('\n') || null };
+    return { type: 'tool_calls', tool_calls: toolBlocks.map(b => ({ id: b.id, name: b.name, arguments: b.input })), content: textBlocks.map(b => b.text).join('\n') || null, usage: data.usage };
   }
-  return { type: 'text', content: textBlocks.map(b => b.text).join('\n') || 'No response.' };
+  return { type: 'text', content: textBlocks.map(b => b.text).join('\n') || 'No response.', usage: data.usage };
+}
+
+// Node 16-compatible findLastIndex (Array.prototype.findLastIndex is Node 18+).
+function findLastIndex(arr, pred) {
+  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
+  return -1;
 }
 
 // ── Gemini ──────────────────────────────────────────────────────────────────
@@ -178,24 +243,56 @@ async function callGemini(config, apiKey, systemPrompt, messages, useTools) {
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
 
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { const err = await res.text(); throw new Error(`Gemini error ${res.status}: ${err}`); }
+  if (!res.ok) { const err = await res.text(); const e = new Error(`Gemini error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data = await res.json();
   const parts = data.candidates?.[0]?.content?.parts || [];
   const funcCalls = parts.filter(p => p.functionCall);
   const textParts = parts.filter(p => p.text);
   if (funcCalls.length > 0) {
-    return { type: 'tool_calls', tool_calls: funcCalls.map((p, i) => ({ id: `gem_${i}_${Date.now()}`, name: p.functionCall.name, arguments: p.functionCall.args || {} })), content: textParts.map(p => p.text).join('\n') || null };
+    return { type: 'tool_calls', tool_calls: funcCalls.map((p, i) => ({ id: `gem_${i}_${Date.now()}`, name: p.functionCall.name, arguments: p.functionCall.args || {} })), content: textParts.map(p => p.text).join('\n') || null, usage: data.usageMetadata };
   }
-  return { type: 'text', content: textParts.map(p => p.text).join('\n') || 'No response.' };
+  return { type: 'text', content: textParts.map(p => p.text).join('\n') || 'No response.', usage: data.usageMetadata };
 }
 
-// ── Unified caller ─────────────────────────────────────────────────────────
+// ── Unified caller with context-length fallback ────────────────────────────
+// Heuristic: if the upstream returns a 4xx whose body mentions tokens/
+// context/length, we aggressively trim the middle of history (keep the
+// system prompt + the first exchange + the most recent 6 turns) and retry
+// once. This also covers the case where a cached prefix was invalidated
+// by an over-long tail.
+function isContextLengthError(err) {
+  if (!err) return false;
+  const s = `${err.status || ''} ${err.message || ''} ${err.body || ''}`.toLowerCase();
+  if (err.status && err.status !== 400 && err.status !== 413 && err.status !== 422) return false;
+  return /context|token|length|too long|maximum|exceed/.test(s);
+}
+
+function truncateMessages(messages, keepHead = 2, keepTail = 6) {
+  if (messages.length <= keepHead + keepTail) return messages;
+  const head = messages.slice(0, keepHead);
+  const tail = messages.slice(-keepTail);
+  const marker = { role: 'user', content: '[... earlier conversation truncated to fit context window ...]' };
+  return [...head, marker, ...tail];
+}
+
 async function callProvider(config, apiKey, systemPrompt, messages, useTools) {
-  switch (config.transform) {
-    case 'openai': return callOpenAI(config, apiKey, systemPrompt, messages, useTools);
-    case 'anthropic': return callAnthropic(config, apiKey, systemPrompt, messages, useTools);
-    case 'gemini': return callGemini(config, apiKey, systemPrompt, messages, useTools);
-    default: throw new Error(`Unknown transform: ${config.transform}`);
+  const dispatch = (msgs) => {
+    switch (config.transform) {
+      case 'openai':    return callOpenAI(config, apiKey, systemPrompt, msgs, useTools);
+      case 'anthropic': return callAnthropic(config, apiKey, systemPrompt, msgs, useTools);
+      case 'gemini':    return callGemini(config, apiKey, systemPrompt, msgs, useTools);
+      default: throw new Error(`Unknown transform: ${config.transform}`);
+    }
+  };
+  try {
+    return await dispatch(messages);
+  } catch (err) {
+    if (!isContextLengthError(err)) throw err;
+    // Retry once with a trimmed history. Cache will miss on this retry
+    // (prefix changed) but that's far better than failing the request.
+    const trimmed = truncateMessages(messages);
+    const result = await dispatch(trimmed);
+    return { ...result, _truncated: true };
   }
 }
 
@@ -302,10 +399,32 @@ export default async function handler(req, res) {
 
     const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
-    const systemPrompt = buildSystemPrompt(agent, context) + modeInstr + contextStr;
+    // Stable prefix for prompt caching: persona/rules/mode do NOT change
+    // mid-conversation, so keep them in the system prompt. Workspace
+    // context (active file contents) is volatile, so append it LAST —
+    // after history — only when needed. That keeps the cacheable prefix
+    // (system + history) identical across turns.
+    const systemPrompt = buildSystemPrompt(agent, context) + modeInstr;
     const useTools = safeMode === 'agent' || safeMode === 'plan';
 
+    // Normalise inbound messages and split history vs. latest query.
+    // Frontend guarantees the last element is the user's newest turn.
     let apiMessages = messages.map(m => ({ role: m.role, content: m.content }));
+
+    // Inject the (volatile) workspace context as a system-style user note
+    // right before the latest user query — so it's NEVER part of the
+    // cached historical block. This is critical: without this split, a
+    // one-character edit to the active file would invalidate every
+    // cached token.
+    if (contextStr) {
+      const lastUserIdx = apiMessages.length - 1;
+      if (lastUserIdx >= 0 && apiMessages[lastUserIdx].role === 'user') {
+        apiMessages[lastUserIdx] = {
+          ...apiMessages[lastUserIdx],
+          content: `${contextStr}\n\n---\n\n${apiMessages[lastUserIdx].content}`,
+        };
+      }
+    }
 
     // Append tool results if this is a continuation
     if (toolResults && pendingToolCalls) {
