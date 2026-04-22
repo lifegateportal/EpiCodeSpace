@@ -14,7 +14,7 @@ export type MutationEvent =
   | { type: 'rename'; oldPath: string; newPath: string; content?: string }
   | { type: 'replaceAll'; files: Record<string, { content?: string; isLarge?: boolean }> };
 
-const DEBOUNCE_MS = 200;
+const DEBOUNCE_MS = 800; // 800ms — prevents every keystroke crossing the worker boundary
 
 type Pending =
   | { kind: 'upsert'; path: string; content: string }
@@ -28,7 +28,7 @@ function schedule() {
   flushTimer = setTimeout(flush, DEBOUNCE_MS);
 }
 
-async function flush() {
+export async function flush() {
   flushTimer = null;
   if (!bridge.ready) {
     queue.clear();
@@ -89,3 +89,7 @@ export function applyMutation(ev: MutationEvent): void {
       break;
   }
 }
+
+// Register flush as a pre-teardown hook so the visibilitychange/pagehide
+// lifecycle drains any pending outbound writes before the container is torn down.
+bridge.registerPreTeardownHook(flush);

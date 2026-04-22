@@ -45,6 +45,7 @@ class Bridge {
   private stateListeners = new Set<Listener<BootState>>();
   private serverListeners = new Set<Listener<ServerReady>>();
   private bootPromise: Promise<WebContainer> | null = null;
+  private preTeardownHooks = new Set<() => Promise<void>>();
 
   get state(): BootState { return this._state; }
 
@@ -67,6 +68,15 @@ class Bridge {
   onServerReady(cb: Listener<ServerReady>): () => void {
     this.serverListeners.add(cb);
     return () => { this.serverListeners.delete(cb); };
+  }
+
+  /**
+   * Register a callback that runs before the container is torn down.
+   * Use this to drain outbound queues, flush state, etc.
+   * Safe to call before boot — hooks persist across reboots.
+   */
+  registerPreTeardownHook(fn: () => Promise<void>): void {
+    this.preTeardownHooks.add(fn);
   }
 
   private setState(s: BootState) {
@@ -135,6 +145,10 @@ class Bridge {
 
   /** Tear down container and free memory. Safe to call from any state. */
   async teardown(): Promise<void> {
+    // Drain outbound queues (e.g. OPFS→WC writes) before releasing the container.
+    for (const hook of this.preTeardownHooks) {
+      try { await hook(); } catch (err) { logger.warn('runtime', 'pre-teardown hook threw', err); }
+    }
     const c = this.container;
     this.container = null;
     this.setState('idle');
@@ -221,14 +235,48 @@ export function buildTreeFromFlat(
     };
   }
 
+  // Seed a lean tsconfig.json. Strictly excludes node_modules and enables
+  // skipLibCheck to keep typescript-language-server memory usage minimal on
+  // constrained devices (iPadOS). Won't override a user-supplied tsconfig.
+  if (!root['tsconfig.json']) {
+    root['tsconfig.json'] = {
+      file: {
+        contents: JSON.stringify({
+          compilerOptions: {
+            target: 'ES2020',
+            module: 'ESNext',
+            moduleResolution: 'bundler',
+            strict: false,
+            skipLibCheck: true,
+            noEmit: true,
+            allowJs: true,
+            resolveJsonModule: true,
+          },
+          exclude: ['node_modules'],
+        }, null, 2),
+      },
+    };
+  }
+
   return root;
 }
 
-// Auto-teardown on iPad BFCache to release memory pressure.
+// Aggressive lifecycle management for iPadOS:
+// Tear down the container (flushing pending writes first via pre-teardown
+// hooks) whenever the page goes to the background or enters BFCache.
+// The bridge is left in 'idle' state so callers lazily reboot on return.
 if (typeof window !== 'undefined') {
-  window.addEventListener('pagehide', (e) => {
-    if ((e as PageTransitionEvent).persisted) {
+  // BFCache navigation (back/forward).
+  window.addEventListener('pagehide', () => {
+    void bridge.teardown();
+  });
+
+  // Tab hidden, screen locked, or app backgrounded (key on iPadOS).
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
       void bridge.teardown();
     }
+    // On 'visible' the bridge is in 'idle' — BridgeProvider (or the user
+    // clicking "Boot") drives the lazy reboot, keeping this layer thin.
   });
 }

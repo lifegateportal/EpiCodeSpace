@@ -130,19 +130,33 @@ class TsLspBridge {
 
       if (!alreadyInstalled) {
         this.setState('installing');
-        this.emitLog('▶ Installing typescript + typescript-language-server (first-time, may take ~60s)…');
+        this.emitLog('▶ Installing typescript + typescript-language-server via pnpm (first-time, ~30s)…');
         try {
-          const install = await container.spawn('npm', [
-            'install',
-            '--no-audit',
-            '--no-fund',
+          // Bootstrap pnpm if it is not pre-installed in this WebContainer image.
+          // This is a one-time cost; on subsequent boots the TSserver binary
+          // already exists and the whole install block is skipped.
+          let pnpmReady = false;
+          try {
+            const versionCheck = await container.spawn('pnpm', ['--version']);
+            versionCheck.output.pipeTo(new WritableStream({ write: () => {} })).catch(() => {});
+            pnpmReady = (await versionCheck.exit) === 0;
+          } catch { /* pnpm not on PATH yet */ }
+
+          if (!pnpmReady) {
+            this.emitLog('▶ Bootstrapping pnpm via npm (one-off)…');
+            const npmPnpm = await container.spawn('npm', [
+              'install', '-g', 'pnpm',
+              '--no-audit', '--no-fund', '--loglevel=error',
+            ]);
+            npmPnpm.output.pipeTo(new WritableStream({ write: () => {} })).catch(() => {});
+            await npmPnpm.exit;
+          }
+
+          const install = await container.spawn('pnpm', [
+            'add',
             '--prefer-offline',
-            '--progress=false',
-            '--loglevel=error',
-            '--fetch-retries=10',
-            '--fetch-retry-mintimeout=20000',
-            '--fetch-retry-maxtimeout=120000',
-            '--fetch-timeout=300000',
+            '--reporter=silent',
+            '--ignore-workspace-root-check',
             'typescript@latest',
             'typescript-language-server@latest',
           ]);
@@ -177,29 +191,32 @@ class TsLspBridge {
           try { await pump; } catch { /* noop */ }
 
           if (timedOut) {
-            this.setState('error', `npm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s`);
+            this.setState('error', `pnpm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s`);
             return;
           }
           if (code !== 0) {
-            this.setState('error', `npm install exited ${code}`);
+            this.setState('error', `pnpm install exited ${code}`);
             return;
           }
-          this.emitLog('▶ install complete.');
+          this.emitLog('▶ pnpm install complete.');
         } catch (err: any) {
           this.setState('error', `install failed: ${err?.message || err}`);
           return;
         }
       } else {
-        this.emitLog('▶ typescript-language-server already installed, skipping npm install.');
+        this.emitLog('▶ typescript-language-server already installed, skipping pnpm install.');
       }
 
-      // 2. Spawn the server.
+      // 2. Spawn the server with an explicit memory cap so the tsserver V8
+      //    heap stays under 256 MB — critical on constrained iPadOS processes.
+      //    We invoke node directly (binary known-installed via pnpm) rather
+      //    than going through npx to avoid a redundant resolution step.
       this.setState('starting');
       let proc;
       try {
-        proc = await container.spawn('npx', [
-          '--no-install',
-          'typescript-language-server',
+        proc = await container.spawn('node', [
+          '--max-old-space-size=256',
+          'node_modules/.bin/typescript-language-server',
           '--stdio',
         ]);
       } catch (err: any) {
