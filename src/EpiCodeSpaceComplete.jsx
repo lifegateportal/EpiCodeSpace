@@ -502,8 +502,7 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
   );
 }
 
-/* ─── Main Component ────────────────────────────────────────────────────────── */
-function EpiCodeSpaceApp() {
+/* ─── New Project Dialog ────────────────────────────────────────────────────── */
 const NEW_PROJECT_TEMPLATES = [
   { id: 'react', label: '⚛️ React',        desc: 'Vite + React 18' },
   { id: 'node',  label: '🟢 Node.js',      desc: 'HTTP server' },
