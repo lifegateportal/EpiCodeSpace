@@ -12,6 +12,19 @@ import type { FileSystemTree, DirectoryNode, FileNode } from '@webcontainer/api'
 import { logger } from '../logger.js';
 import { shouldSync, normalize, MAX_MIRROR_BYTES } from './policy.ts';
 
+// configureAPIKey must be called at module-init time, before WebContainer.boot().
+// Non-localhost origins (e.g. *.vercel.app) need a key from https://webcontainers.io/
+// Set VITE_WEBCONTAINER_APIKEY in Vercel → Project Settings → Environment Variables.
+{
+  const apiKey = (import.meta as any).env?.VITE_WEBCONTAINER_APIKEY;
+  if (apiKey) {
+    configureAPIKey(apiKey);
+    logger.info('runtime', 'configureAPIKey called', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' });
+  } else {
+    logger.warn('runtime', 'VITE_WEBCONTAINER_APIKEY not set — boot will fail on non-localhost origins', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' });
+  }
+}
+
 export type BootState = 'idle' | 'booting' | 'ready' | 'dead';
 
 export interface BootOptions {
@@ -79,13 +92,6 @@ class Bridge {
     this.setState('booting');
     this.bootPromise = (async () => {
       try {
-        // Non-localhost origins (e.g. *.vercel.app) need a WebContainers API key.
-        // Get one at https://webcontainers.io/ and set VITE_WEBCONTAINER_APIKEY
-        // in Vercel → Project Settings → Environment Variables.
-        // configureAPIKey() MUST be called before WebContainer.boot().
-        const apiKey = (import.meta as any).env?.VITE_WEBCONTAINER_APIKEY;
-        if (apiKey) configureAPIKey(apiKey);
-
         const bootOpts: Parameters<typeof WebContainer.boot>[0] = {
           coep: 'require-corp',
           workdirName: 'epicodespace',

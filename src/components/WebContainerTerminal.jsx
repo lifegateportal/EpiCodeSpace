@@ -161,9 +161,17 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     try {
       // 30-second watchdog — if boot() never resolves we surface the hang
       // rather than leaving the UI stuck on "booting…" forever.
+      // Common causes of timeout:
+      //   1. Origin not registered at webcontainers.io (check DevTools → Console)
+      //   2. VITE_WEBCONTAINER_APIKEY env var not set or not picked up at build time
+      //   3. COOP/COEP headers missing (check DevTools → Application → Headers)
       const bootPromise = bridge.boot({ files });
       const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('boot timed out after 30s — check browser console for WebContainer errors')), 30000),
+        setTimeout(() => reject(new Error(
+          'boot timed out (30s). Check: 1) DevTools Console for WebContainer errors, ' +
+          '2) VITE_WEBCONTAINER_APIKEY is set in Vercel env vars and a fresh deploy was triggered, ' +
+          '3) your origin is registered at webcontainers.io'
+        )), 30000),
       );
       await Promise.race([bootPromise, timeout]);
       term?.writeln('\x1b[32m✔ container ready\x1b[0m');

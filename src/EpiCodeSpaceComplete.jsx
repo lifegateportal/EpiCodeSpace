@@ -490,6 +490,17 @@ function EpiCodeSpaceApp() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // ── Wire logger → DEBUG CONSOLE panel ────────────────────────────────────
+  useEffect(() => {
+    // Pre-fill with any entries already in the buffer (e.g. from module init).
+    const existing = logger.getBuffer().map(e => ({ type: e.level, text: `[${e.scope}] ${e.message}${e.data !== undefined ? ' ' + JSON.stringify(e.data) : ''}`, ts: e.ts }));
+    if (existing.length) setDebugConsoleLines(prev => [...prev, ...existing]);
+    // Subscribe to live entries.
+    return logger.subscribe((e) => {
+      setDebugConsoleLines(prev => [...prev, { type: e.level, text: `[${e.scope}] ${e.message}${e.data !== undefined ? ' ' + JSON.stringify(e.data) : ''}`, ts: e.ts }]);
+    });
+  }, []);
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
 
