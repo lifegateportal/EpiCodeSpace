@@ -390,7 +390,120 @@ function buildAgentResponse(agentId, query, tools, fileSystem, activeFile) {
   return { steps, toolCalls, response: fallbacks[agentId] || fallbacks['epicode-agent'] };
 }
 
-/* ─── New Project Dialog ────────────────────────────────────────────────────── */
+/* ─── ThinkingBlock — GitHub Copilot-style collapsible reasoning panel ──────── */
+function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode }) {
+  const [open, setOpen] = React.useState(inProgress); // auto-open while running
+
+  // Re-open if we get new steps while running
+  React.useEffect(() => { if (inProgress) setOpen(true); }, [inProgress, steps.length]);
+
+  if (steps.length === 0 && toolCalls.length === 0) return null;
+
+  // Categorise each step string
+  const parsedSteps = steps.map(s => {
+    const isThought  = s.startsWith('💭');
+    const isWarning  = s.startsWith('⚠️');
+    const emoji      = s.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0] ?? '•';
+    const text       = s.replace(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)\s*/u, '').trim();
+    return { emoji, text, isThought, isWarning };
+  });
+
+  const writeCount   = toolCalls.filter(tc => tc.tool === 'writeFile' || tc.tool === 'editFile').length;
+  const readCount    = toolCalls.filter(tc => tc.tool === 'readFile').length;
+  const searchCount  = toolCalls.filter(tc => tc.tool === 'searchCode').length;
+  const cmdCount     = toolCalls.filter(tc => tc.tool === 'runCommand').length;
+
+  const summaryParts = [];
+  if (writeCount)  summaryParts.push(`${writeCount} file${writeCount > 1 ? 's' : ''} written`);
+  if (readCount)   summaryParts.push(`${readCount} read`);
+  if (searchCount) summaryParts.push(`${searchCount} search${searchCount > 1 ? 'es' : ''}`);
+  if (cmdCount)    summaryParts.push(`${cmdCount} command${cmdCount > 1 ? 's' : ''}`);
+  const summary = summaryParts.join(' · ') || `${steps.length} step${steps.length !== 1 ? 's' : ''}`;
+
+  return (
+    <div className="mb-2 rounded-lg border border-fuchsia-500/20 bg-[#0d0520] overflow-hidden">
+      {/* Header — always visible */}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 transition-colors text-left"
+      >
+        {inProgress
+          ? <Loader2 size={12} className="text-fuchsia-400 animate-spin shrink-0" />
+          : <CheckCircle2 size={12} className="text-green-500/70 shrink-0" />}
+        <span className={`text-[11px] font-semibold ${inProgress ? 'text-fuchsia-300' : 'text-purple-300/80'}`}>
+          {inProgress ? 'Thinking…' : 'Thought process'}
+        </span>
+        {!inProgress && (
+          <span className="text-[10px] text-purple-500/50 ml-1">{summary}</span>
+        )}
+        {mode && !inProgress && (
+          <span className="ml-auto text-[9px] bg-fuchsia-500/10 text-fuchsia-400/60 px-1.5 py-0.5 rounded-full border border-fuchsia-500/20 shrink-0">{mode}</span>
+        )}
+        <ChevronRight
+          size={12}
+          className={`ml-auto shrink-0 text-purple-500/40 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+          style={{ marginLeft: mode && !inProgress ? '0.25rem' : 'auto' }}
+        />
+      </button>
+
+      {/* Expandable body */}
+      {open && (
+        <div className="border-t border-fuchsia-500/10 px-3 py-2 space-y-1.5">
+          {parsedSteps.map((s, i) => (
+            <div key={i} className={`flex items-start gap-2 ${s.isThought ? 'py-1.5 px-2 rounded-md bg-purple-500/5 border-l-2 border-fuchsia-500/30' : ''}`}>
+              <span className="text-[12px] shrink-0 mt-0.5">{s.emoji}</span>
+              <span
+                className={`text-[11px] leading-snug ${s.isThought ? 'text-purple-200/80 italic' : s.isWarning ? 'text-amber-400/80' : 'text-purple-400/70'}`}
+                dangerouslySetInnerHTML={{ __html: s.text.replace(/\*\*(.*?)\*\*/g, '<strong class="text-purple-200/90 not-italic">$1</strong>').replace(/`([^`]+)`/g, '<code class="text-fuchsia-300/80 bg-fuchsia-500/10 px-1 rounded text-[10px] not-italic">$1</code>') }}
+              />
+            </div>
+          ))}
+          {/* Tool calls detail */}
+          {toolCalls.length > 0 && (
+            <div className="pt-1.5 mt-1.5 border-t border-white/5 flex flex-wrap gap-1">
+              {toolCalls.map((tc, ti) => {
+                const isWrite = tc.tool === 'writeFile' || tc.tool === 'editFile';
+                const isDel   = tc.tool === 'deleteFile';
+                const isSrch  = tc.tool === 'searchCode';
+                const isCmd   = tc.tool === 'runCommand';
+                const label   = tc.args?.path
+                  ? tc.args.path.split('/').pop()
+                  : tc.args?.command ? tc.args.command.slice(0, 28)
+                  : tc.args?.pattern ? `"${tc.args.pattern}"` : '';
+                const icon = tc.tool === 'writeFile' ? '📝'
+                  : tc.tool === 'editFile' ? '✏️'
+                  : tc.tool === 'deleteFile' ? '🗑️'
+                  : tc.tool === 'readFile' ? '📖'
+                  : tc.tool === 'runCommand' ? '💻'
+                  : tc.tool === 'searchCode' ? '🔍'
+                  : '📋';
+                return (
+                  <span
+                    key={ti}
+                    title={`${tc.tool}(${tc.args?.path || tc.args?.command || ''})`}
+                    className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-mono border ${
+                      isWrite ? 'bg-emerald-500/10 text-emerald-400/80 border-emerald-500/20'
+                      : isDel  ? 'bg-red-500/10 text-red-400/70 border-red-500/20'
+                      : isSrch ? 'bg-amber-500/10 text-amber-400/70 border-amber-500/20'
+                      : isCmd  ? 'bg-sky-500/10 text-sky-400/70 border-sky-500/20'
+                      : 'bg-white/5 text-purple-400/50 border-white/10'
+                    }`}
+                  >
+                    {icon} {label || tc.tool}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Main Component ────────────────────────────────────────────────────────── */
+function EpiCodeSpaceApp() {
 const NEW_PROJECT_TEMPLATES = [
   { id: 'react', label: '⚛️ React',        desc: 'Vite + React 18' },
   { id: 'node',  label: '🟢 Node.js',      desc: 'HTTP server' },
@@ -2521,44 +2634,20 @@ function EpiCodeSpaceApp() {
                     }
                     {msg.timestamp && <span className="text-[9px] text-purple-500/40 font-normal normal-case ml-auto">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
                   </div>
-                  {/* Tool call steps */}
-                  {msg.steps && msg.steps.length > 0 && (
-                    <div className="mb-1.5 space-y-0.5">
-                      {msg.steps.map((step, si) => (
-                        <div key={si} className="text-[10px] text-purple-400/50 font-mono flex items-center gap-1.5 pl-1">
-                          <CheckCircle2 size={10} className="text-green-500/60 shrink-0" />
-                          <span dangerouslySetInnerHTML={{ __html: step.replace(/\*\*(.*?)\*\*/g, '<strong class="text-purple-300/70">$1</strong>') }} />
-                        </div>
-                      ))}
-                    </div>
+                  {/* GitHub-Copilot-style thinking block */}
+                  {msg.role === 'assistant' && (msg.steps?.length > 0 || msg.toolCalls?.length > 0) && (
+                    <ThinkingBlock
+                      steps={msg.steps || []}
+                      toolCalls={msg.toolCalls || []}
+                      inProgress={!!msg._progress}
+                      mode={msg.mode}
+                    />
                   )}
                   <div className={`rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-[#1f0e40] border border-purple-500/30 text-purple-100 shadow-md' : 'bg-transparent border border-fuchsia-500/20 text-purple-200'} text-[13px]`}>
                     <Suspense fallback={<div className="text-[11px] text-purple-500/50">Loading…</div>}>
                       <MarkdownContent content={msg.content} />
                     </Suspense>
                   </div>
-                  {/* Tool calls summary */}
-                  {msg.toolCalls && msg.toolCalls.length > 0 && (
-                    <div className="space-y-0.5 mt-1">
-                      <div className="flex items-center gap-2 text-[9px] text-purple-500/40 pl-1">
-                        <Code2 size={10} />
-                        <span>{msg.toolCalls.length} tool call{msg.toolCalls.length > 1 ? 's' : ''}</span>
-                        {msg.mode && <span className="bg-fuchsia-500/10 text-fuchsia-400/60 px-1.5 py-0.5 rounded-full">{msg.mode}</span>}
-                      </div>
-                      <div className="flex flex-wrap gap-1 pl-1">
-                        {msg.toolCalls.map((tc, ti) => {
-                          const isWrite = tc.tool === 'writeFile' || tc.tool === 'editFile';
-                          const isDel = tc.tool === 'deleteFile';
-                          return (
-                            <span key={ti} className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${isWrite ? 'bg-green-500/10 text-green-400/70 border border-green-500/20' : isDel ? 'bg-red-500/10 text-red-400/70 border border-red-500/20' : 'bg-white/5 text-purple-400/50'}`}>
-                              {tc.tool === 'writeFile' ? '📝' : tc.tool === 'editFile' ? '✏️' : tc.tool === 'deleteFile' ? '🗑️' : tc.tool === 'readFile' ? '📖' : tc.tool === 'runCommand' ? '💻' : '📋'}
-                              {' '}{tc.tool}{tc.args?.path ? `("${tc.args.path}")` : tc.args?.command ? `("${tc.args.command}")` : '()'}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
                   {/* Extracted TODOs from assistant messages */}
                   {msg.role === 'assistant' && msg.content && (() => {
                     const todoLines = msg.content.split('\n').filter(l => /^[-*]\s*\[[ x]\]/i.test(l.trim()) || /^\d+\.\s/.test(l.trim()));
@@ -2598,47 +2687,43 @@ function EpiCodeSpaceApp() {
                 </div>
               ))}
               {isTyping && (
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center gap-2 text-purple-400/80 text-[11px] font-semibold uppercase tracking-wider mb-0.5">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-purple-400/80 text-[11px] font-semibold uppercase tracking-wider">
                     <Sparkles size={12} className={`${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'} animate-pulse`} /> {AGENT_REGISTRY[activeAgent]?.name}
                   </div>
-                  <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-3 flex items-center gap-2 w-fit">
-                    <Loader2 size={14} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
-                    <span className="text-xs">{chatMode === 'agent' ? 'Executing tools & writing code...' : chatMode === 'plan' ? 'Analyzing codebase & planning...' : 'Thinking...'}</span>
-                    {/* Stop / Steer controls */}
-                    <div className="flex items-center gap-1 ml-2">
-                      <button
-                        type="button"
-                        onClick={handleOpenSteer}
-                        title="Stop and provide steering"
-                        className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/25 hover:text-fuchsia-100 transition-colors"
-                      >
-                        <RotateCcw size={10} /> Steer
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleStop}
-                        title="Stop generation"
-                        className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/25 hover:text-red-200 transition-colors"
-                      >
-                        <Square size={10} /> Stop
-                      </button>
-                    </div>
+                  {/* Live thinking block — populated by progress messages */}
+                  {(() => {
+                    const progressMsg = messages.find(m => m._progress && m.agent === activeAgent);
+                    const liveSteps = progressMsg?.steps || [];
+                    const liveCalls = progressMsg?.toolCalls || [];
+                    return liveSteps.length > 0 || liveCalls.length > 0
+                      ? <ThinkingBlock steps={liveSteps} toolCalls={liveCalls} inProgress mode={chatMode} />
+                      : (
+                        <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-2.5 flex items-center gap-2 w-fit">
+                          <Loader2 size={13} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
+                          <span className="text-xs">{chatMode === 'agent' ? 'Executing tools & writing code...' : chatMode === 'plan' ? 'Analyzing codebase & planning...' : 'Thinking...'}</span>
+                        </div>
+                      );
+                  })()}
+                  {/* Stop / Steer controls */}
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={handleOpenSteer} title="Stop and provide steering"
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/25 hover:text-fuchsia-100 transition-colors">
+                      <RotateCcw size={10} /> Steer
+                    </button>
+                    <button type="button" onClick={handleStop} title="Stop generation"
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/25 hover:text-red-200 transition-colors">
+                      <Square size={10} /> Stop
+                    </button>
                   </div>
-                  {/* Inline steer input — slides in below the typing indicator */}
+                  {/* Inline steer input */}
                   {isSteerOpen && (
-                    <div className="flex items-center gap-2 mt-1 bg-[#0a0412]/80 border border-fuchsia-400/40 rounded-lg px-3 py-2 shadow-[0_0_12px_rgba(232,121,249,0.15)]">
+                    <div className="flex items-center gap-2 bg-[#0a0412]/80 border border-fuchsia-400/40 rounded-lg px-3 py-2 shadow-[0_0_12px_rgba(232,121,249,0.15)]">
                       <RotateCcw size={12} className="text-fuchsia-400 shrink-0" />
-                      <input
-                        ref={steerInputRef}
-                        value={steerInput}
-                        onChange={e => setSteerInput(e.target.value)}
+                      <input ref={steerInputRef} value={steerInput} onChange={e => setSteerInput(e.target.value)}
                         placeholder="Add steering instructions and press Enter…"
                         className="flex-1 bg-transparent text-[12px] text-purple-100 placeholder-purple-500/50 outline-none"
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') { e.preventDefault(); handleSteer(); }
-                          if (e.key === 'Escape') { setIsSteerOpen(false); setSteerInput(''); handleStop(); }
-                        }}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleSteer(); } if (e.key === 'Escape') { setIsSteerOpen(false); setSteerInput(''); handleStop(); } }}
                       />
                       <button type="button" onClick={handleSteer} className="text-[10px] px-2 py-0.5 rounded bg-fuchsia-600 hover:bg-fuchsia-500 text-white transition-colors shrink-0">Send</button>
                       <button type="button" onClick={() => { setIsSteerOpen(false); setSteerInput(''); handleStop(); }} className="text-[10px] text-purple-500 hover:text-red-400 transition-colors shrink-0">Cancel</button>
