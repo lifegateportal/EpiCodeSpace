@@ -783,12 +783,15 @@ function EpiCodeSpaceApp() {
       empty: {},
       react: {
         'src/App.jsx': { name: 'App.jsx', language: 'javascript', content: "import React from 'react';\n\nexport default function App() {\n  return <div>Hello World</div>;\n}\n" },
+        'src/index.jsx': { name: 'index.jsx', language: 'javascript', content: "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App.jsx';\n\ncreateRoot(document.getElementById('root')).render(<App />);\n" },
         'src/index.css': { name: 'index.css', language: 'css', content: "body { margin: 0; font-family: sans-serif; }\n" },
-        'package.json': { name: 'package.json', language: 'json', content: '{\n  "name": "my-app",\n  "version": "1.0.0",\n  "dependencies": {\n    "react": "^18.0.0",\n    "react-dom": "^18.0.0"\n  }\n}\n' },
+        'index.html': { name: 'index.html', language: 'html', content: '<!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>React App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/index.jsx"></script>\n  </body>\n</html>\n' },
+        'vite.config.js': { name: 'vite.config.js', language: 'javascript', content: "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({ plugins: [react()] });\n" },
+        'package.json': { name: 'package.json', language: 'json', content: JSON.stringify({ name: 'my-app', version: '1.0.0', type: 'module', scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' }, dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' }, devDependencies: { '@vitejs/plugin-react': '^4.0.0', vite: '^6.0.0' } }, null, 2) + '\n' },
       },
       node: {
-        'index.js': { name: 'index.js', language: 'javascript', content: "const http = require('http');\n\nconst server = http.createServer((req, res) => {\n  res.writeHead(200, { 'Content-Type': 'text/plain' });\n  res.end('Hello World');\n});\n\nserver.listen(3000, () => console.log('Server running on port 3000'));\n" },
-        'package.json': { name: 'package.json', language: 'json', content: '{\n  "name": "my-server",\n  "version": "1.0.0",\n  "main": "index.js",\n  "scripts": {\n    "start": "node index.js"\n  }\n}\n' },
+        'index.js': { name: 'index.js', language: 'javascript', content: "const http = require('http');\n\nconst PORT = process.env.PORT || 3000;\n\nconst server = http.createServer((req, res) => {\n  res.writeHead(200, { 'Content-Type': 'text/plain' });\n  res.end('Hello World\\n');\n});\n\nserver.listen(PORT, () => console.log(`Server running on port ${PORT}`));\n" },
+        'package.json': { name: 'package.json', language: 'json', content: JSON.stringify({ name: 'my-server', version: '1.0.0', main: 'index.js', scripts: { start: 'node index.js', dev: 'node --watch index.js' } }, null, 2) + '\n' },
       },
       html: {
         'index.html': { name: 'index.html', language: 'html', content: '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>My Site</title>\n  <link rel="stylesheet" href="style.css">\n</head>\n<body>\n  <h1>Hello World</h1>\n  <script src="app.js"></script>\n</body>\n</html>\n' },

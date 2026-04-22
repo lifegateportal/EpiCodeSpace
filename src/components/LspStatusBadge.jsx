@@ -3,6 +3,9 @@ import { Zap, Loader2, AlertTriangle, Circle, RefreshCw } from 'lucide-react';
 import { lspBridge } from '../lib/lsp/TsLspBridge.ts';
 import { bridge as wcBridge } from '../lib/runtime/WebContainerBridge.ts';
 
+const isSafariOrWebKit = typeof window !== 'undefined' &&
+  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
 /**
  * Compact status-bar pill showing the TypeScript LSP connection state.
  * Click to start / restart. Gracefully degraded — if anything about the
@@ -34,6 +37,21 @@ export default function LspStatusBadge() {
   }, [state]);
 
   const disabled = wcState !== 'ready' && state === 'idle';
+
+  // On Safari/WebKit the LSP npm install doesn't work. Show a static
+  // "built-in" pill that informs but doesn't confuse with "error".
+  if (isSafariOrWebKit) {
+    return (
+      <div
+        title="Monaco built-in TypeScript is active (full LSP requires Chrome/Edge)"
+        className="hidden sm:flex items-center gap-1 px-2 h-full border-l border-fuchsia-500/10 text-cyan-300/70 cursor-default"
+      >
+        <Zap size={12} />
+        <span className="hidden md:inline">TS: built-in</span>
+      </div>
+    );
+  }
+
   const { icon, label, cls, title } = presentation(state, wcState, error);
 
   return (

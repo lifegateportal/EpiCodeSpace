@@ -99,6 +99,23 @@ class TsLspBridge {
         this.setState('error', 'WebContainer is not ready');
         return;
       }
+
+      // Safari (WebKit) + COEP require-corp: the WebContainer npm registry
+      // proxy doesn't work on iPadOS Safari because WebKit's service worker
+      // fetch interception is incomplete for cross-origin requests under
+      // require-corp. Detect and degrade gracefully — Monaco's built-in
+      // TypeScript service still provides completions and diagnostics.
+      const isSafariOrWebKit = typeof window !== 'undefined' &&
+        /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      if (isSafariOrWebKit) {
+        this.setState('error',
+          'TypeScript Language Server requires Chrome/Edge (npm registry proxy is unsupported on iPadOS Safari). ' +
+          'Monaco\'s built-in TypeScript is still active.',
+        );
+        this.emitLog('▶ LSP unavailable on Safari — Monaco built-in TypeScript is still active for completions & errors.');
+        return;
+      }
+
       const container = wcBridge.getContainer();
 
       // 1. Skip install if server binary already exists from a prior run.
