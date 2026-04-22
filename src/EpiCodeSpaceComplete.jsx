@@ -1056,7 +1056,12 @@ function EpiCodeSpaceApp() {
             signal: chatAbortRef.current?.signal,
           });
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
+          if (!res.ok) {
+            const hint = data.missingKey
+              ? ` Go to Vercel → Project → Settings → Environment Variables, add ${data.missingKey}, and redeploy.`
+              : '';
+            throw new Error((data.error || `API error ${res.status}`) + hint);
+          }
 
           // If model returned text only, we're done
           if (data.type === 'text') {
