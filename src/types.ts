@@ -66,6 +66,13 @@ export type AgentCapability =
   | 'docs'
   | 'architecture';
 
+export interface AgentModel {
+  id: string;
+  name: string;
+  tier: 'premium' | 'standard' | 'fast';
+  description?: string;
+}
+
 export interface AgentDefinition {
   id: string;
   name: string;
@@ -73,6 +80,7 @@ export interface AgentDefinition {
   color: string;
   description: string;
   capabilities: AgentCapability[];
+  models?: AgentModel[];
 }
 
 export type AgentRegistry = Record<string, AgentDefinition>;

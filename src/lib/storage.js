@@ -5,6 +5,7 @@ export const CONVOS_KEY   = 'epicodespace_conversations_v1';
 export const PREFS_KEY    = 'epicodespace_preferences_v1';
 export const PANELS_KEY   = 'epicodespace_panels_v1';
 export const AGENT_KEY    = 'epicodespace_agent_v1';
+export const MODELS_KEY   = 'epicodespace_agent_models_v1';
 export const MODE_KEY     = 'epicodespace_mode_v1';
 
 /** Safely parse JSON from localStorage, returning `fallback` on any error. */

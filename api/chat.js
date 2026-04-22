@@ -1,17 +1,17 @@
 // Vercel Serverless Function — proxies chat to AI providers with tool calling
-// POST /api/chat  { agent, messages, context, mode, toolResults, pendingToolCalls }
+// POST /api/chat  { agent, model?, messages, context, mode, toolResults, pendingToolCalls }
 
 const PROVIDER_CONFIG = {
   'epicode-agent': {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
-    model: 'gpt-4o',
+    model: 'gpt-5',
     transform: 'openai',
   },
   copilot: {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
-    model: 'gpt-4o-mini',
+    model: 'gpt-5-mini',
     transform: 'openai',
   },
   claude: {
@@ -21,7 +21,7 @@ const PROVIDER_CONFIG = {
     transform: 'anthropic',
   },
   gemini: {
-    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
     envKey: 'GOOGLE_AI_API_KEY',
     model: 'gemini-2.5-pro',
     transform: 'gemini',
@@ -29,16 +29,26 @@ const PROVIDER_CONFIG = {
   deepseek: {
     url: 'https://api.deepseek.com/chat/completions',
     envKey: 'DEEPSEEK_API_KEY',
-    model: 'deepseek-coder',
+    model: 'deepseek-chat',
     transform: 'openai',
   },
+};
+
+// Allowlist of model ids the user may request per agent. Must be kept in sync
+// with src/lib/agentRegistry.js so clients can't inject arbitrary model names.
+const ALLOWED_MODELS = {
+  'epicode-agent': ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
+  copilot:         ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
+  claude:          ['claude-opus-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805', 'claude-haiku-4-5'],
+  gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  deepseek:        ['deepseek-reasoner', 'deepseek-chat', 'deepseek-coder'],
 };
 
 const AGENT_PERSONAS = {
   'epicode-agent': 'EpiCode Agent, a full-stack autonomous coding assistant with deep knowledge of React, Node.js, Vite, Tailwind, and modern web architecture',
   copilot:        'Copilot, a lightning-fast coding assistant specialising in inline completions, test generation, and documentation',
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
-  gemini:         'Gemini Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
+  gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek Coder V2, a code-specialised model that prefers dense code blocks over prose and excels at generation and refactoring',
 };
 
@@ -110,7 +120,16 @@ function buildContextMessage(context) {
 
 // ── OpenAI / DeepSeek ──────────────────────────────────────────────────────
 async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
-  const body = { model: config.model, messages: [{ role: 'system', content: systemPrompt }, ...messages], max_tokens: 4096, temperature: 0.7 };
+  // Reasoning-family models (o-series, gpt-5*) don't accept temperature and
+  // use max_completion_tokens instead of max_tokens.
+  const isReasoning = /^(o\d|gpt-5)/i.test(config.model);
+  const body = { model: config.model, messages: [{ role: 'system', content: systemPrompt }, ...messages] };
+  if (isReasoning) {
+    body.max_completion_tokens = 4096;
+  } else {
+    body.max_tokens = 4096;
+    body.temperature = 0.7;
+  }
   if (useTools) { body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })); body.tool_choice = 'auto'; }
 
   const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
@@ -145,7 +164,7 @@ async function callAnthropic(config, apiKey, systemPrompt, messages, useTools) {
 
 // ── Gemini ──────────────────────────────────────────────────────────────────
 async function callGemini(config, apiKey, systemPrompt, messages, useTools) {
-  const url = `${config.url}?key=${apiKey}`;
+  const url = `${config.url.replace('{model}', config.model)}?key=${apiKey}`;
   const contents = [];
   for (const m of messages) {
     if (m._geminiParts) { contents.push({ role: m._geminiRole, parts: m._geminiParts }); }
@@ -257,7 +276,7 @@ export default async function handler(req, res) {
   if (isRateLimited(ip)) return res.status(429).json({ error: 'Too many requests. Please wait a moment.' });
 
   try {
-    const { agent, messages, context, mode = 'ask', toolResults, pendingToolCalls } = req.body;
+    const { agent, model, messages, context, mode = 'ask', toolResults, pendingToolCalls } = req.body;
     if (!agent || !messages?.length) return res.status(400).json({ error: 'Missing agent or messages' });
     // Validate and sanitize inputs
     if (typeof agent !== 'string' || agent.length > 64) return res.status(400).json({ error: 'Invalid agent' });
@@ -265,8 +284,18 @@ export default async function handler(req, res) {
     const validModes = ['ask', 'agent', 'plan'];
     const safeMode = validModes.includes(mode) ? mode : 'ask';
 
-    const config = PROVIDER_CONFIG[agent];
-    if (!config) return res.status(400).json({ error: `Unknown agent: ${agent}` });
+    const baseConfig = PROVIDER_CONFIG[agent];
+    if (!baseConfig) return res.status(400).json({ error: `Unknown agent: ${agent}` });
+
+    // Resolve + validate model override
+    let resolvedModel = baseConfig.model;
+    if (typeof model === 'string' && model.length > 0) {
+      if (model.length > 100 || !ALLOWED_MODELS[agent]?.includes(model)) {
+        return res.status(400).json({ error: `Invalid model '${model}' for agent '${agent}'` });
+      }
+      resolvedModel = model;
+    }
+    const config = { ...baseConfig, model: resolvedModel };
 
     const apiKey = process.env[config.envKey];
     if (!apiKey) return res.status(500).json({ error: `API key not configured. Set ${config.envKey} in Vercel env vars.`, missingKey: config.envKey });

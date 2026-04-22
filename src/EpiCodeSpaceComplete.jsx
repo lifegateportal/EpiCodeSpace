@@ -24,10 +24,10 @@ import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
 import {
-  STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODE_KEY,
+  STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODELS_KEY, MODE_KEY,
   loadJSON, storeJSON,
 } from './lib/storage.js';
-import { AGENT_REGISTRY } from './lib/agentRegistry.js';
+import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 
@@ -384,7 +384,7 @@ function buildAgentResponse(agentId, query, tools, fileSystem, activeFile) {
     'epicode-agent': `I've reviewed your workspace (${ctxResult.totalFiles} files, active: \`${activeFile}\`). Regarding "${query}":\n\nI can help with that. Here's what I'd suggest:\n\n1. Let me scan the relevant files for context\n2. I'll draft the implementation\n3. You review and I'll apply\n\nWant me to start with a specific file, or should I work across the whole project?`,
     'copilot': `**Copilot** — Working from \`${activeFile}\` (${activeLines} lines)\n\nI understand you want to: "${query}"\n\nBased on the project context (${ctxResult.totalFiles} files), I can:\n• Generate code inline\n• Suggest completions\n• Write tests\n\nRefine your ask and I'll produce code directly.`,
     'claude': `Let me think about this carefully.\n\n**Context:** ${ctxResult.totalFiles} files in workspace. Currently editing \`${activeFile}\` (${activeLines} lines, ${fileSystem[activeFile]?.language}).\n\n**On "${query}":** This is a nuanced question. The approach depends on your constraints — performance requirements, maintainability goals, and whether this is user-facing. Could you clarify which aspect matters most? I'll tailor my response accordingly.`,
-    'gemini': `**Gemini Pro** analyzing your request...\n\n📊 Workspace: ${ctxResult.totalFiles} files | Active: \`${activeFile}\`\n\nFor "${query}", I recommend a multi-step approach:\n\n**Step 1:** Audit current implementation\n**Step 2:** Identify optimization targets\n**Step 3:** Apply changes incrementally\n\nShall I begin with Step 1?`,
+    'gemini': `**Gemini 2.5 Pro** analyzing your request...\n\n📊 Workspace: ${ctxResult.totalFiles} files | Active: \`${activeFile}\`\n\nFor "${query}", I recommend a multi-step approach:\n\n**Step 1:** Audit current implementation\n**Step 2:** Identify optimization targets\n**Step 3:** Apply changes incrementally\n\nShall I begin with Step 1?`,
     'deepseek': `\`\`\`context\nWorkspace: ${ctxResult.totalFiles} files\nActive: ${activeFile} (${activeLines} lines)\nQuery: "${query}"\n\`\`\`\n\nReady to execute. Specify:\n- \`/gen\` — generate code\n- \`/fix\` — debug & patch\n- \`/refactor\` — clean & optimize\n- \`/test\` — scaffold tests\n\nOr just describe what you need in plain English.`,
   };
   return { steps, toolCalls, response: fallbacks[agentId] || fallbacks['epicode-agent'] };
@@ -442,7 +442,20 @@ function EpiCodeSpaceApp() {
   const [chatMode, setChatMode] = useState(() => loadJSON(MODE_KEY, 'agent'));
   const savedConvos = loadJSON(CONVOS_KEY, [{ id: 1, name: 'Chat 1', messages: [], agent: 'epicode-agent', createdAt: Date.now() }]);
   const [activeAgent, setActiveAgent] = useState(() => loadJSON(AGENT_KEY, 'epicode-agent'));
+  // Per-agent model selection (map agentId → modelId). Validated on load so
+  // stale entries from a previous catalogue don't break the API call.
+  const [activeModels, setActiveModels] = useState(() => {
+    const raw = loadJSON(MODELS_KEY, {});
+    const cleaned = {};
+    for (const a of Object.keys(AGENT_REGISTRY)) {
+      const saved = raw?.[a];
+      cleaned[a] = (typeof saved === 'string' && isValidModelFor(a, saved)) ? saved : defaultModelFor(a);
+    }
+    return cleaned;
+  });
+  const activeModel = activeModels[activeAgent] || defaultModelFor(activeAgent);
   const [showAgentPicker, setShowAgentPicker] = useState(false);
+  const [agentPickerSubmenu, setAgentPickerSubmenu] = useState(null); // agentId whose model list is expanded
   const [showConversations, setShowConversations] = useState(false);
   const [convoSearch, setConvoSearch] = useState('');
   const [renamingConvo, setRenamingConvo] = useState(null);
@@ -548,6 +561,7 @@ function EpiCodeSpaceApp() {
     return () => clearTimeout(t);
   }, [conversations]);
   useEffect(() => { storeJSON(AGENT_KEY, activeAgent); }, [activeAgent]);
+  useEffect(() => { storeJSON(MODELS_KEY, activeModels); }, [activeModels]);
   useEffect(() => { storeJSON(MODE_KEY, chatMode); }, [chatMode]);
   useEffect(() => {
     const t = setTimeout(() => storeJSON(PREFS_KEY, { fontSize, wordWrap }), 300);
@@ -1043,7 +1057,7 @@ function EpiCodeSpaceApp() {
 
       try {
         for (let round = 0; round < MAX_ROUNDS; round++) {
-          const payload = { agent: activeAgent, messages: history, context, mode: chatMode };
+          const payload = { agent: activeAgent, model: activeModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
@@ -2527,31 +2541,90 @@ function EpiCodeSpaceApp() {
                   <div className="relative" data-agent-picker>
                     <div
                       className="flex items-center gap-1 hover:text-fuchsia-300 cursor-pointer transition-colors"
-                      onClick={() => setShowAgentPicker(p => !p)}
+                      onClick={() => { setShowAgentPicker(p => !p); setAgentPickerSubmenu(null); }}
                     >
                       <Sparkles size={12} className={AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400/70'} />
-                      <span>{AGENT_REGISTRY[activeAgent]?.name || 'Select Agent'}</span>
+                      <span>
+                        {AGENT_REGISTRY[activeAgent]?.name || 'Select Agent'}
+                        {activeModel && (
+                          <span className="text-purple-500/60 ml-1">
+                            · {AGENT_REGISTRY[activeAgent]?.models?.find(m => m.id === activeModel)?.name || activeModel}
+                          </span>
+                        )}
+                      </span>
                       <ChevronDown size={11} />
                     </div>
                     {showAgentPicker && (
-                      <div className="absolute bottom-full right-0 mb-1 w-56 bg-[#1a0b35] border border-fuchsia-500/30 rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.7)] z-50 py-1 overflow-hidden">
-                        <div className="px-3 py-1.5 text-[9px] text-purple-500/50 uppercase tracking-widest font-bold">Select Agent</div>
-                        {Object.values(AGENT_REGISTRY).map(agent => (
-                          <button
-                            key={agent.id}
-                            onClick={() => { setActiveAgent(agent.id); setShowAgentPicker(false); setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, agent: agent.id } : c)); }}
-                            className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5 ${activeAgent === agent.id ? 'bg-fuchsia-500/15 text-fuchsia-200' : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'}`}
-                          >
-                            <Sparkles size={12} className={`${agent.color} shrink-0`} />
-                            <div className="flex-1 min-w-0">
-                              <div className="font-semibold flex items-center gap-1.5">
-                                {agent.name}
-                                {activeAgent === agent.id && <CheckCircle2 size={10} className="text-fuchsia-400" />}
-                              </div>
-                              <div className="text-[9px] text-purple-500/60 truncate">{agent.description}</div>
+                      <div className="absolute bottom-full right-0 mb-1 w-72 bg-[#1a0b35] border border-fuchsia-500/30 rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.7)] z-50 py-1 overflow-hidden max-h-[70vh] overflow-y-auto">
+                        <div className="px-3 py-1.5 text-[9px] text-purple-500/50 uppercase tracking-widest font-bold">Select Agent &amp; Model</div>
+                        {Object.values(AGENT_REGISTRY).map(agent => {
+                          const models = agent.models || [];
+                          const expanded = agentPickerSubmenu === agent.id;
+                          const currentModelId = activeModels[agent.id] || defaultModelFor(agent.id);
+                          const currentModel = models.find(m => m.id === currentModelId);
+                          const isActive = activeAgent === agent.id;
+                          return (
+                            <div key={agent.id} className={isActive ? 'bg-fuchsia-500/10' : ''}>
+                              <button
+                                onClick={() => {
+                                  setActiveAgent(agent.id);
+                                  setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, agent: agent.id } : c));
+                                  setAgentPickerSubmenu(expanded ? null : agent.id);
+                                }}
+                                className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5 ${isActive ? 'text-fuchsia-200' : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'}`}
+                              >
+                                <Sparkles size={12} className={`${agent.color} shrink-0`} />
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-semibold flex items-center gap-1.5">
+                                    {agent.name}
+                                    {isActive && <CheckCircle2 size={10} className="text-fuchsia-400" />}
+                                  </div>
+                                  <div className="text-[9px] text-purple-500/60 truncate">
+                                    {currentModel ? currentModel.name : agent.description}
+                                  </div>
+                                </div>
+                                {models.length > 1 && (
+                                  <ChevronDown
+                                    size={11}
+                                    className={`shrink-0 text-purple-400/60 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                                  />
+                                )}
+                              </button>
+                              {expanded && models.length > 0 && (
+                                <div className="bg-[#0f0627] border-t border-fuchsia-500/10 py-1">
+                                  {models.map(m => {
+                                    const selected = currentModelId === m.id;
+                                    const tierColor = m.tier === 'premium' ? 'text-amber-300' : m.tier === 'fast' ? 'text-cyan-300' : 'text-purple-300';
+                                    return (
+                                      <button
+                                        key={m.id}
+                                        onClick={() => {
+                                          setActiveAgent(agent.id);
+                                          setActiveModels(prev => ({ ...prev, [agent.id]: m.id }));
+                                          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, agent: agent.id } : c));
+                                          setShowAgentPicker(false);
+                                          setAgentPickerSubmenu(null);
+                                        }}
+                                        className={`w-full text-left pl-9 pr-3 py-1.5 text-xs flex items-center gap-2 transition-colors ${selected ? 'bg-fuchsia-500/20 text-fuchsia-100' : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'}`}
+                                      >
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="font-medium">{m.name}</span>
+                                            <span className={`text-[8px] uppercase tracking-wider ${tierColor}`}>{m.tier}</span>
+                                            {selected && <CheckCircle2 size={10} className="text-fuchsia-400" />}
+                                          </div>
+                                          {m.description && (
+                                            <div className="text-[9px] text-purple-500/60 truncate">{m.description}</div>
+                                          )}
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                          </button>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

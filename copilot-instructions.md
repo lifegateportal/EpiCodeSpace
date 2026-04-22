@@ -5,7 +5,7 @@ Designed to process long-form content into short, engaging clips.
 * **Deployment:** Vercel (Frontend & Serverless logic).
 * **Database & Auth:** Firebase (Firestore NoSQL, Authentication).
 * **Compute Engine:** Modal (Serverless GPU for heavy video rendering).
-* **AI Services:** Anthropic Claude 3.5 Sonnet, Deepgram Nova-2.
+* **AI Services:** Anthropic Claude Sonnet 4.5, Deepgram Nova-2.
 * **Payments:** Stripe (Subscriptions and micro-transactions).
 
 # Core Business Logic
