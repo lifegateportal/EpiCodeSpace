@@ -226,13 +226,21 @@ export default async function handler(req, res) {
   if (allowedOrigin) {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   } else {
-    // In production without ALLOWED_ORIGIN set, block cross-origin requests
+    // Production without ALLOWED_ORIGIN: allow same-origin only. A same-origin
+    // request has its Origin host matching the request's Host header (this
+    // covers the production alias, preview URLs, and custom domains without
+    // requiring env config).
     const origin = req.headers.origin;
-    const vercelUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null;
-    if (origin && vercelUrl && origin !== vercelUrl) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (origin) {
+      let originHost = '';
+      try { originHost = new URL(origin).host; } catch { /* ignore */ }
+      const host = req.headers.host;
+      if (!host || originHost !== host) {
+        return res.status(403).json({ error: 'Forbidden (cross-origin). Set ALLOWED_ORIGIN env var to allow this origin.' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
     }
-    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+    // No Origin header → same-origin navigation/fetch from a server; allow.
   }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
