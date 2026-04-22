@@ -1859,10 +1859,12 @@ function EpiCodeSpaceApp() {
 
               {activeTerminalTab === 'terminal' && (
                 <div className="flex-1 overflow-y-auto font-mono text-[13px] flex flex-col" role="log" aria-live="polite" aria-label="Terminal output">
-                  {/* Output area — user-select:text so mouse drag copies, click outside selection focuses input */}
+                  {/* Output area — user-select:text so touch-drag selects + copies on iPadOS.
+                      `fake-terminal-output` overrides the global `.no-callout` rule so the
+                      iOS Copy/Share callout appears after a long-press selection. */}
                   <div
-                    className="flex-1 p-3 select-text cursor-text"
-                    style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+                    className="fake-terminal-output flex-1 p-3 select-text cursor-text"
+                    style={{ userSelect: 'text', WebkitUserSelect: 'text', WebkitTouchCallout: 'default' }}
                     onMouseUp={(e) => {
                       const sel = window.getSelection()?.toString();
                       if (!sel) {

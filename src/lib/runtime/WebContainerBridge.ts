@@ -7,7 +7,7 @@
 // Rule 4: boot requires cross-origin isolation. Without COOP+COEP headers,
 // SharedArrayBuffer is unavailable and WebContainer.boot() will throw.
 
-import { WebContainer } from '@webcontainer/api';
+import { WebContainer, configureAPIKey } from '@webcontainer/api';
 import type { FileSystemTree, DirectoryNode, FileNode } from '@webcontainer/api';
 import { logger } from '../logger.js';
 import { shouldSync, normalize, MAX_MIRROR_BYTES } from './policy.ts';
@@ -79,10 +79,19 @@ class Bridge {
     this.setState('booting');
     this.bootPromise = (async () => {
       try {
-        const c = await WebContainer.boot({
+        // Non-localhost origins (e.g. *.vercel.app) need a WebContainers API key.
+        // Get one at https://webcontainers.io/ and set VITE_WEBCONTAINER_APIKEY
+        // in Vercel → Project Settings → Environment Variables.
+        // configureAPIKey() MUST be called before WebContainer.boot().
+        const apiKey = (import.meta as any).env?.VITE_WEBCONTAINER_APIKEY;
+        if (apiKey) configureAPIKey(apiKey);
+
+        const bootOpts: Parameters<typeof WebContainer.boot>[0] = {
           coep: 'require-corp',
           workdirName: 'epicodespace',
-        });
+        };
+
+        const c = await WebContainer.boot(bootOpts);
         c.on('server-ready', (port, url) => {
           logger.info('runtime', 'server-ready', { port, url });
           for (const l of this.serverListeners) {
