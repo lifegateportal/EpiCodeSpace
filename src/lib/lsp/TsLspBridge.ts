@@ -115,12 +115,8 @@ class TsLspBridge {
         this.setState('installing');
         this.emitLog('▶ Installing typescript + typescript-language-server (first-time, may take ~60s)…');
         try {
-          // WebContainer's internal npm proxy requires http:// for the
-          // registry (https:// fails with ERR_INVALID_PROTOCOL). Force it
-          // via --registry + env var so any child npm inherits it.
           const install = await container.spawn('npm', [
             'install',
-            '--registry=http://registry.npmjs.org/',
             '--no-audit',
             '--no-fund',
             '--prefer-offline',
@@ -128,11 +124,7 @@ class TsLspBridge {
             '--loglevel=error',
             'typescript@latest',
             'typescript-language-server@latest',
-          ], {
-            env: {
-              npm_config_registry: 'http://registry.npmjs.org/',
-            },
-          });
+          ]);
 
           // CRITICAL: we MUST consume proc.output or WebContainer's internal
           // buffers stall and the process appears to hang forever. Stream
