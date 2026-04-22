@@ -390,6 +390,91 @@ function buildAgentResponse(agentId, query, tools, fileSystem, activeFile) {
   return { steps, toolCalls, response: fallbacks[agentId] || fallbacks['epicode-agent'] };
 }
 
+/* ─── New Project Dialog ────────────────────────────────────────────────────── */
+const NEW_PROJECT_TEMPLATES = [
+  { id: 'react', label: '⚛️ React',        desc: 'Vite + React 18' },
+  { id: 'node',  label: '🟢 Node.js',      desc: 'HTTP server' },
+  { id: 'html',  label: '🌐 HTML/CSS/JS',  desc: 'Vanilla web' },
+  { id: 'empty', label: '📄 Empty',        desc: 'Blank workspace' },
+];
+
+function NewProjectDialog({ initialTemplate = 'react', onConfirm, onCancel }) {
+  const [name, setName]         = React.useState('');
+  const [template, setTemplate] = React.useState(initialTemplate);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const placeholder = template === 'empty' ? 'my-project' : `my-${template}-app`;
+
+  const confirm = () => {
+    const resolved = name.trim() || placeholder;
+    onConfirm(template, resolved);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="new-project-title"
+    >
+      <div
+        className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-6 w-full max-w-sm"
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 id="new-project-title" className="text-purple-100 font-semibold text-base mb-5">New Project</h2>
+
+        {/* Name */}
+        <label className="text-xs text-purple-400 block mb-1">Project name</label>
+        <input
+          ref={inputRef}
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder={placeholder}
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-purple-100 placeholder-purple-500/40 focus:outline-none focus:ring-1 focus:ring-fuchsia-500/50 mb-5"
+          onKeyDown={e => { if (e.key === 'Enter') confirm(); if (e.key === 'Escape') onCancel(); }}
+        />
+
+        {/* Template picker */}
+        <div className="text-xs text-purple-400 mb-2">Template</div>
+        <div className="grid grid-cols-2 gap-2 mb-6">
+          {NEW_PROJECT_TEMPLATES.map(t => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTemplate(t.id)}
+              className={`rounded-lg px-3 py-2 text-left border transition-colors ${
+                template === t.id
+                  ? 'bg-fuchsia-500/20 border-fuchsia-500/50 text-fuchsia-200'
+                  : 'bg-white/5 border-white/10 text-purple-300 hover:bg-white/10 hover:text-purple-100'
+              }`}
+            >
+              <div className="text-[12px] font-medium">{t.label}</div>
+              <div className="text-[10px] text-purple-500/70 mt-0.5">{t.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 py-2 rounded-lg text-sm border border-white/10 text-purple-400 hover:bg-white/5 transition-colors"
+          >Cancel</button>
+          <button
+            type="button"
+            onClick={confirm}
+            className="flex-1 py-2 rounded-lg text-sm bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-medium transition-colors"
+          >Create</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
@@ -415,6 +500,7 @@ function EpiCodeSpaceApp() {
   const [openTabs, setOpenTabs] = useState(firstFile ? [firstFile] : []);
   const [untitledCount, setUntitledCount] = useState(1);
   const [renamingFile, setRenamingFile] = useState(null);
+  const [newProjectDialog, setNewProjectDialog] = useState(null); // null | { template: string }
   const [renameValue, setRenameValue] = useState('');
 
   // ── Panels ────────────────────────────────────────────────────────────────
@@ -792,7 +878,7 @@ function EpiCodeSpaceApp() {
   // ── Project management ────────────────────────────────────────────────────
   useEffect(() => { storeJSON('epicodespace_project_v1', projectName); }, [projectName]);
 
-  const handleNewProject = useCallback((template) => {
+  const handleNewProject = useCallback((template, name) => {
     const templates = {
       empty: {},
       react: {
@@ -818,7 +904,9 @@ function EpiCodeSpaceApp() {
     const firstKey = Object.keys(newFS)[0] || null;
     setOpenTabs(firstKey ? [firstKey] : []);
     setActiveFile(firstKey);
-    setProjectName(template === 'empty' ? 'New Project' : `${template}-app`);
+    // Use the caller-supplied name; fall back to a safe default.
+    const resolvedName = (name || '').trim() || (template === 'empty' ? 'New Project' : `${template}-app`);
+    setProjectName(resolvedName);
   }, [replaceAll]);
 
   const handleDeleteFile = useCallback((path) => {
@@ -1531,7 +1619,7 @@ function EpiCodeSpaceApp() {
   const menuDefinitions = useMemo(() => ({
     File: [
       { label: 'New File', shortcut: 'Ctrl+N', icon: FilePlus, action: handleNewFile },
-      { label: 'New Project...', icon: FolderOpen, action: () => { const t = prompt('Project template: react, node, html, or empty', 'react'); if (t) handleNewProject(t); } },
+      { label: 'New Project...', icon: FolderOpen, action: () => setNewProjectDialog({ template: 'react' }) },
       { label: 'New Window', shortcut: 'Ctrl+Shift+N', disabled: true },
       { type: 'separator' },
       { label: 'Open Project...', icon: FolderOpen, action: handleImportProject },
@@ -1740,7 +1828,7 @@ function EpiCodeSpaceApp() {
                   onProjectRename={setProjectName}
                   onImport={handleImportProject}
                   onExport={handleExportProject}
-                  onNewProjectTemplate={handleNewProject}
+                  onNewProjectTemplate={(template) => setNewProjectDialog({ template })}
                 />
               </PanelErrorBoundary>
             </aside>
@@ -2656,6 +2744,15 @@ function EpiCodeSpaceApp() {
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[60] bg-[#1a0b35] border border-fuchsia-500/30 rounded-lg px-4 py-2 text-xs text-fuchsia-200 flex items-center gap-2 shadow-xl animate-pulse">
           <CheckCircle2 size={13} className="text-fuchsia-400" /> File saved
         </div>
+      )}
+
+      {/* New Project Dialog */}
+      {newProjectDialog && (
+        <NewProjectDialog
+          initialTemplate={newProjectDialog.template}
+          onConfirm={(template, name) => { handleNewProject(template, name); setNewProjectDialog(null); }}
+          onCancel={() => setNewProjectDialog(null)}
+        />
       )}
 
       {/* About Modal */}
