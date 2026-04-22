@@ -33,6 +33,18 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       convertEol: true,
       fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, monospace',
       fontSize: 13,
+      // GitHub-style thin bar caret. The default 'block' style fills the
+      // entire empty remainder of the current cell on iPadOS and renders
+      // as the giant selectable "box" users were seeing. 'bar' stays 1px.
+      cursorStyle: 'bar',
+      cursorWidth: 2,
+      cursorBlink: true,
+      cursorInactiveStyle: 'none',
+      // Canvas renderer — matches GitHub's terminal and avoids the DOM
+      // renderer's selection artifacts on iPadOS.
+      allowTransparency: false,
+      disableStdin: false,
+      scrollback: 5000,
       theme: {
         background: '#0b1020',
         foreground: '#e5e7eb',
@@ -49,14 +61,15 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
         cyan: '#22d3ee',
         white: '#e5e7eb',
       },
-      cursorBlink: true,
-      scrollback: 5000,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(hostRef.current);
+    // Two fits: one immediate, one after paint, because the RUNTIME tab
+    // is conditionally rendered and the pane may not have final size yet.
     try { fit.fit(); } catch {}
+    requestAnimationFrame(() => { try { fit.fit(); } catch {} });
     termRef.current = term;
     fitRef.current = fit;
 
@@ -139,13 +152,27 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     setBootError(null);
     const term = termRef.current;
     term?.writeln('\x1b[36m▶ booting WebContainer…\x1b[0m');
+    if (typeof window !== 'undefined' && !window.crossOriginIsolated) {
+      const msg = 'Cross-origin isolation is OFF (no SharedArrayBuffer). COOP=same-origin + COEP=require-corp response headers required.';
+      setBootError(msg);
+      term?.writeln(`\x1b[31m✖ ${msg}\x1b[0m`);
+      return;
+    }
     try {
-      await bridge.boot({ files });
+      // 30-second watchdog — if boot() never resolves we surface the hang
+      // rather than leaving the UI stuck on "booting…" forever.
+      const bootPromise = bridge.boot({ files });
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('boot timed out after 30s — check browser console for WebContainer errors')), 30000),
+      );
+      await Promise.race([bootPromise, timeout]);
       term?.writeln('\x1b[32m✔ container ready\x1b[0m');
       await startShell();
     } catch (err) {
-      setBootError(err?.message || String(err));
-      term?.writeln(`\x1b[31m✖ boot failed: ${err?.message || err}\x1b[0m`);
+      const msg = err?.message || String(err);
+      setBootError(msg);
+      term?.writeln(`\x1b[31m✖ boot failed: ${msg}\x1b[0m`);
+      logger.error('terminal', 'boot failed', err);
     }
   }, [files, startShell]);
 

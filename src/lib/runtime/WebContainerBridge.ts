@@ -72,7 +72,7 @@ class Bridge {
       const err = new Error(
         'Cross-origin isolation required. Verify COOP=same-origin and COEP=require-corp response headers.',
       );
-      this.setState('dead');
+      this.setState('idle');
       throw err;
     }
 
@@ -101,7 +101,11 @@ class Bridge {
         logger.info('runtime', 'boot complete', { fileCount: Object.keys(opts.files).length });
         return c;
       } catch (err) {
-        this.setState('dead');
+        // Reset to idle (not 'dead') so the Boot button re-enables and the
+        // user can retry. 'dead' used to strand the UI after a transient
+        // network / SAB failure with no way to recover besides reload.
+        this.container = null;
+        this.setState('idle');
         logger.error('runtime', 'boot failed', err);
         throw err;
       } finally {
