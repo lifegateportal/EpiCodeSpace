@@ -173,6 +173,16 @@ const CodeEditor = forwardRef(function CodeEditor(
     try { monaco.editor.defineTheme(THEME_NAME, THEME); } catch { /* already defined */ }
     monaco.editor.setTheme(THEME_NAME);
 
+    // Install the LSP adapter. Fails soft: if the module or provider
+    // registration throws, the editor keeps working with Monaco's
+    // built-in TS/JS services.
+    import('../lib/lsp/monacoAdapter.ts')
+      .then(({ installMonacoAdapter }) => {
+        try { installMonacoAdapter(monaco); }
+        catch (err) { console.warn('[lsp] adapter install threw', err); }
+      })
+      .catch((err) => console.warn('[lsp] adapter import failed', err));
+
     if (onCursorChange) {
       editor.onDidChangeCursorPosition(() => {
         const pos = editor.getPosition();

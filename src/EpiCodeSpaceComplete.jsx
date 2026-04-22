@@ -18,6 +18,7 @@ import CodeBlock from './components/CodeBlock.jsx';
 const MarkdownContent = lazy(() => import('./components/MarkdownContent.jsx'));
 const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
 const WebContainerTerminal = lazy(() => import('./components/WebContainerTerminal.jsx'));
+const LspStatusBadge = lazy(() => import('./components/LspStatusBadge.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
 import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
@@ -2610,6 +2611,7 @@ function EpiCodeSpaceApp() {
           <div className="hidden md:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">UTF-8</div>
           <div className="hidden lg:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">LF</div>
           <div className="hidden md:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors font-semibold gap-1"><CheckCircle2 size={12} className="text-fuchsia-400"/> Prettier</div>
+          <Suspense fallback={null}><LspStatusBadge /></Suspense>
           <div className="hidden lg:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">Layout: U.S.</div>
           <div className={`px-2 h-full flex items-center border-l border-fuchsia-500/10 ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`}>⚡ <span className="hidden sm:inline ml-1">{AGENT_REGISTRY[activeAgent]?.name || 'Agent'}</span></div>
         </div>

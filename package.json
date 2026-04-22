@@ -24,7 +24,9 @@
     "comlink": "^4.4.2",
     "lucide-react": "^0.367.0",
     "react": "^18.0.0",
-    "react-dom": "^18.0.0"
+    "react-dom": "^18.0.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.17.5"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.0",
