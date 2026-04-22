@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { RefreshCw, Square, Power, Loader2 } from 'lucide-react';
+import { RefreshCw, Square, Power, Loader2, Copy, ClipboardPaste } from 'lucide-react';
 import { bridge } from '../lib/runtime/WebContainerBridge.ts';
 import { autoPullRootNewFiles } from '../lib/runtime/syncInbound.ts';
 import { lspBridge } from '../lib/lsp/TsLspBridge.ts';
@@ -26,6 +26,7 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
   const [bootState, setBootState] = useState(bridge.state);
   const [bootError, setBootError] = useState(null);
   const [processRunning, setProcessRunning] = useState(false);
+  const [hasSelection, setHasSelection] = useState(false);
 
   // ── xterm mount ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -74,6 +75,11 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     termRef.current = term;
     fitRef.current = fit;
 
+    // Track selection state so the Copy button enables/disables correctly.
+    const selSub = term.onSelectionChange(() => {
+      setHasSelection(!!term.getSelection?.());
+    });
+
     term.writeln('\x1b[90m# EpiCodeSpace WebContainer terminal\x1b[0m');
     term.writeln('\x1b[90m# Press "Boot container" to start jsh.\x1b[0m');
 
@@ -99,6 +105,7 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       window.removeEventListener('resize', onResize);
       ro.disconnect();
       io.disconnect();
+      try { selSub.dispose(); } catch {}
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -270,6 +277,50 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     } catch (err) { logger.warn('terminal', 'kill failed', err); }
   }, []);
 
+  const handleCopy = useCallback(async () => {
+    const term = termRef.current;
+    const text = term?.getSelection?.() || '';
+    if (!text) return;
+    // iPadOS Safari: this MUST be inside the button's onClick user gesture.
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for old Safari: execCommand via a temp textarea.
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+      }
+      term?.writeln(`\x1b[90m# copied ${text.length} chars to clipboard\x1b[0m`);
+      // Clear the selection so the next tap targets the input again.
+      try { term?.clearSelection?.(); } catch {}
+      setHasSelection(false);
+    } catch (err) {
+      logger.warn('terminal', 'clipboard write failed', err);
+      term?.writeln(`\x1b[33m# clipboard blocked: ${err?.message || err}\x1b[0m`);
+    }
+  }, []);
+
+  const handlePaste = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard?.readText?.();
+      if (!text) return;
+      const writer = writerRef.current;
+      if (writer) {
+        await writer.write(text).catch(() => {});
+      } else {
+        termRef.current?.writeln('\x1b[33m# nothing to paste into — start jsh first\x1b[0m');
+      }
+    } catch (err) {
+      logger.warn('terminal', 'clipboard read failed', err);
+      termRef.current?.writeln(`\x1b[33m# paste blocked: ${err?.message || err}\x1b[0m`);
+    }
+  }, []);
+
   const handleTeardown = useCallback(async () => {
     const term = termRef.current;
     term?.writeln('\x1b[33m▶ tearing down container…\x1b[0m');
@@ -294,6 +345,22 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
             not cross-origin-isolated
           </span>
         )}
+        <button
+          onClick={handleCopy}
+          disabled={!hasSelection}
+          title="Copy selection to clipboard"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Copy className="w-3 h-3" /> Copy
+        </button>
+        <button
+          onClick={handlePaste}
+          disabled={!processRunning}
+          title="Paste clipboard into shell"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <ClipboardPaste className="w-3 h-3" /> Paste
+        </button>
         {bootState !== 'ready' && (
           <button
             onClick={handleBoot}

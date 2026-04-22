@@ -204,6 +204,23 @@ export function buildTreeFromFlat(
     };
   }
 
+  // Always seed .npmrc unless the user already shipped one. WebContainer's
+  // internal npm proxy rejects https:// for the registry URL, so any npm
+  // install (LSP bootstrap or user `npm i foo`) needs http://.
+  if (!root['.npmrc']) {
+    root['.npmrc'] = {
+      file: {
+        contents: [
+          'registry=http://registry.npmjs.org/',
+          'fund=false',
+          'audit=false',
+          'progress=false',
+          '',
+        ].join('\n'),
+      },
+    };
+  }
+
   return root;
 }
 
