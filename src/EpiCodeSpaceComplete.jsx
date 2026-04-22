@@ -14,9 +14,9 @@ import {
 
 // ─── Extracted modules (Amendment #6 — split monolith) ────────────────────────
 import CodeBlock from './components/CodeBlock.jsx';
-// Amendment #4 — Performance: lazy-load the Markdown renderer. It's only
-// needed for chat messages, which don't exist until after first interaction.
+// Amendment #4 — Performance: lazy-load heavy panels only when needed.
 const MarkdownContent = lazy(() => import('./components/MarkdownContent.jsx'));
+const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
 import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
@@ -479,7 +479,6 @@ function EpiCodeSpaceApp() {
   const handleTerminalCommandRef = useRef(null);
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
-  const lineNumRef = useRef(null);
 
   // ── Track screen width ────────────────────────────────────────────────────
   useEffect(() => {
@@ -564,8 +563,16 @@ function EpiCodeSpaceApp() {
   }, [showAgentPicker]);
 
   // ── Cursor tracking ──────────────────────────────────────────────────────
-  const handleCursorMove = useCallback((e) => {
-    const ta = e.target;
+  // Monaco pushes structured positions to us via its own event, but we keep
+  // a fallback signature for any non-Monaco fallback UI that may still wire
+  // to the old textarea-style event object.
+  const handleCursorMove = useCallback((arg) => {
+    if (arg && typeof arg.line === 'number') {
+      setCursorPos({ line: arg.line, col: arg.col });
+      return;
+    }
+    const ta = arg?.target;
+    if (!ta || typeof ta.value !== 'string') return;
     const text = ta.value.substring(0, ta.selectionStart);
     const lines = text.split('\n');
     setCursorPos({ line: lines.length, col: lines[lines.length - 1].length + 1 });
@@ -683,7 +690,10 @@ function EpiCodeSpaceApp() {
 
   const handleEditorChange = useCallback((e) => {
     if (!activeFile) return;
-    patchFile(activeFile, e.target.value);
+    // Kept for any residual textarea-style callers. Monaco uses a direct
+    // lambda in the Suspense block below.
+    const value = typeof e === 'string' ? e : e?.target?.value;
+    if (typeof value === 'string') patchFile(activeFile, value);
   }, [activeFile, patchFile]);
 
   const handleSave = useCallback(() => {
@@ -1447,12 +1457,6 @@ function EpiCodeSpaceApp() {
   // Keep ref in sync so handleAgentSubmit can call it without a forward-reference TDZ
   handleTerminalCommandRef.current = handleTerminalCommand;
 
-  // ── Line numbers ──────────────────────────────────────────────────────────
-  const getLineNumbers = useMemo(() => {
-    const content = fileSystem[activeFile]?.content ?? '';
-    return content.split('\n').map((_, i) => i + 1).join('\n');
-  }, [fileSystem, activeFile]);
-
   // ── Menu definitions ──────────────────────────────────────────────────────
   const menuDefinitions = useMemo(() => ({
     File: [
@@ -1731,13 +1735,6 @@ function EpiCodeSpaceApp() {
                   <button onClick={() => { setShowFind(false); setFindQuery(''); }} className="text-purple-400/60 hover:text-fuchsia-300 transition-colors ml-1"><X size={13} /></button>
                 </div>
               )}
-              <div
-                ref={lineNumRef}
-                className="w-12 bg-[#0a0412] border-r border-fuchsia-500/10 text-right pr-3 pt-4 text-xs text-purple-500/40 font-mono select-none h-full"
-                style={{ overflowY: 'auto', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-              >
-                <pre className="m-0 leading-relaxed" aria-hidden="true">{getLineNumbers}</pre>
-              </div>
               {(() => {
                 const entry = fileSystem[activeFile];
                 const fileBytes = entry?.size ?? (entry?.content?.length ?? 0);
@@ -1763,7 +1760,7 @@ function EpiCodeSpaceApp() {
                             <span className="font-mono text-fuchsia-300">{entry?.name}</span> is{' '}
                             <span className="font-mono">{mb} MB</span>, above the{' '}
                             <span className="font-mono">{ceilingMb} MB</span> inline ceiling.
-                            Editing this file in the textarea would pin it in memory and risk a tab crash on iPad.
+                            Editing this file in the editor would pin it in memory and risk a tab crash on iPad.
                             Use streamed reads (<span className="font-mono text-fuchsia-300">readLargeChunk</span>) or split the file into smaller modules.
                           </div>
                         </div>
@@ -1775,20 +1772,21 @@ function EpiCodeSpaceApp() {
                   );
                 }
                 return (
-                  <textarea
-                    ref={editorRef}
-                    value={entry?.content ?? ''}
-                    onChange={handleEditorChange}
-                    onKeyUp={handleCursorMove}
-                    onClick={handleCursorMove}
-                    onSelect={handleCursorMove}
-                    onScroll={(e) => { if (lineNumRef.current) lineNumRef.current.scrollTop = e.target.scrollTop; }}
-                    spellCheck={false}
-                    aria-label={`Editor: ${entry?.name}`}
-                    aria-multiline="true"
-                    className="flex-1 w-full h-full bg-[#0a0412] text-purple-100 font-mono leading-relaxed p-4 resize-none focus:outline-none border-none overflow-auto"
-                    style={{ tabSize: 2, fontSize, whiteSpace: wordWrap ? 'pre-wrap' : 'pre' }}
-                  />
+                  <Suspense fallback={
+                    <div className="flex-1 flex items-center justify-center bg-[#0b1020] text-fuchsia-300/70 text-xs gap-2">
+                      <Loader2 size={14} className="animate-spin" /> Loading editor…
+                    </div>
+                  }>
+                    <CodeEditor
+                      ref={editorRef}
+                      path={activeFile}
+                      value={entry?.content ?? ''}
+                      onChange={(next) => patchFile(activeFile, next)}
+                      onCursorChange={handleCursorMove}
+                      fontSize={fontSize}
+                      wordWrap={wordWrap}
+                    />
+                  </Suspense>
                 );
               })()}
               </>
@@ -1855,7 +1853,7 @@ function EpiCodeSpaceApp() {
                         e.preventDefault();
                         setChatInput(prev => (prev ? prev + '\n\n' : '') + '```\n' + sel.trim() + '\n```');
                         // switch focus to chat once pasted
-                        setTimeout(() => document.querySelector('textarea')?.focus(), 50);
+                        setTimeout(() => editorRef.current?.focus?.(), 50);
                       }
                     }}
                   >
