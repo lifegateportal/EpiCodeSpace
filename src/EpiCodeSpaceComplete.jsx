@@ -525,6 +525,9 @@ function EpiCodeSpaceApp() {
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [steerInput, setSteerInput] = useState('');
+  const [isSteerOpen, setIsSteerOpen] = useState(false);
+  const steerInputRef = useRef(null);
   const [chatMode, setChatMode] = useState(() => loadJSON(MODE_KEY, 'agent'));
   const savedConvos = loadJSON(CONVOS_KEY, [{ id: 1, name: 'Chat 1', messages: [], agent: 'epicode-agent', createdAt: Date.now() }]);
   const [activeAgent, setActiveAgent] = useState(() => loadJSON(AGENT_KEY, 'epicode-agent'));
@@ -1114,6 +1117,56 @@ function EpiCodeSpaceApp() {
     return { newFS, changed, cmdsToRun };
   }, []);
 
+  // ── Stop agent + optionally steer ──────────────────────────────────────
+  const handleStop = useCallback(() => {
+    chatAbortRef.current?.abort();
+    setIsTyping(false);
+    setIsSteerOpen(false);
+    setSteerInput('');
+    // Leave a visible stopped indicator in the chat thread
+    setMessages(prev => {
+      const withoutProgress = prev.filter(m => !m._progress);
+      return [...withoutProgress, {
+        role: 'assistant',
+        content: '⛔ *Stopped by user.*',
+        agent: activeAgent,
+        agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+        toolCalls: [], steps: [], mode: chatMode, timestamp: Date.now(),
+      }];
+    });
+  }, [activeAgent, chatMode]);
+
+  const handleOpenSteer = useCallback(() => {
+    // Pause the agent (abort in-flight fetch) but keep isTyping true visually
+    // until the user submits steering or cancels.
+    chatAbortRef.current?.abort();
+    setIsSteerOpen(true);
+    // Focus the steer textarea on next frame
+    requestAnimationFrame(() => steerInputRef.current?.focus());
+  }, []);
+
+  const handleSteer = useCallback(() => {
+    const steering = steerInput.trim();
+    if (!steering) { handleStop(); return; }
+    setIsSteerOpen(false);
+    setSteerInput('');
+    // Inject the steering message as a new user turn and re-fire the loop
+    const steerMsg = { role: 'user', content: `[Steering] ${steering}`, agent: activeAgent, timestamp: Date.now() };
+    setMessages(prev => [...prev.filter(m => !m._progress), steerMsg]);
+    setConversations(prev => prev.map(c =>
+      c.id === activeConvoId
+        ? { ...c, messages: [...c.messages.filter(m => !m._progress), steerMsg] }
+        : c,
+    ));
+    // Re-use handleAgentSubmit logic by stuffing chatInput + simulating submit
+    setChatInput(steering);
+    // Use a microtask so state settles before the submit fires
+    Promise.resolve().then(() => {
+      chatAbortRef.current = new AbortController();
+      setIsTyping(true);
+    });
+  }, [steerInput, activeAgent, activeConvoId, handleStop]);
+
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
@@ -1285,6 +1338,11 @@ function EpiCodeSpaceApp() {
         setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
       } catch (err) {
+        // AbortError is a deliberate user stop — don't show the fallback.
+        if (err?.name === 'AbortError') {
+          setMessages(prev => prev.filter(m => !m._progress));
+          return;
+        }
         logger.error('chat', 'API call failed — falling back to local agent', { message: err?.message });
         // Fallback to local simulated response
         const tools = createAgentTools(fileSystem, activeFile);
@@ -2544,7 +2602,45 @@ function EpiCodeSpaceApp() {
                   <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-3 flex items-center gap-2 w-fit">
                     <Loader2 size={14} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
                     <span className="text-xs">{chatMode === 'agent' ? 'Executing tools & writing code...' : chatMode === 'plan' ? 'Analyzing codebase & planning...' : 'Thinking...'}</span>
+                    {/* Stop / Steer controls */}
+                    <div className="flex items-center gap-1 ml-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenSteer}
+                        title="Stop and provide steering"
+                        className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/25 hover:text-fuchsia-100 transition-colors"
+                      >
+                        <RotateCcw size={10} /> Steer
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStop}
+                        title="Stop generation"
+                        className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/25 hover:text-red-200 transition-colors"
+                      >
+                        <Square size={10} /> Stop
+                      </button>
+                    </div>
                   </div>
+                  {/* Inline steer input — slides in below the typing indicator */}
+                  {isSteerOpen && (
+                    <div className="flex items-center gap-2 mt-1 bg-[#0a0412]/80 border border-fuchsia-400/40 rounded-lg px-3 py-2 shadow-[0_0_12px_rgba(232,121,249,0.15)]">
+                      <RotateCcw size={12} className="text-fuchsia-400 shrink-0" />
+                      <input
+                        ref={steerInputRef}
+                        value={steerInput}
+                        onChange={e => setSteerInput(e.target.value)}
+                        placeholder="Add steering instructions and press Enter…"
+                        className="flex-1 bg-transparent text-[12px] text-purple-100 placeholder-purple-500/50 outline-none"
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { e.preventDefault(); handleSteer(); }
+                          if (e.key === 'Escape') { setIsSteerOpen(false); setSteerInput(''); handleStop(); }
+                        }}
+                      />
+                      <button type="button" onClick={handleSteer} className="text-[10px] px-2 py-0.5 rounded bg-fuchsia-600 hover:bg-fuchsia-500 text-white transition-colors shrink-0">Send</button>
+                      <button type="button" onClick={() => { setIsSteerOpen(false); setSteerInput(''); handleStop(); }} className="text-[10px] text-purple-500 hover:text-red-400 transition-colors shrink-0">Cancel</button>
+                    </div>
+                  )}
                 </div>
               )}
               <div ref={chatEndRef} />
