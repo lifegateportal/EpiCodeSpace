@@ -133,9 +133,9 @@ async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
   const isReasoning = /^(o\d|gpt-5)/i.test(config.model);
   const body = { model: config.model, messages: [{ role: 'system', content: systemPrompt }, ...messages] };
   if (isReasoning) {
-    body.max_completion_tokens = 4096;
+    body.max_completion_tokens = 16384;
   } else {
-    body.max_tokens = 4096;
+    body.max_tokens = 16384;
     body.temperature = 0.7;
   }
   if (useTools) { body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })); body.tool_choice = 'auto'; }
@@ -189,7 +189,7 @@ async function callAnthropic(config, apiKey, systemPrompt, messages, useTools) {
     }
   }
 
-  const body = { model: config.model, max_tokens: 4096, system, messages: cachedMessages };
+  const body = { model: config.model, max_tokens: 16384, system, messages: cachedMessages };
   if (useTools) {
     const tools = WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
     // Cache the tool definitions too — they never change.
@@ -238,7 +238,7 @@ async function callGemini(config, apiKey, systemPrompt, messages, useTools) {
   const body = {
     contents,
     systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] },
-    generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
+    generationConfig: { maxOutputTokens: 16384, temperature: 0.7 },
   };
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
 

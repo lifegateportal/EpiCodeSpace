@@ -1100,9 +1100,10 @@ function EpiCodeSpaceApp() {
       const r = results[i]?.result;
       if (!r?.ok) return;
       if (tc.name === 'writeFile') {
-        // Guard: some models omit `content` in tool arguments; default to '' to
-        // prevent downstream f.content.split crashes on the next tool round.
-        newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: tc.arguments.content ?? '' };
+        // Use r.content (validated inside executeToolCall) rather than
+        // tc.arguments.content directly — prevents empty files when the
+        // model hits max_tokens and the OpenAI arguments JSON is truncated.
+        newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: r.content ?? '' };
         changed = true;
       } else if (tc.name === 'editFile' && r.content) {
         newFS[tc.arguments.path] = { ...newFS[tc.arguments.path], content: r.content };
@@ -1265,7 +1266,9 @@ function EpiCodeSpaceApp() {
             // Execute each tool call locally
             toolResults = data.tool_calls.map(tc => {
               const result = executeToolCall(tc.name, tc.arguments, currentFS);
-              const argSummary = tc.name === 'writeFile' ? `"${tc.arguments.path}" (${tc.arguments.content?.split('\n').length || 0} lines)`
+              // Use result.lines — computed from the validated/safe content inside
+              // executeToolCall — so it can never show 0 from a raw undefined arg.
+              const argSummary = tc.name === 'writeFile' ? `"${tc.arguments.path}" (${result.lines ?? 0} lines)`
                 : tc.name === 'editFile' ? `"${tc.arguments.path}"`
                 : tc.name === 'deleteFile' ? `"${tc.arguments.path}"`
                 : tc.name === 'readFile' ? `"${tc.arguments.path}"`
