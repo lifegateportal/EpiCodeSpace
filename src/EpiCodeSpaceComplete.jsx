@@ -1891,7 +1891,7 @@ function EpiCodeSpaceApp() {
                   </div>
                   <form onSubmit={(e) => { e.preventDefault(); if (!terminalInput.trim()) return; handleTerminalCommand(terminalInput.trim()); setTerminalInput(''); }} className="flex items-start px-3 pb-3 mt-1">
                     <span className="text-cyan-400 mr-2 shrink-0 font-semibold drop-shadow-[0_0_2px_rgba(34,211,238,0.8)]">ubuntu@epicode:~/workspace (main) $</span>
-                    <input ref={termInputRef} type="text" value={terminalInput} onChange={(e) => setTerminalInput(e.target.value.toLowerCase())} aria-label="Terminal input" className="flex-1 bg-transparent border-none outline-none text-purple-100 focus:ring-0 p-0 caret-fuchsia-500" autoComplete="off" spellCheck="false" autoFocus />
+                    <input ref={termInputRef} type="text" value={terminalInput} onChange={(e) => setTerminalInput(e.target.value.toLowerCase())} aria-label="Terminal input" className="terminal-input flex-1 bg-transparent border-none outline-none text-purple-100 focus:ring-0 focus:outline-none p-0 caret-fuchsia-500" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false" autoFocus />
                   </form>
                 </div>
               )}

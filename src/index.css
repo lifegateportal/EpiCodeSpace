@@ -47,6 +47,21 @@ button, [role="button"] { touch-action: manipulation; }
   }
 }
 
+/* Terminal input: kill all focus chrome (outline, ring, box-shadow, border).
+   The global `:focus-visible` rule below draws a 2px fuchsia outline on
+   everything; on a full-width input that looks like a highlighted bar. */
+input.terminal-input,
+input.terminal-input:focus,
+input.terminal-input:focus-visible,
+input.terminal-input:focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  background: transparent !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 /* ── Full-height layout: use dvh (dynamic viewport height) so the app fills  ─
    the real visible area on iPad Safari even when the toolbar is shown/hidden. ─
    Falls back to 100vh on older browsers.                                      */
