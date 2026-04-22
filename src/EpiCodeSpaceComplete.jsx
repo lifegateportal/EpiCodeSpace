@@ -1038,7 +1038,16 @@ function EpiCodeSpaceApp() {
     const context = {
       activeFile,
       activeContent: fileSystem[activeFile]?.content || '',
-      files: Object.entries(fileSystem).map(([p, f]) => ({ path: p, language: f.language, lines: f.content.split('\n').length })),
+      // Guard against entries with missing/non-string content (directory
+      // placeholders, freshly-created empty files, binary blobs). Without
+      // this, .split('\n') throws "undefined is not an object".
+      files: Object.entries(fileSystem)
+        .filter(([, f]) => f && typeof f === 'object')
+        .map(([p, f]) => ({
+          path: p,
+          language: f.language || 'plaintext',
+          lines: typeof f.content === 'string' ? f.content.split('\n').length : 0,
+        })),
     };
 
     const convo = conversations.find(c => c.id === activeConvoId);
