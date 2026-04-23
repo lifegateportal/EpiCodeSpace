@@ -341,6 +341,28 @@ export function useFileSystem() {
     dispatch({ type: 'write', path, content, language, size, isLarge });
     emit({ type: 'write', path, content: content ?? '', isLarge });
   }, [emit]);
+  const writeBinaryFile = useCallback(async (path, bytes, language = 'binary') => {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+
+    if (mode === 'opfs') {
+      const handle = await FsClient.writeStreamOpen(path);
+      try {
+        for (let offset = 0; offset < view.byteLength; offset += 64 * 1024) {
+          const chunk = view.subarray(offset, Math.min(view.byteLength, offset + 64 * 1024));
+          const ab = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+          await FsClient.writeStreamAppend(handle, ab);
+        }
+        await FsClient.writeStreamClose(handle);
+      } catch (err) {
+        await FsClient.writeStreamAbort(handle).catch(() => {});
+        logger.error('useFileSystem', `writeBinaryFile failed for ${path}`, { err });
+        throw err;
+      }
+    }
+
+    dispatch({ type: 'write', path, content: '', language, size: view.byteLength, isLarge: true });
+    emit({ type: 'write-binary', path, bytes: view, size: view.byteLength });
+  }, [emit, mode]);
   const patchFile = useCallback((path, content) => {
     dispatch({ type: 'patch', path, content });
     emit({ type: 'patch', path, content: content ?? '' });
@@ -389,6 +411,7 @@ export function useFileSystem() {
     // Mutations
     replaceAll,
     writeFile,
+    writeBinaryFile,
     patchFile,
     renameFile,
     deleteFile,

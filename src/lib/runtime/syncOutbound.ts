@@ -10,6 +10,7 @@ import { logger } from '../logger.js';
 
 export type MutationEvent =
   | { type: 'write' | 'patch'; path: string; content: string; isLarge?: boolean }
+  | { type: 'write-binary'; path: string; bytes: Uint8Array; size?: number }
   | { type: 'delete'; path: string }
   | { type: 'rename'; oldPath: string; newPath: string; content?: string }
   | { type: 'replaceAll'; files: Record<string, { content?: string; isLarge?: boolean }> };
@@ -17,7 +18,8 @@ export type MutationEvent =
 const DEBOUNCE_MS = 800; // 800ms — prevents every keystroke crossing the worker boundary
 
 type Pending =
-  | { kind: 'upsert'; path: string; content: string }
+  | { kind: 'upsert-text'; path: string; content: string }
+  | { kind: 'upsert-bytes'; path: string; bytes: Uint8Array }
   | { kind: 'remove'; path: string };
 
 const queue = new Map<string, Pending>();
@@ -45,7 +47,8 @@ export async function flush() {
       } else {
         const dir = op.path.includes('/') ? op.path.slice(0, op.path.lastIndexOf('/')) : '';
         if (dir) await container.fs.mkdir(dir, { recursive: true });
-        await container.fs.writeFile(op.path, op.content);
+        if (op.kind === 'upsert-bytes') await container.fs.writeFile(op.path, op.bytes);
+        else await container.fs.writeFile(op.path, op.content);
       }
     } catch (err) {
       logger.warn('runtime', `outbound ${op.kind} failed: ${op.path}`, err);
@@ -57,7 +60,15 @@ function queueUpsert(path: string, content: string) {
   const n = normalize(path);
   if (!shouldSync(n)) return;
   if ((content?.length ?? 0) > MAX_MIRROR_BYTES) return;
-  queue.set(n, { kind: 'upsert', path: n, content });
+  queue.set(n, { kind: 'upsert-text', path: n, content });
+  schedule();
+}
+
+function queueUpsertBytes(path: string, bytes: Uint8Array) {
+  const n = normalize(path);
+  if (!shouldSync(n)) return;
+  if ((bytes?.byteLength ?? 0) > MAX_MIRROR_BYTES) return;
+  queue.set(n, { kind: 'upsert-bytes', path: n, bytes });
   schedule();
 }
 
@@ -75,6 +86,10 @@ export function applyMutation(ev: MutationEvent): void {
     case 'patch':
       if (ev.isLarge) return;
       queueUpsert(ev.path, ev.content ?? '');
+      break;
+    case 'write-binary':
+      if (!ev.bytes) return;
+      queueUpsertBytes(ev.path, ev.bytes);
       break;
     case 'delete':
       queueRemove(ev.path);

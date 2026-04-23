@@ -598,6 +598,73 @@ function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
 }
 
+const IMAGE_MIME_TO_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+
+function sanitizeFileName(name, fallback = 'image') {
+  const safe = (name || fallback)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return safe || fallback;
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function arrayBufferFromFile(file) {
+  if (typeof file.arrayBuffer === 'function') return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function extractImageFileFromDataTransfer(dt) {
+  if (!dt) return null;
+  const fromItems = Array.from(dt.items || []).find((item) => item.kind === 'file' && item.type?.startsWith('image/'));
+  if (fromItems) return fromItems.getAsFile();
+  const fromFiles = Array.from(dt.files || []).find((file) => file?.type?.startsWith('image/'));
+  return fromFiles || null;
+}
+
+function toModelUserContent(text, image, agentId) {
+  if (!image) return text;
+  const safeText = text || 'Describe this image.';
+  if (agentId === 'claude') {
+    return [
+      { type: 'text', text: safeText },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: image.mime,
+          data: image.base64,
+        },
+      },
+    ];
+  }
+  if (agentId === 'epicode-agent' || agentId === 'copilot') {
+    return [
+      { type: 'text', text: safeText },
+      { type: 'image_url', image_url: { url: image.dataUrl } },
+    ];
+  }
+  return safeText;
+}
+
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
@@ -612,6 +679,7 @@ function EpiCodeSpaceApp() {
     getLatest,
     replaceAll,
     writeFile,
+    writeBinaryFile,
     patchFile,
     renameFile: hookRenameFile,
     deleteFile: hookDeleteFile,
@@ -651,6 +719,7 @@ function EpiCodeSpaceApp() {
   const TOKEN_CEILING = 50_000;
 
   const [chatInput, setChatInput] = useState('');
+  const [chatImage, setChatImage] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
   const [sessionTokens, setSessionTokens] = useState(0);
@@ -1308,18 +1377,67 @@ function EpiCodeSpaceApp() {
     });
   }, [steerInput, activeAgent, activeConvoId, handleStop]);
 
+  const handleAttachChatImage = useCallback(async (file) => {
+    if (!file || !file.type || !file.type.startsWith('image/')) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl) return;
+      const commaIdx = dataUrl.indexOf(',');
+      const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
+      setChatImage({
+        name: sanitizeFileName(file.name || `pasted-image.${IMAGE_MIME_TO_EXT[file.type] || 'png'}`),
+        mime: file.type,
+        dataUrl,
+        base64,
+      });
+    } catch (err) {
+      logger.warn('chat', 'image attach failed', err);
+    }
+  }, []);
+
+  const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
+    const list = Array.from(files || []).filter((f) => f?.type?.startsWith('image/'));
+    if (!list.length) return;
+    const current = getLatest();
+    for (const file of list) {
+      try {
+        const ext = IMAGE_MIME_TO_EXT[file.type] || 'bin';
+        const baseName = sanitizeFileName(file.name || `image.${ext}`);
+        const dot = baseName.lastIndexOf('.');
+        const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+        const suffix = dot > 0 ? baseName.slice(dot) : `.${ext}`;
+        let candidate = baseName;
+        let idx = 1;
+        while (current[folderPath ? `${folderPath}/${candidate}` : candidate]) {
+          idx += 1;
+          candidate = `${stem}-${idx}${suffix}`;
+        }
+        const targetPath = folderPath ? `${folderPath}/${candidate}` : candidate;
+        const buffer = await arrayBufferFromFile(file);
+        const bytes = new Uint8Array(buffer);
+        await writeBinaryFile(targetPath, bytes, 'binary');
+        current[targetPath] = { name: candidate };
+      } catch (err) {
+        logger.warn('explorer', `drop import failed: ${file?.name || 'image'}`, err);
+      }
+    }
+  }, [getLatest, writeBinaryFile]);
+
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
-    if (!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING) return;
+    if ((!chatInput.trim() && !chatImage) || isTyping || sessionTokens >= TOKEN_CEILING) return;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
     const userMessage = chatInput.trim();
-    const userMsg = { role: 'user', content: userMessage, agent: activeAgent, timestamp: Date.now() };
+    const apiUserContent = toModelUserContent(userMessage, chatImage, activeAgent);
+    const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
+    const userMsg = { role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
     setChatInput('');
+    setChatImage(null);
     setIsTyping(true);
 
     const context = {
@@ -1338,7 +1456,7 @@ function EpiCodeSpaceApp() {
     };
 
     const convo = conversations.find(c => c.id === activeConvoId);
-    const history = [...(convo?.messages || []), userMsg]
+    const history = [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }));
@@ -1554,7 +1672,7 @@ function EpiCodeSpaceApp() {
         setIsTyping(false);
       }
     })();
-  }, [chatInput, isTyping, fileSystem, activeFile, activeAgent, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
@@ -2084,6 +2202,7 @@ function EpiCodeSpaceApp() {
                   onDeleteFile={handleDeleteFile}
                   onRenameFile={handleRenameFile}
                   onMoveFile={handleMoveFile}
+                  onDropFiles={handleExplorerDropFiles}
                   onProjectRename={setProjectName}
                   onImport={handleImportProject}
                   onExport={handleExportProject}
@@ -2848,11 +2967,33 @@ function EpiCodeSpaceApp() {
               )}
               <form onSubmit={handleAgentSubmit} className="flex flex-col gap-2">
                 <div className="relative bg-[#0a0412]/80 border border-fuchsia-500/30 focus-within:border-fuchsia-400 focus-within:shadow-[0_0_10px_rgba(232,121,249,0.2)] rounded-lg transition-all">
+                  {chatImage && (
+                    <div className="px-3 pt-3">
+                      <div className="inline-flex items-center gap-2 rounded-md border border-fuchsia-500/30 bg-fuchsia-500/10 px-2 py-1">
+                        <img src={chatImage.dataUrl} alt={chatImage.name} className="h-10 w-10 rounded object-cover border border-fuchsia-400/40" />
+                        <span className="text-[11px] text-purple-200/90 max-w-[180px] truncate">{chatImage.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setChatImage(null)}
+                          className="text-[11px] text-purple-400 hover:text-red-300 transition-colors"
+                          aria-label="Remove image"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <textarea
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     disabled={sessionTokens >= TOKEN_CEILING}
                     onPaste={(e) => {
+                      const imageFile = extractImageFileFromDataTransfer(e.clipboardData);
+                      if (imageFile) {
+                        e.preventDefault();
+                        handleAttachChatImage(imageFile);
+                        return;
+                      }
                       // Allow paste of anything — strip only null bytes that break JSON
                       const pasted = e.clipboardData.getData('text');
                       if (pasted) {
@@ -2868,6 +3009,15 @@ function EpiCodeSpaceApp() {
                           ta.selectionStart = ta.selectionEnd = start + cleaned.length;
                         });
                       }
+                    }}
+                    onDrop={(e) => {
+                      const imageFile = extractImageFileFromDataTransfer(e.dataTransfer);
+                      if (!imageFile) return;
+                      e.preventDefault();
+                      handleAttachChatImage(imageFile);
+                    }}
+                    onDragOver={(e) => {
+                      if (extractImageFileFromDataTransfer(e.dataTransfer)) e.preventDefault();
                     }}
                     placeholder={chatMode === 'agent' ? `Tell ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'} what to build or fix...` : chatMode === 'plan' ? `Describe what you want planned...` : `Ask ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'}...`}
                     className={`w-full bg-transparent p-3 text-[13px] text-purple-100 outline-none placeholder:text-purple-400/40 resize-none min-h-[80px] ${sessionTokens >= TOKEN_CEILING ? 'opacity-40 cursor-not-allowed' : ''}`}
@@ -2907,7 +3057,7 @@ function EpiCodeSpaceApp() {
                     </div>
                     <button
                       type="submit"
-                      disabled={!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING}
+                      disabled={(!chatInput.trim() && !chatImage) || isTyping || sessionTokens >= TOKEN_CEILING}
                       className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-[#25104a] disabled:text-purple-500/50 text-white rounded-md transition-all shadow-md"
                     >
                       <Send size={14} className={isTyping ? "opacity-50" : ""} />

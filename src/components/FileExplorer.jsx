@@ -87,6 +87,7 @@ export default function FileExplorer({
   onDeleteFile,     // (path: string) => void
   onRenameFile,     // (oldPath, newPath) => void
   onMoveFile,       // (oldPath, newPath) => void  (drag & drop)
+  onDropFiles,      // (files: FileList|File[], folderPath: string) => void
   onProjectRename,  // (name: string) => void
   onImport,
   onExport,
@@ -280,6 +281,13 @@ export default function FileExplorer({
     e.preventDefault();
     e.stopPropagation();
     setDragOver(null);
+
+    const droppedFiles = e.dataTransfer?.files;
+    if (droppedFiles && droppedFiles.length > 0) {
+      onDropFiles?.(droppedFiles, folderPath || '');
+      return;
+    }
+
     const src = e.dataTransfer.getData('text/path');
     if (!src) return;
     const fileName = src.split('/').pop();
