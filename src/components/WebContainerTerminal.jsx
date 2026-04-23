@@ -250,14 +250,22 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       //   2. VITE_WEBCONTAINER_APIKEY env var not set or not picked up at build time
       //   3. COOP/COEP headers missing (check DevTools → Application → Headers)
       const bootPromise = bridge.boot({ files });
-      const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(
+      // The timeout id is captured so we can clear it immediately when boot
+      // resolves — without this, the 30s timer burns to completion on every
+      // successful boot, holding a closure reference for no reason.
+      let watchdogId;
+      const timeout = new Promise((_, reject) => {
+        watchdogId = setTimeout(() => reject(new Error(
           'boot timed out (30s). Check: 1) DevTools Console for WebContainer errors, ' +
           '2) VITE_WEBCONTAINER_APIKEY is set in Vercel env vars and a fresh deploy was triggered, ' +
           '3) your origin is registered at webcontainers.io'
-        )), 30000),
-      );
-      await Promise.race([bootPromise, timeout]);
+        )), 30000);
+      });
+      try {
+        await Promise.race([bootPromise, timeout]);
+      } finally {
+        clearTimeout(watchdogId);
+      }
       term?.writeln('\x1b[32m✔ container ready\x1b[0m');
       await startShell();
     } catch (err) {

@@ -133,6 +133,9 @@ const CodeEditor = forwardRef(function CodeEditor(
 ) {
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
+  // Always-current ref so the cursor listener never captures a stale prop.
+  const onCursorChangeRef = useRef(onCursorChange);
+  useEffect(() => { onCursorChangeRef.current = onCursorChange; }, [onCursorChange]);
 
   // Shim the old textarea API so existing `editorCut/Copy/Paste/SelectAll`
   // call sites keep working without bespoke Monaco code paths.
@@ -183,13 +186,13 @@ const CodeEditor = forwardRef(function CodeEditor(
       })
       .catch((err) => console.warn('[lsp] adapter import failed', err));
 
-    if (onCursorChange) {
-      editor.onDidChangeCursorPosition(() => {
-        const pos = editor.getPosition();
-        if (pos) onCursorChange({ line: pos.lineNumber, col: pos.column });
-      });
-    }
-  }, [onCursorChange]);
+    // Always register the listener; route through ref so it's never stale
+    // even if the onCursorChange prop changes after mount.
+    editor.onDidChangeCursorPosition(() => {
+      const pos = editor.getPosition();
+      if (pos) onCursorChangeRef.current?.({ line: pos.lineNumber, col: pos.column });
+    });
+  }, []); // stable — onCursorChange is accessed via ref, not captured directly
 
   // Update readonly state without remounting the editor.
   useEffect(() => {
