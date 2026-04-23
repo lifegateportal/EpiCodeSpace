@@ -598,6 +598,15 @@ function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error || new Error('Failed to read clipboard image'));
+    reader.readAsDataURL(file);
+  });
+}
+
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
@@ -651,6 +660,7 @@ function EpiCodeSpaceApp() {
   const TOKEN_CEILING = 50_000;
 
   const [chatInput, setChatInput] = useState('');
+  const [chatClipboardImages, setChatClipboardImages] = useState([]);
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
   const [sessionTokens, setSessionTokens] = useState(0);
@@ -1311,15 +1321,21 @@ function EpiCodeSpaceApp() {
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
-    if (!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING) return;
+    const hasText = !!chatInput.trim();
+    const hasImages = chatClipboardImages.length > 0;
+    if ((!hasText && !hasImages) || isTyping || sessionTokens >= TOKEN_CEILING) return;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
-    const userMessage = chatInput.trim();
+    const imageMarkdown = chatClipboardImages
+      .map((img, idx) => `![clipboard-image-${idx + 1}](${img.dataUrl})`)
+      .join('\n\n');
+    const userMessage = [chatInput.trim(), imageMarkdown].filter(Boolean).join('\n\n');
     const userMsg = { role: 'user', content: userMessage, agent: activeAgent, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
     setChatInput('');
+    setChatClipboardImages([]);
     setIsTyping(true);
 
     const context = {
@@ -1554,7 +1570,7 @@ function EpiCodeSpaceApp() {
         setIsTyping(false);
       }
     })();
-  }, [chatInput, isTyping, fileSystem, activeFile, activeAgent, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations]);
+  }, [chatInput, chatClipboardImages, isTyping, fileSystem, activeFile, activeAgent, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
@@ -2848,12 +2864,49 @@ function EpiCodeSpaceApp() {
               )}
               <form onSubmit={handleAgentSubmit} className="flex flex-col gap-2">
                 <div className="relative bg-[#0a0412]/80 border border-fuchsia-500/30 focus-within:border-fuchsia-400 focus-within:shadow-[0_0_10px_rgba(232,121,249,0.2)] rounded-lg transition-all">
+                  {chatClipboardImages.length > 0 && (
+                    <div className="px-3 pt-3 pb-1 flex flex-wrap gap-2">
+                      {chatClipboardImages.map((img, i) => (
+                        <div key={img.id} className="relative border border-fuchsia-500/30 rounded-md overflow-hidden bg-black/20">
+                          <img src={img.dataUrl} alt={`clipboard-${i + 1}`} className="w-16 h-16 object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => setChatClipboardImages(prev => prev.filter(x => x.id !== img.id))}
+                            className="absolute top-0 right-0 bg-black/60 text-[10px] leading-none px-1 py-0.5 text-purple-100 hover:text-red-300"
+                            title="Remove image"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     disabled={sessionTokens >= TOKEN_CEILING}
-                    onPaste={(e) => {
-                      // Allow paste of anything — strip only null bytes that break JSON
+                    onPaste={async (e) => {
+                      const items = Array.from(e.clipboardData?.items || []);
+                      const imageItems = items.filter(item => item.type?.startsWith('image/'));
+                      if (imageItems.length > 0) {
+                        e.preventDefault();
+                        try {
+                          const files = imageItems.map(item => item.getAsFile()).filter(Boolean);
+                          const dataUrls = await Promise.all(files.map(file => fileToDataUrl(file)));
+                          setChatClipboardImages(prev => [
+                            ...prev,
+                            ...dataUrls.filter(Boolean).map((dataUrl, idx) => ({
+                              id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+                              dataUrl,
+                            })),
+                          ]);
+                        } catch {
+                          // If image decode fails, allow default behavior.
+                        }
+                        return;
+                      }
+
+                      // Allow paste of text — strip only null bytes that break JSON.
                       const pasted = e.clipboardData.getData('text');
                       if (pasted) {
                         e.preventDefault();
@@ -2863,7 +2916,7 @@ function EpiCodeSpaceApp() {
                         const end = ta.selectionEnd;
                         const next = chatInput.slice(0, start) + cleaned + chatInput.slice(end);
                         setChatInput(next);
-                        // Restore cursor after React re-render
+                        // Restore cursor after React re-render.
                         requestAnimationFrame(() => {
                           ta.selectionStart = ta.selectionEnd = start + cleaned.length;
                         });
@@ -2894,6 +2947,28 @@ function EpiCodeSpaceApp() {
                         className="p-1.5 text-purple-400/60 hover:text-fuchsia-300 transition-colors"
                         onClick={async () => {
                           try {
+                            if (navigator.clipboard?.read) {
+                              const clipboardItems = await navigator.clipboard.read();
+                              const imageBlobs = [];
+                              for (const item of clipboardItems) {
+                                for (const type of item.types) {
+                                  if (type.startsWith('image/')) {
+                                    imageBlobs.push(await item.getType(type));
+                                  }
+                                }
+                              }
+                              if (imageBlobs.length > 0) {
+                                const dataUrls = await Promise.all(imageBlobs.map(blob => fileToDataUrl(blob)));
+                                setChatClipboardImages(prev => [
+                                  ...prev,
+                                  ...dataUrls.filter(Boolean).map((dataUrl, idx) => ({
+                                    id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+                                    dataUrl,
+                                  })),
+                                ]);
+                                return;
+                              }
+                            }
                             const text = await navigator.clipboard.readText();
                             if (text) setChatInput(prev => prev + text);
                           } catch {
@@ -2907,7 +2982,7 @@ function EpiCodeSpaceApp() {
                     </div>
                     <button
                       type="submit"
-                      disabled={!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING}
+                      disabled={(!chatInput.trim() && chatClipboardImages.length === 0) || isTyping || sessionTokens >= TOKEN_CEILING}
                       className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-[#25104a] disabled:text-purple-500/50 text-white rounded-md transition-all shadow-md"
                     >
                       <Send size={14} className={isTyping ? "opacity-50" : ""} />

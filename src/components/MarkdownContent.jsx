@@ -8,6 +8,27 @@ import CodeBlock from './CodeBlock.jsx';
  * @param {{ text: string }} props
  */
 export function InlineText({ text }) {
+  const imageMatch = text.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+  if (imageMatch) {
+    const alt = imageMatch[1] || 'image';
+    const src = imageMatch[2] || '';
+    return (
+      <img
+        src={src}
+        alt={alt}
+        style={{
+          display: 'block',
+          margin: '6px 0',
+          maxWidth: '100%',
+          maxHeight: '360px',
+          borderRadius: '8px',
+          border: '1px solid rgba(232,121,249,0.22)',
+          background: 'rgba(10,4,18,0.6)',
+        }}
+      />
+    );
+  }
+
   const segs = [];
   const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
   let pos = 0;
