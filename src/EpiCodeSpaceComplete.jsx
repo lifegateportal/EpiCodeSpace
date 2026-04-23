@@ -587,6 +587,17 @@ function NewProjectDialog({ initialTemplate = 'react', onConfirm, onCancel }) {
   );
 }
 
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+function toolCallSignature(name, args) {
+  return `${name}:${stableStringify(args ?? {})}`;
+}
+
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
@@ -1338,6 +1349,7 @@ function EpiCodeSpaceApp() {
       let currentFS = { ...fileSystem };
       let pendingToolCalls = null;
       let toolResults = null;
+      let lastToolCallSig = null;
       const MAX_ROUNDS = 8;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
 
@@ -1427,7 +1439,20 @@ function EpiCodeSpaceApp() {
 
             // Execute each tool call locally
             toolResults = data.tool_calls.map(tc => {
-              const result = executeToolCall(tc.name, tc.arguments, currentFS);
+              const signature = toolCallSignature(tc.name, tc.arguments);
+              const isConsecutiveDuplicate = signature === lastToolCallSig;
+              const result = isConsecutiveDuplicate
+                ? {
+                    ok: false,
+                    duplicate: true,
+                    systemMessage: 'You just read this file, please proceed with the data provided',
+                  }
+                : executeToolCall(tc.name, tc.arguments, currentFS);
+
+              if (!isConsecutiveDuplicate) {
+                lastToolCallSig = signature;
+              }
+
               // Use result.lines — computed from the validated/safe content inside
               // executeToolCall — so it can never show 0 from a raw undefined arg.
               const argSummary = tc.name === 'writeFile' ? `"${tc.arguments.path}" (${result.lines ?? 0} lines)`
@@ -1438,7 +1463,11 @@ function EpiCodeSpaceApp() {
                 : tc.name === 'analyzeFile' ? `"${tc.arguments.path || activeFile}"`
                 : '';
               const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : '📋';
-              const resultSummary = tc.name === 'analyzeFile' && result.ok ? `${result.issueCount} issue(s) [${result.summary}]` : result.ok ? '✅' : '❌ ' + result.error;
+              const resultSummary = isConsecutiveDuplicate
+                ? '⚠️ duplicate blocked'
+                : tc.name === 'analyzeFile' && result.ok
+                  ? `${result.issueCount} issue(s) [${result.summary}]`
+                  : result.ok ? '✅' : '❌ ' + result.error;
               allSteps.push(`${icon} **${tc.name}**(${argSummary}) → ${resultSummary}`);
               allToolCalls.push({ tool: tc.name, args: tc.arguments });
               return { id: tc.id, name: tc.name, result };
@@ -2676,7 +2705,7 @@ function EpiCodeSpaceApp() {
                   </div>
                 </div>
               )}
-              {messages.map((msg, i) => (
+              {messages.filter(msg => !msg._progress).map((msg, i) => (
                 <div key={i} className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2 text-purple-400/80 text-[11px] font-semibold uppercase tracking-wider mb-0.5">
                     {msg.role === 'user'

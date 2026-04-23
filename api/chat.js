@@ -298,15 +298,20 @@ async function callProvider(config, apiKey, systemPrompt, messages, useTools) {
 
 // ── Build tool result messages per provider ────────────────────────────────
 function appendToolResults(apiMessages, toolResults, pendingToolCalls, transform) {
+  const dedupeMessage = toolResults.find(r => typeof r?.result?.systemMessage === 'string')?.result?.systemMessage;
+
   if (transform === 'openai') {
     apiMessages.push({ role: 'assistant', content: null, tool_calls: pendingToolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) });
     for (const r of toolResults) { apiMessages.push({ role: 'tool', tool_call_id: r.id, content: JSON.stringify(r.result) }); }
+    if (dedupeMessage) apiMessages.push({ role: 'system', content: dedupeMessage });
   } else if (transform === 'anthropic') {
     apiMessages.push({ role: 'assistant', content: pendingToolCalls.map(tc => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments })) });
     apiMessages.push({ role: 'user', content: toolResults.map(r => ({ type: 'tool_result', tool_use_id: r.id, content: JSON.stringify(r.result) })) });
+    if (dedupeMessage) apiMessages.push({ role: 'user', content: `[System note] ${dedupeMessage}` });
   } else if (transform === 'gemini') {
     apiMessages.push({ _geminiRole: 'model', _geminiParts: pendingToolCalls.map(tc => ({ functionCall: { name: tc.name, args: tc.arguments } })) });
     apiMessages.push({ _geminiRole: 'user', _geminiParts: toolResults.map(r => ({ functionResponse: { name: r.name, response: r.result } })) });
+    if (dedupeMessage) apiMessages.push({ _geminiRole: 'user', _geminiParts: [{ text: `[System note] ${dedupeMessage}` }] });
   }
 }
 
