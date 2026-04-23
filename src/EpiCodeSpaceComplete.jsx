@@ -1482,8 +1482,17 @@ function EpiCodeSpaceApp() {
         const targetPath = folderPath ? `${folderPath}/${candidate}` : candidate;
         const buffer = await arrayBufferFromFile(file);
         const bytes = new Uint8Array(buffer);
-        await writeBinaryFile(targetPath, bytes, 'binary');
-        current[targetPath] = { name: candidate };
+        // Generate a resized dataUrl for inline preview (≤2048px, JPEG 0.8).
+        let dataUrl = null;
+        try { dataUrl = await resizeImageToDataUrl(file, 2048); } catch { /* best-effort */ }
+        const mime = imageMimeFromFile(file);
+        if (dataUrl) {
+          // Store the dataUrl as content so the editor pane can preview it.
+          writeFile(targetPath, dataUrl, 'binary');
+        } else {
+          await writeBinaryFile(targetPath, bytes, 'binary');
+        }
+        current[targetPath] = { name: candidate, dataUrl, mime };
       } catch (err) {
         logger.warn('explorer', `drop import failed: ${file?.name || 'image'}`, err);
       }
