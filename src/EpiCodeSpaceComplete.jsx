@@ -663,6 +663,30 @@ function fileToDataUrl(file) {
   });
 }
 
+/** Resize an image file to ≤ maxDim px on the longest side, export as JPEG 0.8. */
+function resizeImageToDataUrl(file, maxDim = 1024) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Failed to decode image'));
+      img.onload = () => {
+        const { naturalWidth: w, naturalHeight: h } = img;
+        const scale = (w > maxDim || h > maxDim) ? maxDim / Math.max(w, h) : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function arrayBufferFromFile(file) {
   if (typeof file.arrayBuffer === 'function') return file.arrayBuffer();
   return new Promise((resolve, reject) => {
@@ -756,7 +780,7 @@ function EpiCodeSpaceApp() {
   // ── Chat ──────────────────────────────────────────────────────────────────
   // Circuit-breaker limits: pause after this many consecutive tool rounds
   // and lock input once the session crosses the token ceiling.
-  const MAX_TOOL_ROUNDS = 3;
+  const MAX_TOOL_ROUNDS = 6;
   const TOKEN_CEILING = 50_000;
 
   const [chatInput, setChatInput] = useState('');
@@ -1421,15 +1445,15 @@ function EpiCodeSpaceApp() {
   const handleAttachChatImage = useCallback(async (file) => {
     if (!isImageFile(file)) return;
     try {
-      const dataUrl = await fileToDataUrl(file);
+      // Resize to ≤1024px and export as compressed JPEG to avoid 2MB limit.
+      const dataUrl = await resizeImageToDataUrl(file, 1024);
       if (!dataUrl) return;
       const commaIdx = dataUrl.indexOf(',');
       const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
       const ext = imageExtFromFile(file);
-      const mime = imageMimeFromFile(file);
       setChatImage({
         name: sanitizeFileName(file.name || `pasted-image.${ext}`),
-        mime,
+        mime: 'image/jpeg',
         dataUrl,
         base64,
       });
@@ -1476,7 +1500,7 @@ function EpiCodeSpaceApp() {
     const userMessage = chatInput.trim();
     const apiUserContent = toModelUserContent(userMessage, chatImage, activeAgent);
     const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
-    const userMsg = { role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now() };
+    const userMsg = { role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
     setMessages(prev => [...prev, userMsg]);
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
     setChatInput('');
@@ -2886,9 +2910,20 @@ function EpiCodeSpaceApp() {
                     />
                   )}
                   <div className={`rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-[#1f0e40] border border-purple-500/30 text-purple-100 shadow-md' : 'bg-transparent border border-fuchsia-500/20 text-purple-200'} text-[13px]`}>
-                    <Suspense fallback={<div className="text-[11px] text-purple-500/50">Loading…</div>}>
-                      <MarkdownContent content={msg.content} />
-                    </Suspense>
+                    {msg.imageDataUrl && (
+                      <img src={msg.imageDataUrl} className="max-w-xs rounded-md mb-2" alt="Uploaded preview" />
+                    )}
+                    {(() => {
+                      const c = msg.content || '';
+                      if (/^data:image\/[a-z+]+;base64,/.test(c.trim())) {
+                        return <img src={c.trim()} className="max-w-xs rounded-md" alt="Uploaded preview" />;
+                      }
+                      return (
+                        <Suspense fallback={<div className="text-[11px] text-purple-500/50">Loading…</div>}>
+                          <MarkdownContent content={c} />
+                        </Suspense>
+                      );
+                    })()}
                   </div>
                   {/* Extracted TODOs from assistant messages */}
                   {msg.role === 'assistant' && msg.content && (() => {
