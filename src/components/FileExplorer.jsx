@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import {
   ChevronDown, ChevronRight, Folder, FolderOpen, File as FileIcon,
   FilePlus, FolderPlus, FileEdit, Trash2, Copy, Scissors, ClipboardPaste,
-  Search, X, RefreshCw, Save, FolderOpen as FolderOpenIcon,
+  Search, X, RefreshCw, Save, ImagePlus, FolderOpen as FolderOpenIcon,
 } from 'lucide-react';
 
 /* ── Tree builder: converts flat {path: file} map into a nested tree ───────── */
@@ -115,6 +115,7 @@ export default function FileExplorer({
   const [dragOver, setDragOver] = useState(null);   // folder path currently being hovered during drag
   const [clipboard, setClipboard] = useState(null); // { op: 'cut'|'copy', path }
   const treeRef = useRef(null);
+  const uploadInputRef = useRef(null);
 
   const tree = useMemo(() => buildTree(fileSystem, emptyFolders), [fileSystem, emptyFolders]);
 
@@ -151,7 +152,25 @@ export default function FileExplorer({
 
   const visibleNodes = useMemo(() => flattenVisible(filteredTree, effectiveExpanded), [filteredTree, effectiveExpanded]);
 
+  const uploadTargetFolder = useMemo(() => {
+    if (!selected) return '';
+    const selectedNode = visibleNodes.find((n) => n.path === selected);
+    if (selectedNode?.type === 'folder') return selectedNode.path;
+    const parent = selected.split('/').slice(0, -1).join('/');
+    return parent || '';
+  }, [selected, visibleNodes]);
+
   useEffect(() => { setSelected(activeFile); }, [activeFile]);
+
+  const openImagePicker = useCallback(() => {
+    uploadInputRef.current?.click();
+  }, []);
+
+  const onImagePickerChange = useCallback((e) => {
+    const files = e.target.files;
+    if (files?.length) onDropFiles?.(files, uploadTargetFolder);
+    e.target.value = '';
+  }, [onDropFiles, uploadTargetFolder]);
 
   /* ── Global listeners to close context menu ──────────────────────────── */
   useEffect(() => {
@@ -444,6 +463,14 @@ export default function FileExplorer({
       <div className="px-4 py-2.5 flex justify-between items-center text-[10px] font-bold text-fuchsia-400/70 uppercase tracking-widest shrink-0">
         <span>Explorer</span>
         <div className="flex items-center gap-0.5">
+          <button
+            onClick={openImagePicker}
+            aria-label="Upload images"
+            title={uploadTargetFolder ? `Upload image to ${uploadTargetFolder}` : 'Upload image to root'}
+            className="p-1 hover:text-fuchsia-300 transition-colors"
+          >
+            <ImagePlus size={13}/>
+          </button>
           <button onClick={() => startCreate('', 'file')} aria-label="New file at root" title="New File" className="p-1 hover:text-fuchsia-300 transition-colors"><FilePlus size={13}/></button>
           <button onClick={() => startCreate('', 'folder')} aria-label="New folder at root" title="New Folder" className="p-1 hover:text-fuchsia-300 transition-colors"><FolderPlus size={13}/></button>
           <button onClick={() => setExpanded({})} aria-label="Collapse all folders" title="Collapse All" className="p-1 hover:text-fuchsia-300 transition-colors"><RefreshCw size={13}/></button>
@@ -451,6 +478,14 @@ export default function FileExplorer({
           <button onClick={onExport} aria-label="Export project" title="Export Project" className="p-1 hover:text-fuchsia-300 transition-colors"><Save size={13}/></button>
         </div>
       </div>
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={onImagePickerChange}
+        className="hidden"
+      />
 
       {/* Search / filter */}
       {fileCount > 0 && (
