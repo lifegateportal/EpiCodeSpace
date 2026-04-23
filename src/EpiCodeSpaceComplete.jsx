@@ -634,9 +634,15 @@ function EpiCodeSpaceApp() {
   const [chatTodos, setChatTodos] = useState([]);
 
   // ── Chat ──────────────────────────────────────────────────────────────────
+  // Circuit-breaker limits: pause after this many consecutive tool rounds
+  // and lock input once the session crosses the token ceiling.
+  const MAX_TOOL_ROUNDS = 3;
+  const TOKEN_CEILING = 50_000;
+
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [sessionTokens, setSessionTokens] = useState(0);
   const [steerInput, setSteerInput] = useState('');
   const [isSteerOpen, setIsSteerOpen] = useState(false);
   const steerInputRef = useRef(null);
@@ -1294,7 +1300,7 @@ function EpiCodeSpaceApp() {
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
-    if (!chatInput.trim() || isTyping) return;
+    if (!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING) return;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
@@ -1333,6 +1339,7 @@ function EpiCodeSpaceApp() {
       let pendingToolCalls = null;
       let toolResults = null;
       const MAX_ROUNDS = 8;
+      let consecToolRounds = 0; // consecutive tool-call rounds without user input
 
       try {
         for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -1379,8 +1386,40 @@ function EpiCodeSpaceApp() {
             return;
           }
 
+          // Accumulate token usage from every round into the session counter.
+          if (data.usage) {
+            const roundTokens = data.usage.total_tokens        // OpenAI
+              ?? ((data.usage.input_tokens ?? 0) + (data.usage.output_tokens ?? 0))  // Anthropic
+              ?? data.usage.totalTokenCount                      // Gemini
+              ?? 0;
+            if (roundTokens > 0) setSessionTokens(prev => prev + roundTokens);
+          }
+
           // Model wants to call tools
           if (data.type === 'tool_calls' && data.tool_calls?.length) {
+            consecToolRounds++;
+
+            // Circuit breaker: pause after MAX_TOOL_ROUNDS consecutive tool
+            // rounds and ask the user for explicit permission to continue.
+            if (consecToolRounds > MAX_TOOL_ROUNDS) {
+              const breakMsg = {
+                role: 'assistant',
+                content: `⏸️ **Circuit breaker triggered** — the agent has executed ${allToolCalls.length} tool calls (${MAX_TOOL_ROUNDS} consecutive rounds) without pausing.\n\nReply **"continue"** to let it keep going, or describe a new direction to steer it.`,
+                agent: activeAgent,
+                agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                toolCalls: allToolCalls,
+                steps: allSteps,
+                mode: chatMode,
+                timestamp: Date.now(),
+                _circuitBreak: true,
+              };
+              setMessages(prev => [...prev.filter(m => !m._progress), breakMsg]);
+              setConversations(prev => prev.map(c => c.id === activeConvoId
+                ? { ...c, messages: [...c.messages.filter(m => !m._progress), breakMsg] }
+                : c));
+              return;
+            }
+
             // Show thinking text if present
             if (data.content) {
               allSteps.push(`💭 ${data.content.slice(0, 200)}`);
@@ -1495,6 +1534,7 @@ function EpiCodeSpaceApp() {
     setConversations(prev => [...prev, newConvo]);
     setActiveConvoId(newId);
     setMessages([]);
+    setSessionTokens(0);
     setShowConversations(false);
     setConvoSearch('');
   }, [activeAgent]);
@@ -1508,6 +1548,7 @@ function EpiCodeSpaceApp() {
       // stamp last-opened so list stays sorted by recent
       setConversations(prev => prev.map(c => c.id === id ? { ...c, lastOpenedAt: Date.now() } : c));
     }
+    setSessionTokens(0);
     setShowConversations(false);
     setConvoSearch('');
   }, [conversations]);
@@ -2767,11 +2808,21 @@ function EpiCodeSpaceApp() {
 
             {/* Chat Input */}
             <div className="p-3 bg-[#15092a] border-t border-fuchsia-500/20 shrink-0" style={{ paddingBottom: 'max(0.75rem, var(--sab))' }}>
+              {sessionTokens >= TOKEN_CEILING && (
+                <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-900/40 border border-amber-500/40 px-3 py-2 text-amber-300 text-[11px]">
+                  <span className="text-base leading-none">⚠️</span>
+                  <span>
+                    This session has used ~{Math.round(sessionTokens / 1000)}k tokens (limit: {TOKEN_CEILING / 1000}k).
+                    {' '}<button type="button" className="underline hover:text-amber-100 transition-colors" onClick={handleNewConversation}>Start a new chat</button> to preserve context efficiency.
+                  </span>
+                </div>
+              )}
               <form onSubmit={handleAgentSubmit} className="flex flex-col gap-2">
                 <div className="relative bg-[#0a0412]/80 border border-fuchsia-500/30 focus-within:border-fuchsia-400 focus-within:shadow-[0_0_10px_rgba(232,121,249,0.2)] rounded-lg transition-all">
                   <textarea
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
+                    disabled={sessionTokens >= TOKEN_CEILING}
                     onPaste={(e) => {
                       // Allow paste of anything — strip only null bytes that break JSON
                       const pasted = e.clipboardData.getData('text');
@@ -2790,7 +2841,7 @@ function EpiCodeSpaceApp() {
                       }
                     }}
                     placeholder={chatMode === 'agent' ? `Tell ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'} what to build or fix...` : chatMode === 'plan' ? `Describe what you want planned...` : `Ask ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'}...`}
-                    className="w-full bg-transparent p-3 text-[13px] text-purple-100 outline-none placeholder:text-purple-400/40 resize-none min-h-[80px]"
+                    className={`w-full bg-transparent p-3 text-[13px] text-purple-100 outline-none placeholder:text-purple-400/40 resize-none min-h-[80px] ${sessionTokens >= TOKEN_CEILING ? 'opacity-40 cursor-not-allowed' : ''}`}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAgentSubmit(e); } }}
                   />
                   <div className="flex items-center justify-between px-2 pb-2">
@@ -2827,7 +2878,7 @@ function EpiCodeSpaceApp() {
                     </div>
                     <button
                       type="submit"
-                      disabled={!chatInput.trim() || isTyping}
+                      disabled={!chatInput.trim() || isTyping || sessionTokens >= TOKEN_CEILING}
                       className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-[#25104a] disabled:text-purple-500/50 text-white rounded-md transition-all shadow-md"
                     >
                       <Send size={14} className={isTyping ? "opacity-50" : ""} />
