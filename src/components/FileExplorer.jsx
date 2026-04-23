@@ -315,7 +315,11 @@ export default function FileExplorer({
         data-path={node.path}
         draggable={!isFolder && !isRenaming}
         onDragStart={(e) => onDragStart(e, node)}
-        onDragOver={isFolder ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(node.path); } : undefined}
+        onDragOver={isFolder ? (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = e.dataTransfer?.files?.length ? 'copy' : 'move';
+          setDragOver(node.path);
+        } : undefined}
         onDragLeave={isFolder ? () => setDragOver(prev => prev === node.path ? null : prev) : undefined}
         onDrop={isFolder ? (e) => onDropFolder(e, node.path) : undefined}
         onClick={(e) => {
@@ -487,7 +491,11 @@ export default function FileExplorer({
         aria-label="Workspace files"
         tabIndex={0}
         onKeyDown={onTreeKeyDown}
-        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(''); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = e.dataTransfer?.files?.length ? 'copy' : 'move';
+          setDragOver('');
+        }}
         onDrop={(e) => onDropFolder(e, '')}
         className="flex-1 overflow-y-auto px-1 pb-2 focus:outline-none focus:ring-1 focus:ring-fuchsia-500/40 rounded"
       >

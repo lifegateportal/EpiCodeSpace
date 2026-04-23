@@ -604,7 +604,48 @@ const IMAGE_MIME_TO_EXT = {
   'image/jpg': 'jpg',
   'image/gif': 'gif',
   'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/avif': 'avif',
+  'image/bmp': 'bmp',
 };
+
+const IMAGE_EXT_TO_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+};
+
+function fileExt(name) {
+  const idx = (name || '').lastIndexOf('.');
+  return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
+}
+
+function isImageFile(file) {
+  if (!file) return false;
+  if (typeof file.type === 'string' && file.type.startsWith('image/')) return true;
+  const ext = fileExt(file.name);
+  return !!IMAGE_EXT_TO_MIME[ext];
+}
+
+function imageExtFromFile(file) {
+  if (file?.type && IMAGE_MIME_TO_EXT[file.type]) return IMAGE_MIME_TO_EXT[file.type];
+  const ext = fileExt(file?.name);
+  if (IMAGE_EXT_TO_MIME[ext]) return ext === 'jpeg' ? 'jpg' : ext;
+  return 'png';
+}
+
+function imageMimeFromFile(file) {
+  if (file?.type && file.type.startsWith('image/')) return file.type;
+  const ext = fileExt(file?.name);
+  return IMAGE_EXT_TO_MIME[ext] || 'image/png';
+}
 
 function sanitizeFileName(name, fallback = 'image') {
   const safe = (name || fallback)
@@ -634,9 +675,9 @@ function arrayBufferFromFile(file) {
 
 function extractImageFileFromDataTransfer(dt) {
   if (!dt) return null;
-  const fromItems = Array.from(dt.items || []).find((item) => item.kind === 'file' && item.type?.startsWith('image/'));
+  const fromItems = Array.from(dt.items || []).find((item) => item.kind === 'file' && (item.type?.startsWith('image/') || isImageFile(item.getAsFile?.())));
   if (fromItems) return fromItems.getAsFile();
-  const fromFiles = Array.from(dt.files || []).find((file) => file?.type?.startsWith('image/'));
+  const fromFiles = Array.from(dt.files || []).find((file) => isImageFile(file));
   return fromFiles || null;
 }
 
@@ -1378,15 +1419,17 @@ function EpiCodeSpaceApp() {
   }, [steerInput, activeAgent, activeConvoId, handleStop]);
 
   const handleAttachChatImage = useCallback(async (file) => {
-    if (!file || !file.type || !file.type.startsWith('image/')) return;
+    if (!isImageFile(file)) return;
     try {
       const dataUrl = await fileToDataUrl(file);
       if (!dataUrl) return;
       const commaIdx = dataUrl.indexOf(',');
       const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : '';
+      const ext = imageExtFromFile(file);
+      const mime = imageMimeFromFile(file);
       setChatImage({
-        name: sanitizeFileName(file.name || `pasted-image.${IMAGE_MIME_TO_EXT[file.type] || 'png'}`),
-        mime: file.type,
+        name: sanitizeFileName(file.name || `pasted-image.${ext}`),
+        mime,
         dataUrl,
         base64,
       });
@@ -1396,12 +1439,12 @@ function EpiCodeSpaceApp() {
   }, []);
 
   const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
-    const list = Array.from(files || []).filter((f) => f?.type?.startsWith('image/'));
+    const list = Array.from(files || []).filter((f) => isImageFile(f));
     if (!list.length) return;
     const current = getLatest();
     for (const file of list) {
       try {
-        const ext = IMAGE_MIME_TO_EXT[file.type] || 'bin';
+        const ext = imageExtFromFile(file);
         const baseName = sanitizeFileName(file.name || `image.${ext}`);
         const dot = baseName.lastIndexOf('.');
         const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
