@@ -2340,6 +2340,19 @@ function EpiCodeSpaceApp() {
               )}
               {(() => {
                 const entry = fileSystem[activeFile];
+                // ── Image file preview ────────────────────────────────────
+                if (activeFile && isImageFile({ name: activeFile, type: entry?.mime || '' })) {
+                  const src = entry?.dataUrl || (entry?.content && entry.content.startsWith('data:') ? entry.content : null);
+                  return (
+                    <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0412] gap-3 p-6">
+                      {src
+                        ? <img src={src} alt={activeFile} className="max-w-full max-h-[70vh] rounded-lg border border-fuchsia-500/20 shadow-lg object-contain" />
+                        : <div className="text-purple-500/50 text-xs font-mono">Binary image — no inline preview available.</div>
+                      }
+                      <span className="text-[11px] text-purple-400/60 font-mono">{activeFile}</span>
+                    </div>
+                  );
+                }
                 const fileBytes = entry?.size ?? (entry?.content?.length ?? 0);
                 // Trust `isLarge` when the hook set it; otherwise compute at
                 // render time from the content length so large content pasted
