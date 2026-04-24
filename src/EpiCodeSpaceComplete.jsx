@@ -2711,7 +2711,7 @@ function EpiCodeSpaceApp() {
                       src={wcServerUrl}
                       className="flex-1 w-full border-none"
                       style={{ background: '#fff' }}
-                      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-top-navigation-by-user-activation"
+                      sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-top-navigation-by-user-activation"
                       referrerPolicy="no-referrer"
                       title="EpiCodeSpace Live Runtime Preview"
                     />
