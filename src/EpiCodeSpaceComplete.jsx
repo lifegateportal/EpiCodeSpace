@@ -30,6 +30,7 @@ import {
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
 import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
+import { bridge } from './lib/runtime/WebContainerBridge.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 
 /* ─── OPFS Toggle (advanced storage) ─────────────────────────────────────────
@@ -850,6 +851,8 @@ function EpiCodeSpaceApp() {
   const handleTerminalCommandRef = useRef(null);
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
+  const autoDevStartedRef = useRef(false);
+  const autoDevProcessRef = useRef(null);
 
   // ── Track screen width ────────────────────────────────────────────────────
   useEffect(() => {
@@ -887,6 +890,53 @@ function EpiCodeSpaceApp() {
     })();
     return () => { cancelled = true; unsub?.(); };
   }, [onMutation]);
+
+  // Keep preview URL + auto-dev guard aligned with container lifecycle.
+  useEffect(() => bridge.onState((state) => {
+    if (state !== 'ready') {
+      autoDevStartedRef.current = false;
+      setWcServerUrl('');
+    }
+  }), []);
+
+  // Auto-start runtime server when user opens Preview and no live URL exists.
+  useEffect(() => {
+    if (activeTerminalTab !== 'preview') return;
+    if (wcServerUrl) return;
+    if (autoDevStartedRef.current) return;
+
+    autoDevStartedRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        if (typeof window !== 'undefined' && !window.crossOriginIsolated) {
+          toast.warn('Live React preview requires cross-origin isolation headers (COOP/COEP).');
+          autoDevStartedRef.current = false;
+          return;
+        }
+
+        await bridge.boot({ files: fileSystem });
+        if (cancelled) return;
+
+        const container = bridge.getContainer();
+        const proc = await container.spawn('npm', ['run', 'dev']);
+        autoDevProcessRef.current = proc;
+
+        // Fire-and-forget output drain so backpressure never stalls the process.
+        proc.output.pipeTo(new WritableStream({
+          write(chunk) {
+            if (typeof chunk === 'string') logger.info('runtime', chunk.trim());
+          },
+        })).catch(() => {});
+      } catch (err) {
+        autoDevStartedRef.current = false;
+        toast.error(`Preview auto-start failed: ${err?.message || err}`);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeTerminalTab, wcServerUrl, fileSystem, toast]);
 
   // ── Persistence is now owned by useFileSystem (localStorage debounced in
   //    memory mode, per-path diff sync in OPFS mode). Keep tabs / active file
