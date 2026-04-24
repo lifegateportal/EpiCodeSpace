@@ -1519,6 +1519,9 @@ function EpiCodeSpaceApp() {
         // Generate a resized dataUrl for inline preview (≤2048px, JPEG 0.8).
         let dataUrl = null;
         try { dataUrl = await resizeImageToDataUrl(file, 2048); } catch { /* best-effort */ }
+        if (!dataUrl) {
+          try { dataUrl = await fileToDataUrl(file); } catch { /* best-effort */ }
+        }
         const mime = imageMimeFromFile(file);
         await writeBinaryFile(targetPath, bytes, 'binary', { dataUrl, mime });
       } catch (err) {
