@@ -1066,6 +1066,63 @@ function EpiCodeSpaceApp() {
   const [previewDoc, setPreviewDoc] = useState(null);
 
   useEffect(() => {
+    // If generate.js is present, build a Babel CDN preview from src/*.jsx + src/*.css
+    if (debouncedFS['generate.js']) {
+      const excluded = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
+      let combinedCss = '';
+      let combinedJsx = '';
+      let indexJsx = '';
+
+      Object.entries(debouncedFS).forEach(([filePath, f]) => {
+        if (!filePath.startsWith('src/') || !f?.content) return;
+        const name = filePath.split('/').pop().toLowerCase();
+        if (excluded.has(name)) return;
+
+        if (name.endsWith('.css')) {
+          combinedCss += f.content + '\n';
+        } else if (name.endsWith('.jsx')) {
+          const cleaned = f.content
+            .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
+            .replace(/^\s*export\s+default\s+/gm, '')
+            .replace(/^\s*export\s+/gm, '')
+            .trim();
+          if (name === 'index.jsx') {
+            indexJsx = cleaned;
+          } else {
+            combinedJsx += cleaned + '\n\n';
+          }
+        }
+      });
+
+      const finalJsx = (combinedJsx.trim() + '\n\n' + indexJsx.trim())
+        .replace(/(?<!ReactDOM\.)\bcreateRoot\b/g, 'ReactDOM.createRoot')
+        .replace(/<\/script>/gi, '<\\/script>')
+        .trim();
+
+      if (finalJsx) {
+        setPreviewDoc(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Preview</title>
+    <style>${combinedCss.trim()}</style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="text/babel">
+      const { useState, useRef, useEffect, useCallback } = React;
+${finalJsx}
+    </script>
+  </body>
+</html>`);
+        return;
+      }
+    }
+
     const htmlEntry = debouncedFS['index.html']
       || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
     if (!htmlEntry) { setPreviewDoc(null); return; }
