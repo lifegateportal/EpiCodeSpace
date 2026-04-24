@@ -28,6 +28,7 @@ import {
   loadJSON, storeJSON,
 } from './lib/storage.js';
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
+import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 
@@ -801,7 +802,7 @@ function EpiCodeSpaceApp() {
     const cleaned = {};
     for (const a of Object.keys(AGENT_REGISTRY)) {
       const saved = raw?.[a];
-      cleaned[a] = (typeof saved === 'string' && isValidModelFor(a, saved)) ? saved : defaultModelFor(a);
+      cleaned[a] = (typeof saved === 'string' && (saved === AUTO_MODEL_ID || isValidModelFor(a, saved))) ? saved : defaultModelFor(a);
     }
     return cleaned;
   });
@@ -1588,12 +1589,23 @@ function EpiCodeSpaceApp() {
             payload.pendingToolCalls = pendingToolCalls;
           }
 
-          const res = await fetch('/api/chat', {
+          const _fetchFn = (p, sig) => fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            signal: chatAbortRef.current?.signal,
+            body: JSON.stringify(p),
+            signal: sig,
           });
+          const { response: res, usedRoute: _autoRoute } = await autoFetch(
+            payload,
+            inputValue,
+            chatAbortRef.current?.signal,
+            _fetchFn
+          );
+          // If Auto routing swapped the agent/model, reflect it in the payload for tool-round continuity
+          if (_autoRoute) {
+            payload.agent = _autoRoute.agent;
+            payload.model = _autoRoute.model;
+          }
           const data = await res.json();
           if (!res.ok) {
             const hint = data.missingKey
@@ -3213,7 +3225,7 @@ function EpiCodeSpaceApp() {
                         {AGENT_REGISTRY[activeAgent]?.name || 'Select Agent'}
                         {activeModel && (
                           <span className="text-purple-500/60 ml-1">
-                            · {AGENT_REGISTRY[activeAgent]?.models?.find(m => m.id === activeModel)?.name || activeModel}
+                            · {activeModel === AUTO_MODEL_ID ? 'Auto' : (AGENT_REGISTRY[activeAgent]?.models?.find(m => m.id === activeModel)?.name || activeModel)}
                           </span>
                         )}
                       </span>
@@ -3222,6 +3234,32 @@ function EpiCodeSpaceApp() {
                     {showAgentPicker && (
                       <div className="absolute bottom-full right-0 mb-1 w-72 bg-[#1a0b35] border border-fuchsia-500/30 rounded-lg shadow-[0_8px_32px_rgba(0,0,0,0.7)] z-50 py-1 overflow-hidden max-h-[70vh] overflow-y-auto">
                         <div className="px-3 py-1.5 text-[9px] text-purple-500/50 uppercase tracking-widest font-bold">Select Agent &amp; Model</div>
+                        {/* ── Auto option ── */}
+                        <div className={activeModel === AUTO_MODEL_ID && activeAgent === 'epicode-agent' ? 'bg-fuchsia-500/10' : ''}>
+                          <button
+                            onClick={() => {
+                              setActiveAgent('epicode-agent');
+                              setActiveModels(prev => ({ ...prev, 'epicode-agent': AUTO_MODEL_ID }));
+                              setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, agent: 'epicode-agent' } : c));
+                              setShowAgentPicker(false);
+                              setAgentPickerSubmenu(null);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center gap-2.5 ${
+                              activeModel === AUTO_MODEL_ID && activeAgent === 'epicode-agent'
+                                ? 'text-fuchsia-200'
+                                : 'text-purple-300 hover:bg-[#25104a] hover:text-purple-100'
+                            }`}
+                          >
+                            <Zap size={12} className="text-yellow-400 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-semibold flex items-center gap-1.5">
+                                Auto
+                                {activeModel === AUTO_MODEL_ID && activeAgent === 'epicode-agent' && <CheckCircle2 size={10} className="text-fuchsia-400" />}
+                              </div>
+                              <div className="text-[9px] text-purple-500/60 truncate">Routes to DeepSeek or Gemini Flash — no premium models</div>
+                            </div>
+                          </button>
+                        </div>
                         {Object.values(AGENT_REGISTRY).map(agent => {
                           const models = agent.models || [];
                           const expanded = agentPickerSubmenu === agent.id;
