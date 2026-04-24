@@ -1066,6 +1066,55 @@ function EpiCodeSpaceApp() {
   const [previewDoc, setPreviewDoc] = useState(null);
 
   useEffect(() => {
+    const pictureEditorJsx = debouncedFS['src/PictureEditor.jsx'];
+    const pictureEditorCss = debouncedFS['src/PictureEditor.css'];
+    const hasGenerateScript = !!debouncedFS['generate.js'];
+
+    // If generate.js + PictureEditor sources exist, mirror the generated HTML
+    // so Preview reflects what `node generate.js` produces.
+    if (hasGenerateScript && pictureEditorJsx && pictureEditorCss) {
+      const jsxWithoutImports = pictureEditorJsx.content.replace(/^\s*import[\s\S]*?;\s*$/gm, '');
+      const jsxWithoutExportDefault = jsxWithoutImports.replace(/\bexport\s+default\s+/g, '');
+      const generated = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instant Preview</title>
+    <style>
+${pictureEditorCss.content}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      const { useState, useRef, useEffect, useCallback } = React;
+
+${jsxWithoutExportDefault}
+
+      const RootComponent =
+        typeof PictureEditor !== 'undefined'
+          ? PictureEditor
+          : typeof App !== 'undefined'
+            ? App
+            : null;
+
+      ReactDOM.createRoot(document.getElementById('root')).render(
+        RootComponent ? <RootComponent /> : <div>Could not find a root component to render.</div>
+      );
+    </script>
+  </body>
+</html>
+`;
+      setPreviewDoc(generated);
+      return;
+    }
+
     const htmlEntry = debouncedFS['index.html']
       || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
     if (!htmlEntry) { setPreviewDoc(null); return; }
