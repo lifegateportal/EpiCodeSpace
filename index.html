@@ -2,38 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- Viewport: viewport-fit=cover for iPad notch/home bar; interactive-widget keeps layout stable with soft keyboard -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, interactive-widget=resizes-content" />
-    <meta name="description" content="EpiCodeSpace — AI-powered cloud IDE" />
-    <!-- Theme & color -->
-    <meta name="theme-color" content="#0a0412" />
-    <meta name="theme-color" content="#0a0412" media="(prefers-color-scheme: dark)" />
-    <!-- Security headers: CSP is served via vercel.json response headers
-         (see /vercel.json → "Content-Security-Policy"). We intentionally do NOT
-         set a <meta> CSP here — browsers enforce the intersection of meta + header
-         CSPs, so any meta policy would silently block *.webcontainer.io /
-         *.stackblitz.io / cdn.jsdelivr.net and break Monaco + the runtime. -->
-    <meta name="referrer" content="strict-origin-when-cross-origin" />
-    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
-    <!-- iOS / iPadOS PWA -->
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="EpiCodeSpace" />
-    <!-- Disable phone/email detection auto-formatting -->
-    <meta name="format-detection" content="telephone=no, email=no, address=no" />
-    <!-- Icons -->
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
-    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EpiCodeSpace</title>
   </head>
-  <body style="margin:0; background:#0a0412;">
+  <body style="margin:0;">
     <div id="root"></div>
-    <noscript>
-      <div style="color:#c084fc;text-align:center;padding:4rem;font-family:sans-serif;">
-        <h1>EpiCodeSpace requires JavaScript to run.</h1>
-      </div>
-    </noscript>
     <script type="module" src="/src/index.jsx"></script>
   </body>
 </html>

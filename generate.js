@@ -3,7 +3,10 @@ const path = require('path');
 
 const rootDir = __dirname;
 const srcDir = path.join(rootDir, 'src');
-const outputPath = path.join(rootDir, 'index.html');
+const outputArg = process.argv.find((arg) => arg.startsWith('--output='));
+const outputPath = outputArg
+  ? path.resolve(rootDir, outputArg.slice('--output='.length))
+  : path.join(rootDir, 'generated-preview.html');
 
 const excludedFiles = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
 const files = fs.readdirSync(srcDir).sort();
@@ -45,6 +48,7 @@ for (const file of files) {
 
 const finalJsx = `${combinedJsx.trim()}\n\n${indexJsx.trim()}`
   .replace(/(?<!ReactDOM\.)\bcreateRoot\b/g, 'ReactDOM.createRoot')
+  .replace(/<\/script>/gi, '<\\/script>')
   .trim();
 
 if (!finalJsx) {
