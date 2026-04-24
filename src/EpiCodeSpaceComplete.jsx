@@ -1536,7 +1536,7 @@ function EpiCodeSpaceApp() {
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
-    if ((!chatInput.trim() && !chatImage) || isTyping || sessionTokens >= TOKEN_CEILING) return;
+    if ((!chatInput.trim() && !chatImage) || isTyping) return;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
@@ -1650,25 +1650,9 @@ function EpiCodeSpaceApp() {
           if (data.type === 'tool_calls' && data.tool_calls?.length) {
             consecToolRounds++;
 
-            // Circuit breaker: pause after MAX_TOOL_ROUNDS consecutive tool
-            // rounds and ask the user for explicit permission to continue.
-            if (consecToolRounds > MAX_TOOL_ROUNDS) {
-              const breakMsg = {
-                role: 'assistant',
-                content: `⏸️ **Circuit breaker triggered** — the agent has executed ${allToolCalls.length} tool calls (${MAX_TOOL_ROUNDS} consecutive rounds) without pausing.\n\nReply **"continue"** to let it keep going, or describe a new direction to steer it.`,
-                agent: activeAgent,
-                agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-                toolCalls: allToolCalls,
-                steps: allSteps,
-                mode: chatMode,
-                timestamp: Date.now(),
-                _circuitBreak: true,
-              };
-              setMessages(prev => [...prev.filter(m => !m._progress), breakMsg]);
-              setConversations(prev => prev.map(c => c.id === activeConvoId
-                ? { ...c, messages: [...c.messages.filter(m => !m._progress), breakMsg] }
-                : c));
-              return;
+            // Soft warning after MAX_TOOL_ROUNDS — does NOT block continuation.
+            if (consecToolRounds === MAX_TOOL_ROUNDS) {
+              toast.warn?.(`⚠️ Warning: Approaching maximum tool rounds (${allToolCalls.length} calls). Consider summarizing or starting a new context soon. You can continue sending messages.`);
             }
 
             // Show thinking text if present
@@ -3102,11 +3086,12 @@ function EpiCodeSpaceApp() {
             {/* Chat Input */}
             <div className="p-3 bg-[#15092a] border-t border-fuchsia-500/20 shrink-0" style={{ paddingBottom: 'max(0.75rem, var(--sab))' }}>
               {sessionTokens >= TOKEN_CEILING && (
-                <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-900/40 border border-amber-500/40 px-3 py-2 text-amber-300 text-[11px]">
+                <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-900/20 border border-amber-500/30 px-3 py-2 text-amber-300 text-[11px]">
                   <span className="text-base leading-none">⚠️</span>
                   <span>
-                    This session has used ~{Math.round(sessionTokens / 1000)}k tokens (limit: {TOKEN_CEILING / 1000}k).
-                    {' '}<button type="button" className="underline hover:text-amber-100 transition-colors" onClick={handleNewConversation}>Start a new chat</button> to preserve context efficiency.
+                    Warning: Approaching token limit (~{Math.round(sessionTokens / 1000)}k used). Consider summarizing or{' '}
+                    <button type="button" className="underline hover:text-amber-100 transition-colors" onClick={handleNewConversation}>starting a new context</button> soon.
+                    You can still continue sending messages.
                   </span>
                 </div>
               )}
@@ -3131,7 +3116,6 @@ function EpiCodeSpaceApp() {
                   <textarea
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    disabled={sessionTokens >= TOKEN_CEILING}
                     onPaste={(e) => {
                       const imageFile = extractImageFileFromDataTransfer(e.clipboardData);
                       if (imageFile) {
@@ -3165,7 +3149,7 @@ function EpiCodeSpaceApp() {
                       if (extractImageFileFromDataTransfer(e.dataTransfer)) e.preventDefault();
                     }}
                     placeholder={chatMode === 'agent' ? `Tell ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'} what to build or fix...` : chatMode === 'plan' ? `Describe what you want planned...` : `Ask ${AGENT_REGISTRY[activeAgent]?.name || 'Agent'}...`}
-                    className={`w-full bg-transparent p-3 text-[13px] text-purple-100 outline-none placeholder:text-purple-400/40 resize-none min-h-[80px] ${sessionTokens >= TOKEN_CEILING ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    className="w-full bg-transparent p-3 text-[13px] text-purple-100 outline-none placeholder:text-purple-400/40 resize-none min-h-[80px]"
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAgentSubmit(e); } }}
                   />
                   <div className="flex items-center justify-between px-2 pb-2">
@@ -3202,7 +3186,7 @@ function EpiCodeSpaceApp() {
                     </div>
                     <button
                       type="submit"
-                      disabled={(!chatInput.trim() && !chatImage) || isTyping || sessionTokens >= TOKEN_CEILING}
+                      disabled={(!chatInput.trim() && !chatImage) || isTyping}
                       className="p-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-[#25104a] disabled:text-purple-500/50 text-white rounded-md transition-all shadow-md"
                     >
                       <Send size={14} className={isTyping ? "opacity-50" : ""} />
