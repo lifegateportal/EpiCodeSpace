@@ -2,15 +2,50 @@ const fs = require('fs');
 const path = require('path');
 
 const rootDir = __dirname;
-const cssPath = path.join(rootDir, 'src', 'PictureEditor.css');
-const jsxPath = path.join(rootDir, 'src', 'PictureEditor.jsx');
+const srcDir = path.join(rootDir, 'src');
 const outputPath = path.join(rootDir, 'index.html');
 
-const css = fs.readFileSync(cssPath, 'utf8');
-const jsx = fs.readFileSync(jsxPath, 'utf8');
+const excludedFiles = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
+const files = fs.readdirSync(srcDir);
 
-const jsxWithoutImports = jsx.replace(/^\s*import[\s\S]*?;\s*$/gm, '');
-const jsxWithoutExportDefault = jsxWithoutImports.replace(/\bexport\s+default\s+/g, '');
+let combinedCss = '';
+let combinedJsx = '';
+let indexJsx = '';
+
+for (const file of files) {
+  if (excludedFiles.has(file.toLowerCase())) {
+    continue;
+  }
+
+  const fullPath = path.join(srcDir, file);
+  if (!fs.statSync(fullPath).isFile()) {
+    continue;
+  }
+
+  if (file.endsWith('.css')) {
+    combinedCss += `${fs.readFileSync(fullPath, 'utf8')}\n`;
+    continue;
+  }
+
+  if (file.endsWith('.jsx')) {
+    const jsx = fs.readFileSync(fullPath, 'utf8');
+    const cleanedJsx = jsx
+      .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
+      .replace(/^\s*export\s+default\s+/gm, '')
+      .replace(/^\s*export\s+/gm, '')
+      .trim();
+
+    if (file === 'index.jsx') {
+      indexJsx = cleanedJsx;
+    } else {
+      combinedJsx += `${cleanedJsx}\n\n`;
+    }
+  }
+}
+
+const finalJsx = `${combinedJsx.trim()}\n\n${indexJsx.trim()}`
+  .replace(/createRoot/g, 'ReactDOM.createRoot')
+  .trim();
 
 const html = `<!doctype html>
 <html lang="en">
@@ -19,7 +54,7 @@ const html = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Instant Preview</title>
     <style>
-${css}
+  ${combinedCss.trim()}
     </style>
   </head>
   <body>
@@ -32,22 +67,11 @@ ${css}
     <script type="text/babel">
       const { useState, useRef, useEffect, useCallback } = React;
 
-${jsxWithoutExportDefault}
-
-      const RootComponent =
-        typeof PictureEditor !== 'undefined'
-          ? PictureEditor
-          : typeof App !== 'undefined'
-            ? App
-            : null;
-
-      ReactDOM.createRoot(document.getElementById('root')).render(
-        RootComponent ? <RootComponent /> : <div>Could not find a root component to render.</div>
-      );
+${finalJsx}
     </script>
   </body>
 </html>
 `;
 
 fs.writeFileSync(outputPath, html, 'utf8');
-console.log(`Generated ${path.basename(outputPath)} from src/PictureEditor.css and src/PictureEditor.jsx`);
+console.log(`Generated ${path.basename(outputPath)} from files in src/`);

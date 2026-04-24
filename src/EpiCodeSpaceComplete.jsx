@@ -1066,55 +1066,6 @@ function EpiCodeSpaceApp() {
   const [previewDoc, setPreviewDoc] = useState(null);
 
   useEffect(() => {
-    const pictureEditorJsx = debouncedFS['src/PictureEditor.jsx'];
-    const pictureEditorCss = debouncedFS['src/PictureEditor.css'];
-    const hasGenerateScript = !!debouncedFS['generate.js'];
-
-    // If generate.js + PictureEditor sources exist, mirror the generated HTML
-    // so Preview reflects what `node generate.js` produces.
-    if (hasGenerateScript && pictureEditorJsx && pictureEditorCss) {
-      const jsxWithoutImports = pictureEditorJsx.content.replace(/^\s*import[\s\S]*?;\s*$/gm, '');
-      const jsxWithoutExportDefault = jsxWithoutImports.replace(/\bexport\s+default\s+/g, '');
-      const generated = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Instant Preview</title>
-    <style>
-${pictureEditorCss.content}
-    </style>
-  </head>
-  <body>
-    <div id="root"></div>
-
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-    <script type="text/babel">
-      const { useState, useRef, useEffect, useCallback } = React;
-
-${jsxWithoutExportDefault}
-
-      const RootComponent =
-        typeof PictureEditor !== 'undefined'
-          ? PictureEditor
-          : typeof App !== 'undefined'
-            ? App
-            : null;
-
-      ReactDOM.createRoot(document.getElementById('root')).render(
-        RootComponent ? <RootComponent /> : <div>Could not find a root component to render.</div>
-      );
-    </script>
-  </body>
-</html>
-`;
-      setPreviewDoc(generated);
-      return;
-    }
-
     const htmlEntry = debouncedFS['index.html']
       || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
     if (!htmlEntry) { setPreviewDoc(null); return; }
@@ -1284,9 +1235,6 @@ ${jsxWithoutExportDefault}
         'src/App.jsx': { name: 'App.jsx', language: 'javascript', content: "import React from 'react';\n\nexport default function App() {\n  return <div>Hello World</div>;\n}\n" },
         'src/index.jsx': { name: 'index.jsx', language: 'javascript', content: "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App.jsx';\n\ncreateRoot(document.getElementById('root')).render(<App />);\n" },
         'src/index.css': { name: 'index.css', language: 'css', content: "body { margin: 0; font-family: sans-serif; }\n" },
-        'src/PictureEditor.jsx': { name: 'PictureEditor.jsx', language: 'javascript', content: "import React, { useState, useRef } from 'react';\nimport './PictureEditor.css';\n\nexport default function PictureEditor() {\n  const [image, setImage] = useState(null);\n  const [brightness, setBrightness] = useState(100);\n  const [contrast, setContrast] = useState(100);\n  const fileInputRef = useRef(null);\n\n  const handleImageUpload = (e) => {\n    const file = e.target.files?.[0];\n    if (file) {\n      const reader = new FileReader();\n      reader.onload = (event) => {\n        setImage(event.target?.result);\n      };\n      reader.readAsDataURL(file);\n    }\n  };\n\n  const handleReset = () => {\n    setBrightness(100);\n    setContrast(100);\n  };\n\n  const filterStyle = {\n    filter: `brightness(${brightness}%) contrast(${contrast}%)`,\n  };\n\n  return (\n    <div className=\"picture-editor\">\n      <h1>Picture Editor</h1>\n      <div className=\"controls\">\n        <input\n          ref={fileInputRef}\n          type=\"file\"\n          accept=\"image/*\"\n          onChange={handleImageUpload}\n          style={{ display: 'none' }}\n        />\n        <button onClick={() => fileInputRef.current?.click()}>\n          {image ? 'Change Image' : 'Upload Image'}\n        </button>\n        <div className=\"slider-group\">\n          <label>\n            Brightness: {brightness}%\n            <input\n              type=\"range\"\n              min=\"0\"\n              max=\"200\"\n              value={brightness}\n              onChange={(e) => setBrightness(Number(e.target.value))}\n            />\n          </label>\n        </div>\n        <div className=\"slider-group\">\n          <label>\n            Contrast: {contrast}%\n            <input\n              type=\"range\"\n              min=\"0\"\n              max=\"200\"\n              value={contrast}\n              onChange={(e) => setContrast(Number(e.target.value))}\n            />\n          </label>\n        </div>\n        <button onClick={handleReset}>Reset</button>\n      </div>\n      {image && (\n        <div className=\"preview\">\n          <img src={image} alt=\"edited\" style={filterStyle} />\n        </div>\n      )}\n    </div>\n  );\n}\n" },
-        'src/PictureEditor.css': { name: 'PictureEditor.css', language: 'css', content: ".picture-editor {\n  max-width: 800px;\n  margin: 2rem auto;\n  padding: 2rem;\n  background: #f5f5f5;\n  border-radius: 8px;\n}\n\n.picture-editor h1 {\n  text-align: center;\n  margin-bottom: 2rem;\n  color: #333;\n}\n\n.controls {\n  display: flex;\n  flex-direction: column;\n  gap: 1rem;\n  margin-bottom: 2rem;\n}\n\n.controls button {\n  padding: 0.75rem 1.5rem;\n  background: #007bff;\n  color: white;\n  border: none;\n  border-radius: 4px;\n  cursor: pointer;\n  font-size: 1rem;\n}\n\n.controls button:hover {\n  background: #0056b3;\n}\n\n.slider-group {\n  display: flex;\n  flex-direction: column;\n  gap: 0.5rem;\n}\n\n.slider-group label {\n  font-weight: 500;\n  color: #333;\n}\n\n.slider-group input[type='range'] {\n  width: 100%;\n  cursor: pointer;\n}\n\n.preview {\n  text-align: center;\n}\n\n.preview img {\n  max-width: 100%;\n  height: auto;\n  border-radius: 4px;\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);\n}\n" },
-        'generate.js': { name: 'generate.js', language: 'javascript', content: "const fs = require('fs');\nconst path = require('path');\n\nconst rootDir = __dirname;\nconst cssPath = path.join(rootDir, 'src', 'PictureEditor.css');\nconst jsxPath = path.join(rootDir, 'src', 'PictureEditor.jsx');\nconst outputPath = path.join(rootDir, 'index.html');\n\nconst css = fs.readFileSync(cssPath, 'utf8');\nconst jsx = fs.readFileSync(jsxPath, 'utf8');\n\nconst jsxWithoutImports = jsx.replace(/^\\s*import[\\s\\S]*?;\\s*$/gm, '');\nconst jsxWithoutExportDefault = jsxWithoutImports.replace(/\\bexport\\s+default\\s+/g, '');\n\nconst html = `<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Instant Preview</title>\n    <style>\n${css}\n    </style>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n\n    <script crossorigin src=\"https://unpkg.com/react@18/umd/react.development.js\"></script>\n    <script crossorigin src=\"https://unpkg.com/react-dom@18/umd/react-dom.development.js\"></script>\n    <script src=\"https://unpkg.com/@babel/standalone/babel.min.js\"></script>\n\n    <script type=\"text/babel\">\n      const { useState, useRef, useEffect, useCallback } = React;\n\n${jsxWithoutExportDefault}\n\n      const RootComponent =\n        typeof PictureEditor !== 'undefined'\n          ? PictureEditor\n          : typeof App !== 'undefined'\n            ? App\n            : null;\n\n      ReactDOM.createRoot(document.getElementById('root')).render(\n        RootComponent ? <RootComponent /> : <div>Could not find a root component to render.</div>\n      );\n    </script>\n  </body>\n</html>\n`;\n\nfs.writeFileSync(outputPath, html, 'utf8');\nconsole.log(`Generated ${path.basename(outputPath)} from src/PictureEditor.css and src/PictureEditor.jsx`);\n" },
         'index.html': { name: 'index.html', language: 'html', content: '<!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>React App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/index.jsx"></script>\n  </body>\n</html>\n' },
         'vite.config.js': { name: 'vite.config.js', language: 'javascript', content: "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({ plugins: [react()] });\n" },
         'package.json': { name: 'package.json', language: 'json', content: JSON.stringify({ name: 'my-app', version: '1.0.0', type: 'module', scripts: { dev: 'vite', build: 'vite build', generate: 'node generate.js', preview: 'vite preview' }, dependencies: { react: '^18.0.0', 'react-dom': '^18.0.0' }, devDependencies: { '@vitejs/plugin-react': '^4.0.0', vite: '^6.0.0' } }, null, 2) + '\n' },
