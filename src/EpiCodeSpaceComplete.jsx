@@ -1597,7 +1597,7 @@ function EpiCodeSpaceApp() {
           });
           const { response: res, usedRoute: _autoRoute } = await autoFetch(
             payload,
-            inputValue,
+              userMessage,
             chatAbortRef.current?.signal,
             _fetchFn
           );
