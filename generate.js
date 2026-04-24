@@ -6,7 +6,7 @@ const srcDir = path.join(rootDir, 'src');
 const outputPath = path.join(rootDir, 'index.html');
 
 const excludedFiles = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
-const files = fs.readdirSync(srcDir);
+const files = fs.readdirSync(srcDir).sort();
 
 let combinedCss = '';
 let combinedJsx = '';
@@ -44,8 +44,12 @@ for (const file of files) {
 }
 
 const finalJsx = `${combinedJsx.trim()}\n\n${indexJsx.trim()}`
-  .replace(/createRoot/g, 'ReactDOM.createRoot')
+  .replace(/(?<!ReactDOM\.)\bcreateRoot\b/g, 'ReactDOM.createRoot')
   .trim();
+
+if (!finalJsx) {
+  throw new Error('No JSX content found in src/. Expected at least one .jsx file.');
+}
 
 const html = `<!doctype html>
 <html lang="en">
@@ -74,4 +78,4 @@ ${finalJsx}
 `;
 
 fs.writeFileSync(outputPath, html, 'utf8');
-console.log(`Generated ${path.basename(outputPath)} from files in src/`);
+console.log(`Generated ${outputPath} from files in ${srcDir}`);
