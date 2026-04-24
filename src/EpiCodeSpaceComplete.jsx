@@ -2624,7 +2624,11 @@ function EpiCodeSpaceApp() {
                     <div className="flex-1 flex items-center gap-2 bg-[#1a0b35] rounded px-3 py-1 text-[11px] text-purple-300/50 border border-fuchsia-500/10 min-w-0">
                       <Globe size={11} className="text-fuchsia-400/60 shrink-0" />
                       <span className="truncate">
-                        {previewDoc ? `Preview — ${Object.entries(fileSystem).find(([k]) => k.endsWith('.html'))?.[0] || 'index.html'}` : 'No HTML file found in workspace'}
+                        {wcServerUrl
+                          ? `Live Preview — ${wcServerUrl}`
+                          : previewDoc
+                            ? `Preview — ${Object.entries(fileSystem).find(([k]) => k.endsWith('.html'))?.[0] || 'index.html'}`
+                            : 'No preview source available'}
                       </span>
                     </div>
                     <button
@@ -2635,11 +2639,11 @@ function EpiCodeSpaceApp() {
                       <RotateCcw size={13} />
                     </button>
                     <button
-                      onClick={() => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('npm run dev'); }}
+                      onClick={() => { setTerminalState('open'); setActiveTerminalTab('runtime'); }}
                       className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-green-400/70 hover:text-green-300 hover:bg-green-500/10 border border-green-500/20 transition-colors"
-                      title="Start Vite dev server on port 5173"
+                      title="Open Runtime tab to boot WebContainer and run npm run dev"
                     >
-                      <Play size={11} /> Dev
+                      <Play size={11} /> Runtime
                     </button>
                     <button
                       onClick={openPreviewTab}
@@ -2651,7 +2655,17 @@ function EpiCodeSpaceApp() {
                   </div>
 
                   {/* Preview content */}
-                  {previewDoc ? (
+                  {wcServerUrl ? (
+                    <iframe
+                      key={`${previewKey}:${wcServerUrl}`}
+                      src={wcServerUrl}
+                      className="flex-1 w-full border-none"
+                      style={{ background: '#fff' }}
+                      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-top-navigation-by-user-activation"
+                      referrerPolicy="no-referrer"
+                      title="EpiCodeSpace Live Runtime Preview"
+                    />
+                  ) : previewDoc ? (
                     <iframe
                       key={previewKey}
                       srcDoc={previewDoc}
@@ -3026,8 +3040,8 @@ function EpiCodeSpaceApp() {
                       : (
                         <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-2.5 flex items-center gap-2 w-fit">
                           <Loader2 size={13} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
-                          <span className="text-xs">{chatMode === 'agent' ? 'Executing tools & writing code...' : chatMode === 'plan' ? 'Analyzing codebase & planning...' : 'Thinking...'}</span>
-                        </div>
+                          <p className="text-xs uppercase tracking-wider">No Preview Source</p>
+                          <p className="text-[11px] text-center max-w-md leading-relaxed text-purple-500/30">For React/Vite apps, open <span className="font-mono text-fuchsia-300/70">Runtime</span>, boot WebContainer, and run <span className="font-mono text-fuchsia-300/70">npm run dev</span>. For static pages, create <span className="font-mono text-fuchsia-300/70">index.html</span>.</p>
                       );
                   })()}
                   {/* Stop / Steer controls */}
