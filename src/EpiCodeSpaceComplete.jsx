@@ -1009,10 +1009,15 @@ function EpiCodeSpaceApp() {
   // ── Live preview document builder ───────────────────────────────────
   // Uses debouncedFS so it only rebuilds 600ms after typing stops.
   // Finds the HTML entry point then inlines linked CSS/JS from the virtual FS.
-  const previewDoc = useMemo(() => {
+  // External CDN stylesheets are fetched and inlined asynchronously.
+
+  // Holds the async-enriched final preview HTML (with CDN CSS inlined)
+  const [previewDoc, setPreviewDoc] = useState(null);
+
+  useEffect(() => {
     const htmlEntry = debouncedFS['index.html']
       || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
-    if (!htmlEntry) return null;
+    if (!htmlEntry) { setPreviewDoc(null); return; }
 
     let html = htmlEntry.content;
 
@@ -1024,37 +1029,65 @@ function EpiCodeSpaceApp() {
       html = html.replace(/<head([^>]*)>/i, `<head$1>\n  ${resetStyle}`);
     }
 
-    // Inline local CSS <link> tags (skip CDN/http links)
+    // Inline local CSS <link> tags — match by filename regardless of path prefix
     Object.entries(debouncedFS).forEach(([, f]) => {
       if (f.language !== 'css' || !f.name) return;
       const name = f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       html = html.replace(
-        new RegExp(`<link[^>]+href=["'][./]*${name}["'][^>]*/?>`, 'gi'),
+        new RegExp(`<link[^>]+href=["'][^"']*${name}["'][^>]*/?>`, 'gi'),
         `<style>\n${f.content}\n</style>`
       );
     });
 
-    // Inline local JS files — both classic and module scripts
+    // Inline local JS files — both classic and module scripts, match by filename
     Object.entries(debouncedFS).forEach(([, f]) => {
       if (f.language !== 'javascript' || !f.name) return;
       const name = f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // Classic scripts
       html = html.replace(
-        new RegExp(`<script(?![^>]*type=["']module["'])[^>]+src=["'][./]*${name}["'][^>]*></script>`, 'gi'),
+        new RegExp(`<script(?![^>]*type=["']module["'])[^>]+src=["'][^"']*${name}["'][^>]*></script>`, 'gi'),
         `<script>\n${f.content}\n</script>`
       );
       // Module scripts pointing to local files (preserve type="module" so imports work)
       html = html.replace(
-        new RegExp(`<script([^>]*type=["']module["'][^>]*)\\s+src=["'][./]*${name}["']([^>]*)></script>`, 'gi'),
+        new RegExp(`<script([^>]*type=["']module["'][^>]*)\\s+src=["'][^"']*${name}["']([^>]*)></script>`, 'gi'),
         `<script$1$2>\n${f.content}\n</script>`
       );
       html = html.replace(
-        new RegExp(`<script([^>]*)\\s+src=["'][./]*${name}["']([^>]*type=["']module["'][^>]*)></script>`, 'gi'),
+        new RegExp(`<script([^>]*)\\s+src=["'][^"']*${name}["']([^>]*type=["']module["'][^>]*)></script>`, 'gi'),
         `<script$1$2>\n${f.content}\n</script>`
       );
     });
 
-    return html;
+    // Fetch and inline any remaining external CDN stylesheet <link> tags
+    // so they work even in a sandboxed iframe with a null origin.
+    const cdnLinkRe = /<link[^>]+rel=["']stylesheet["'][^>]*href=["'](https?:\/\/[^"']+)["'][^>]*\/?>|<link[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*rel=["']stylesheet["'][^>]*\/?>/gi;
+    const matches = [];
+    let m;
+    while ((m = cdnLinkRe.exec(html)) !== null) {
+      matches.push({ full: m[0], url: m[1] || m[2] });
+    }
+
+    if (matches.length === 0) {
+      setPreviewDoc(html);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      let enriched = html;
+      await Promise.all(matches.map(async ({ full, url }) => {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const css = await res.text();
+          enriched = enriched.replace(full, `<style>\n${css}\n</style>`);
+        } catch { /* leave original link tag if fetch fails */ }
+      }));
+      if (!cancelled) setPreviewDoc(enriched);
+    })();
+
+    return () => { cancelled = true; };
   }, [debouncedFS, previewKey]); // previewKey forces a rebuild on manual refresh
 
   // ── Build output (stable) ────────────────────────────────────────────────
