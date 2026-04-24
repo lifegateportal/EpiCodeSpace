@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 const rootDir = __dirname;
-const cssPath = path.join(rootDir, 'src', 'PictureEditor.css');
-const jsxPath = path.join(rootDir, 'src', 'PictureEditor.jsx');
+const cssPath = path.join(rootDir, 'src', 'index.css');
+const jsxPath = path.join(rootDir, 'src', 'App.jsx');
 const outputPath = path.join(rootDir, 'index.html');
 
 const css = fs.readFileSync(cssPath, 'utf8');
@@ -50,4 +50,4 @@ ${jsxWithoutExportDefault}
 `;
 
 fs.writeFileSync(outputPath, html, 'utf8');
-console.log(`Generated ${path.basename(outputPath)} from src/PictureEditor.css and src/PictureEditor.jsx`);
+console.log(`Generated ${path.basename(outputPath)} from src/index.css and src/App.jsx`);
