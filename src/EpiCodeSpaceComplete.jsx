@@ -3040,8 +3040,8 @@ function EpiCodeSpaceApp() {
                       : (
                         <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-2.5 flex items-center gap-2 w-fit">
                           <Loader2 size={13} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
-                          <p className="text-xs uppercase tracking-wider">No Preview Source</p>
-                          <p className="text-[11px] text-center max-w-md leading-relaxed text-purple-500/30">For React/Vite apps, open <span className="font-mono text-fuchsia-300/70">Runtime</span>, boot WebContainer, and run <span className="font-mono text-fuchsia-300/70">npm run dev</span>. For static pages, create <span className="font-mono text-fuchsia-300/70">index.html</span>.</p>
+                          <span className="text-[11px] font-semibold uppercase tracking-wider">Thinking...</span>
+                        </div>
                       );
                   })()}
                   {/* Stop / Steer controls */}
