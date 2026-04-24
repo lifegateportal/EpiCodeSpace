@@ -1520,8 +1520,7 @@ function EpiCodeSpaceApp() {
         let dataUrl = null;
         try { dataUrl = await resizeImageToDataUrl(file, 2048); } catch { /* best-effort */ }
         const mime = imageMimeFromFile(file);
-        await writeBinaryFile(targetPath, bytes, 'binary');
-        current[targetPath] = { name: candidate, dataUrl, mime };
+        await writeBinaryFile(targetPath, bytes, 'binary', { dataUrl, mime });
       } catch (err) {
         logger.warn('explorer', `drop import failed: ${file?.name || 'image'}`, err);
       }

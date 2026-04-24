@@ -167,17 +167,36 @@ class Bridge {
 // Module-level singleton — one WebContainer per page, period.
 export const bridge = new Bridge();
 
+function decodeDataUrlBytes(dataUrl: string): Uint8Array | null {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return null;
+  try {
+    const payload = atob(dataUrl.slice(comma + 1));
+    const out = new Uint8Array(payload.length);
+    for (let i = 0; i < payload.length; i++) out[i] = payload.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /** Convert a flat path→entry map into WebContainer's nested FileSystemTree. */
 export function buildTreeFromFlat(
-  files: Record<string, { content?: string; isLarge?: boolean }>,
+  files: Record<string, { content?: string; isLarge?: boolean; dataUrl?: string }>,
 ): FileSystemTree {
   const root: FileSystemTree = {};
 
   for (const [rawPath, entry] of Object.entries(files)) {
     if (!entry) continue;
-    if (entry.isLarge) continue; // large files never mount
-    const content = entry.content ?? '';
-    if (content.length > MAX_MIRROR_BYTES) continue;
+    let contents: string | Uint8Array = entry.content ?? '';
+    if (typeof entry.dataUrl === 'string' && entry.dataUrl.startsWith('data:')) {
+      const decoded = decodeDataUrlBytes(entry.dataUrl);
+      if (decoded) contents = decoded;
+    } else {
+      if (entry.isLarge) continue; // large text files never mount inline
+      if ((entry.content?.length ?? 0) > MAX_MIRROR_BYTES) continue;
+    }
+    if (contents instanceof Uint8Array && contents.byteLength > MAX_MIRROR_BYTES) continue;
     const path = normalize(rawPath);
     if (!shouldSync(path)) continue;
 
@@ -195,7 +214,7 @@ export function buildTreeFromFlat(
       cursor = node.directory;
     }
     const leaf = parts[parts.length - 1];
-    const fileNode: FileNode = { file: { contents: content } };
+    const fileNode: FileNode = { file: { contents } };
     cursor[leaf] = fileNode;
   }
 

@@ -58,16 +58,18 @@ function reducer(state, action) {
     case 'set':
       return action.files || {};
     case 'write': {
-      const { path, content, language, size, isLarge } = action;
+      const { path, content, language, size, isLarge, meta } = action;
       const name = path.split('/').pop();
       return {
         ...state,
         [path]: {
+          ...(state[path] || {}),
           name,
           language: language || languageFor(path),
           content: isLarge ? '' : (content ?? ''),
           size: size ?? (typeof content === 'string' ? content.length : 0),
           isLarge: !!isLarge,
+          ...(meta || {}),
         },
       };
     }
@@ -326,7 +328,7 @@ export function useFileSystem() {
     dispatch({ type: 'set', files: files || {} });
     emit({ type: 'replaceAll', files: files || {} });
   }, [emit]);
-  const writeFile = useCallback((path, content = '', language) => {
+  const writeFile = useCallback((path, content = '', language, meta) => {
     const size = typeof content === 'string' ? content.length : 0;
     const isLarge = size > MAX_INLINE_READ_BYTES;
     if (isLarge) {
@@ -338,11 +340,12 @@ export function useFileSystem() {
         `writeFile ${path}: ${size}B exceeds ${MAX_INLINE_READ_BYTES}B inline ceiling — stored as stub`,
       );
     }
-    dispatch({ type: 'write', path, content, language, size, isLarge });
+    dispatch({ type: 'write', path, content, language, size, isLarge, meta });
     emit({ type: 'write', path, content: content ?? '', isLarge });
   }, [emit]);
-  const writeBinaryFile = useCallback(async (path, bytes, language = 'binary') => {
+  const writeBinaryFile = useCallback(async (path, bytes, language = 'binary', meta) => {
     const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    const isLarge = view.byteLength > MAX_INLINE_READ_BYTES;
 
     if (mode === 'opfs') {
       const handle = await FsClient.writeStreamOpen(path);
@@ -360,7 +363,7 @@ export function useFileSystem() {
       }
     }
 
-    dispatch({ type: 'write', path, content: '', language, size: view.byteLength, isLarge: true });
+    dispatch({ type: 'write', path, content: '', language, size: view.byteLength, isLarge, meta });
     emit({ type: 'write-binary', path, bytes: view, size: view.byteLength });
   }, [emit, mode]);
   const patchFile = useCallback((path, content) => {
