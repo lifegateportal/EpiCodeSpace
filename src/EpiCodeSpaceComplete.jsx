@@ -1683,11 +1683,13 @@ ${finalJsx}
       let pendingToolCalls = null;
       let toolResults = null;
       let lastToolCallSig = null;
+      const MAX_ROUNDS = 8;
+      const isDeepSeekAgent = activeAgent === 'deepseek';
+      const roundLimit = isDeepSeekAgent ? Number.POSITIVE_INFINITY : MAX_ROUNDS;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
 
       try {
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
+        for (let round = 0; round < roundLimit; round++) {
           const payload = { agent: activeAgent, model: activeModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
@@ -1850,7 +1852,17 @@ ${finalJsx}
           return;
         }
 
-        // Should not reach here — loop exits via return statements above
+        if (!isDeepSeekAgent) {
+          // Max rounds reached (non-DeepSeek agents only)
+          const finalMsg = {
+            role: 'assistant',
+            content: `Completed ${allToolCalls.length} operations (max rounds reached).`,
+            agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+            toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
+          };
+          setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
+          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
+        }
       } catch (err) {
         // AbortError is a deliberate user stop — don't show the fallback.
         if (err?.name === 'AbortError') {
