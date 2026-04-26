@@ -6,7 +6,7 @@ const srcDir = path.join(rootDir, 'src');
 const outputArg = process.argv.find((arg) => arg.startsWith('--output='));
 const outputPath = outputArg
   ? path.resolve(rootDir, outputArg.slice('--output='.length))
-  : path.join(rootDir, 'generated-preview.html');
+  : path.join(rootDir, 'public', 'preview.html');
 
 const excludedFiles = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
 const files = fs.readdirSync(srcDir).sort();
