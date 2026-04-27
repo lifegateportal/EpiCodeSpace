@@ -39,7 +39,7 @@ const PROVIDER_CONFIG = {
 const ALLOWED_MODELS = {
   'epicode-agent': ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
   copilot:         ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
-  claude:          ['claude-opus-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805', 'claude-haiku-4-5'],
+  claude:          ['claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-opus-4-1-20250805', 'claude-haiku-4-5-20251101'],
   gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
   deepseek:        ['deepseek-reasoner', 'deepseek-chat', 'deepseek-coder'],
 };
@@ -130,7 +130,8 @@ function buildContextMessage(context) {
 async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
   // Reasoning-family models (o-series, gpt-5*) don't accept temperature and
   // use max_completion_tokens instead of max_tokens.
-  const isReasoning = /^(o\d|gpt-5)/i.test(config.model);
+  // o-series (o3, o3-mini, o4-mini…) are reasoning models; gpt-5 family is standard chat.
+  const isReasoning = /^o\d/i.test(config.model);
   const body = { model: config.model, messages: [{ role: 'system', content: systemPrompt }, ...messages] };
   if (isReasoning) {
     body.max_completion_tokens = 16384;
@@ -139,6 +140,12 @@ async function callOpenAI(config, apiKey, systemPrompt, messages, useTools) {
     body.temperature = 0.7;
   }
   if (useTools) { body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })); body.tool_choice = 'auto'; }
+
+  // deepseek-reasoner does not support function calling — strip tools silently.
+  if (config.model === 'deepseek-reasoner') {
+    delete body.tools;
+    delete body.tool_choice;
+  }
 
   const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.text(); const e = new Error(`${config.model} error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }

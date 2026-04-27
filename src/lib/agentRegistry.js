@@ -17,10 +17,10 @@ const OPENAI_MODELS = [
 ];
 
 const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-5',              name: 'Claude Opus 4.5',    tier: 'premium',  description: 'Top-tier Anthropic reasoning' },
   { id: 'claude-sonnet-4-5-20250929',   name: 'Claude Sonnet 4.5',  tier: 'standard', description: 'Balanced Anthropic flagship' },
+  { id: 'claude-opus-4-5-20251101',     name: 'Claude Opus 4.5',    tier: 'premium',  description: 'Top-tier Anthropic reasoning' },
   { id: 'claude-opus-4-1-20250805',     name: 'Claude Opus 4.1',    tier: 'premium',  description: 'Previous premium generation' },
-  { id: 'claude-haiku-4-5',             name: 'Claude Haiku 4.5',   tier: 'fast',     description: 'Fast + cheap Anthropic' },
+  { id: 'claude-haiku-4-5-20251101',    name: 'Claude Haiku 4.5',   tier: 'fast',     description: 'Fast + cheap Anthropic' },
 ];
 
 const GEMINI_MODELS = [
@@ -29,9 +29,9 @@ const GEMINI_MODELS = [
 ];
 
 const DEEPSEEK_MODELS = [
-  { id: 'deepseek-reasoner', name: 'DeepSeek R1',       tier: 'premium',  description: 'Reasoning model' },
-  { id: 'deepseek-chat',     name: 'DeepSeek V3',       tier: 'standard', description: 'General coding chat' },
-  { id: 'deepseek-coder',    name: 'DeepSeek Coder V2', tier: 'fast',     description: 'Code-specialised' },
+  { id: 'deepseek-chat',     name: 'DeepSeek V3',       tier: 'standard', description: 'General coding chat (supports tools)' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1',       tier: 'premium',  description: 'Reasoning model (no tool calling)' },
+  { id: 'deepseek-coder',    name: 'DeepSeek Coder',    tier: 'fast',     description: 'Code-specialised' },
 ];
 
 /** @type {import('../types').AgentRegistry} */
