@@ -2915,7 +2915,7 @@ ${finalJsx}
         {rightSidebarOpen && (
           <>
             {sm && <div className="sidebar-backdrop" onClick={() => setRightSidebarOpen(false)} />}
-            <aside className={`${sm ? 'fixed inset-0 z-20' : 'relative'} border-l border-fuchsia-500/20 bg-[#15092a] flex flex-col shrink-0 shadow-[-4px_0_20px_rgba(192,38,211,0.03)] panel-transition overflow-hidden`} style={sm ? {} : { width: rightWidth }}>
+            <aside className={`${sm ? 'fixed inset-0 z-20' : 'relative'} border-l border-fuchsia-500/20 bg-[#15092a] flex flex-col min-h-0 shrink-0 shadow-[-4px_0_20px_rgba(192,38,211,0.03)] panel-transition overflow-hidden`} style={sm ? {} : { width: rightWidth }}>
               {!sm && <div className="absolute top-0 -left-[2px] w-1.5 h-full cursor-col-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('right'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('right'); }} />}
 
             {/* Chat Header */}
@@ -3066,14 +3066,17 @@ ${finalJsx}
             )}
 
             {/* Chat Messages */}
-            <div className="relative flex-1">
+            <div className="relative flex-1 min-h-0">
             <div
               ref={chatScrollRef}
               onScroll={handleChatScroll}
-              className="h-full overflow-y-auto p-4 space-y-5 font-sans text-[13px] bg-gradient-to-b from-[#15092a] to-[#0a0412]"
+              onWheelCapture={(e) => e.stopPropagation()}
+              onTouchMoveCapture={(e) => e.stopPropagation()}
+              className="h-full min-h-0 overflow-y-auto scroll-touch overscroll-contain p-4 space-y-5 font-sans text-[13px] bg-gradient-to-b from-[#15092a] to-[#0a0412]"
               role="log"
               aria-live="polite"
               aria-label="Chat history"
+              style={{ touchAction: 'pan-y' }}
             >
               {messages.length === 0 && (
                 <div className="text-center pt-8 space-y-4">
