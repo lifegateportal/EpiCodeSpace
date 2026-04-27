@@ -600,6 +600,10 @@ function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
 }
 
+function makeMessageId(prefix = 'msg') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 const IMAGE_MIME_TO_EXT = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -846,6 +850,7 @@ function EpiCodeSpaceApp() {
   // ── Refs ──────────────────────────────────────────────────────────────────
   const chatScrollRef = useRef(null);
   const chatEndRef = useRef(null);
+  const changeLedgerRef = useRef(new Map());
   const editorRef = useRef(null);
   const menuBarRef = useRef(null);
   const termInputRef = useRef(null);
@@ -1597,6 +1602,7 @@ ${finalCode}
     let newFS = { ...currentFS };
     let changed = false;
     const cmdsToRun = [];
+    const changeItems = [];
     toolCalls.forEach((tc, i) => {
       const r = results[i]?.result;
       if (!r?.ok) return;
@@ -1604,19 +1610,33 @@ ${finalCode}
         // Use r.content (validated inside executeToolCall) rather than
         // tc.arguments.content directly — prevents empty files when the
         // model hits max_tokens and the OpenAI arguments JSON is truncated.
+        const before = currentFS[tc.arguments.path]
+          ? { ...currentFS[tc.arguments.path] }
+          : null;
+        const after = { name: tc.arguments.path.split('/').pop(), language: r.language, content: r.content ?? '' };
         newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: r.content ?? '' };
         changed = true;
-      } else if (tc.name === 'editFile' && r.content) {
+        changeItems.push({ path: tc.arguments.path, action: before ? 'edit' : 'create', before, after });
+      } else if (tc.name === 'editFile' && typeof r.content === 'string') {
+        const before = currentFS[tc.arguments.path]
+          ? { ...currentFS[tc.arguments.path] }
+          : null;
+        const after = before ? { ...before, content: r.content } : null;
         newFS[tc.arguments.path] = { ...newFS[tc.arguments.path], content: r.content };
         changed = true;
+        if (before && after) changeItems.push({ path: tc.arguments.path, action: 'edit', before, after });
       } else if (tc.name === 'deleteFile') {
+        const before = currentFS[tc.arguments.path]
+          ? { ...currentFS[tc.arguments.path] }
+          : null;
         delete newFS[tc.arguments.path];
         changed = true;
+        if (before) changeItems.push({ path: tc.arguments.path, action: 'delete', before, after: null });
       } else if (tc.name === 'runCommand' && r.action === 'runCommand') {
         cmdsToRun.push(tc.arguments.command);
       }
     });
-    return { newFS, changed, cmdsToRun };
+    return { newFS, changed, cmdsToRun, changeItems };
   }, []);
 
   // ── Stop agent + optionally steer ──────────────────────────────────────
@@ -1706,6 +1726,48 @@ ${finalCode}
     setChatInput(prev => (prev ? `${prev}\n\n${quote}\n\n` : `${quote}\n\n`));
   }, []);
 
+  const summarizeFileChanges = useCallback((changeMap) => {
+    const files = Array.from(changeMap.values()).map((c) => {
+      const beforeLines = c.before?.content ? c.before.content.split('\n').length : 0;
+      const afterLines = c.after?.content ? c.after.content.split('\n').length : 0;
+      return {
+        path: c.path,
+        action: c.action,
+        plus: Math.max(0, afterLines - beforeLines),
+        minus: Math.max(0, beforeLines - afterLines),
+      };
+    });
+    const totalPlus = files.reduce((n, f) => n + f.plus, 0);
+    const totalMinus = files.reduce((n, f) => n + f.minus, 0);
+    return { files, totalPlus, totalMinus };
+  }, []);
+
+  const handleMarkChangeSet = useCallback((msgId, status) => {
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, changeStatus: status } : m));
+    setConversations(prev => prev.map(c => c.id === activeConvoId
+      ? { ...c, messages: c.messages.map(m => m.id === msgId ? { ...m, changeStatus: status } : m) }
+      : c));
+  }, [activeConvoId]);
+
+  const handleKeepChangeSet = useCallback((msgId) => {
+    changeLedgerRef.current.delete(msgId);
+    handleMarkChangeSet(msgId, 'kept');
+  }, [handleMarkChangeSet]);
+
+  const handleUndoChangeSet = useCallback((msgId) => {
+    const changes = changeLedgerRef.current.get(msgId);
+    if (!changes?.length) return;
+    const snapshot = getLatest();
+    const reverted = { ...snapshot };
+    changes.forEach((c) => {
+      if (c.before) reverted[c.path] = { ...c.before };
+      else delete reverted[c.path];
+    });
+    replaceAll(reverted);
+    changeLedgerRef.current.delete(msgId);
+    handleMarkChangeSet(msgId, 'undone');
+  }, [getLatest, replaceAll, handleMarkChangeSet]);
+
   const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
     const list = Array.from(files || []).filter((f) => isImageFile(f));
     if (!list.length) return;
@@ -1750,7 +1812,7 @@ ${finalCode}
     const userMessage = chatInput.trim();
     const apiUserContent = toModelUserContent(userMessage, chatImage, activeAgent);
     const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
-    const userMsg = { role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
+    const userMsg = { id: makeMessageId('user'), role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
     setMessages(prev => [...prev, userMsg]);
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
     setChatInput('');
@@ -1781,6 +1843,7 @@ ${finalCode}
     (async () => {
       let allSteps = [];
       let allToolCalls = [];
+      const allFileChanges = new Map();
       let currentFS = { ...fileSystem };
       let pendingToolCalls = null;
       let toolResults = null;
@@ -1825,7 +1888,13 @@ ${finalCode}
 
           // If model returned text only, we're done
           if (data.type === 'text') {
+            const msgId = makeMessageId('assistant');
+            const summary = summarizeFileChanges(allFileChanges);
+            if (summary.files.length > 0) {
+              changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+            }
             const assistantMsg = {
+              id: msgId,
               role: 'assistant',
               content: data.content,
               agent: activeAgent,
@@ -1836,6 +1905,10 @@ ${finalCode}
               timestamp: Date.now(),
               usage: data.usage,          // surface cache-hit telemetry
               truncated: data._truncated, // set by the API on context-length fallback
+              changedFiles: summary.files,
+              changedPlus: summary.totalPlus,
+              changedMinus: summary.totalMinus,
+              changeStatus: summary.files.length > 0 ? 'pending' : undefined,
             };
             // Functional update + filter stale _progress stubs from the
             // previous tool round so history never gets corrupted.
@@ -1906,7 +1979,18 @@ ${finalCode}
             });
 
             // Apply filesystem mutations
-            const { newFS, changed, cmdsToRun } = applyToolMutations(data.tool_calls, toolResults, currentFS);
+            const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
+            changeItems.forEach((item) => {
+              const prev = allFileChanges.get(item.path);
+              if (!prev) {
+                allFileChanges.set(item.path, item);
+                return;
+              }
+              allFileChanges.set(item.path, {
+                ...item,
+                before: prev.before,
+              });
+            });
             if (changed) {
               currentFS = newFS;
               replaceAll(newFS);
@@ -1943,11 +2027,21 @@ ${finalCode}
           }
 
           // Unexpected response shape — treat as text
+          const msgId = makeMessageId('assistant');
+          const summary = summarizeFileChanges(allFileChanges);
+          if (summary.files.length > 0) {
+            changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+          }
           const assistantMsg = {
+            id: msgId,
             role: 'assistant',
             content: data.content || 'Done.',
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
             toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
+            changedFiles: summary.files,
+            changedPlus: summary.totalPlus,
+            changedMinus: summary.totalMinus,
+            changeStatus: summary.files.length > 0 ? 'pending' : undefined,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
@@ -1956,11 +2050,21 @@ ${finalCode}
 
         if (!isDeepSeekAgent) {
           // Max rounds reached (non-DeepSeek agents only)
+          const msgId = makeMessageId('assistant');
+          const summary = summarizeFileChanges(allFileChanges);
+          if (summary.files.length > 0) {
+            changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+          }
           const finalMsg = {
+            id: msgId,
             role: 'assistant',
             content: `Completed ${allToolCalls.length} operations (max rounds reached).`,
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
             toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
+            changedFiles: summary.files,
+            changedPlus: summary.totalPlus,
+            changedMinus: summary.totalMinus,
+            changeStatus: summary.files.length > 0 ? 'pending' : undefined,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
@@ -1975,7 +2079,9 @@ ${finalCode}
         // Fallback to local simulated response
         const tools = createAgentTools(fileSystem, activeFile);
         const { response: fallbackResponse } = buildAgentResponse(activeAgent, userMessage, tools, fileSystem, activeFile);
+        const msgId = makeMessageId('assistant');
         const assistantMsg = {
+          id: msgId,
           role: 'assistant',
           content: `⚠️ *API unavailable — using local mode*\n\n${fallbackResponse}`,
           agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
@@ -1988,7 +2094,7 @@ ${finalCode}
         setIsTyping(false);
       }
     })();
-  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations, summarizeFileChanges]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
@@ -3233,6 +3339,52 @@ ${finalCode}
                       );
                     })()}
                   </div>
+                  {msg.role === 'assistant' && msg.changedFiles?.length > 0 && (
+                    <div className="mt-1 rounded-lg border border-fuchsia-500/20 bg-[#120825] p-2.5">
+                      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fuchsia-300/80 font-semibold">
+                        <span>{msg.changedFiles.length} file{msg.changedFiles.length > 1 ? 's' : ''} changed</span>
+                        <span className="text-green-400/80 normal-case">+{msg.changedPlus || 0}</span>
+                        <span className="text-red-400/80 normal-case">-{msg.changedMinus || 0}</span>
+                        <div className="ml-auto flex items-center gap-1 normal-case">
+                          {msg.changeStatus === 'pending' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleKeepChangeSet(msg.id)}
+                                className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors"
+                              >
+                                Keep
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleUndoChangeSet(msg.id)}
+                                className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                              >
+                                Undo
+                              </button>
+                            </>
+                          )}
+                          {msg.changeStatus === 'kept' && <span className="text-cyan-300/80">Kept</span>}
+                          {msg.changeStatus === 'undone' && <span className="text-amber-300/80">Undone</span>}
+                        </div>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {msg.changedFiles.slice(0, 8).map((f, fi) => (
+                          <div key={`${f.path}-${fi}`} className="flex items-center gap-2 text-[11px] text-purple-200/80">
+                            <span className={`shrink-0 ${f.action === 'delete' ? 'text-red-400/80' : f.action === 'create' ? 'text-green-400/80' : 'text-fuchsia-300/80'}`}>
+                              {f.action === 'delete' ? '−' : f.action === 'create' ? '+' : '±'}
+                            </span>
+                            <span className="truncate flex-1">{f.path}</span>
+                            <span className="text-green-400/70">+{f.plus}</span>
+                            <span className="text-red-400/70">-{f.minus}</span>
+                          </div>
+                        ))}
+                        {msg.changedFiles.length > 8 && (
+                          <div className="text-[10px] text-purple-500/60">…and {msg.changedFiles.length - 8} more</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {msg.role === 'assistant' && msg.usage && (
                     <div className="text-[9px] text-purple-500/60 px-1">
                       Tokens: {msg.usage.total_tokens ?? ((msg.usage.input_tokens ?? 0) + (msg.usage.output_tokens ?? 0)) ?? msg.usage.totalTokenCount ?? 'n/a'}
