@@ -772,6 +772,8 @@ function EpiCodeSpaceApp() {
   const [terminalState, setTerminalState] = useState(savedPanels.terminalState);
   const [activeTerminalTab, setActiveTerminalTab] = useState('terminal');
   const [previewKey, setPreviewKey] = useState(0);
+  const [previewRenderMode, setPreviewRenderMode] = useState('static'); // 'static' | 'live'
+  const [previewSourcePath, setPreviewSourcePath] = useState('index.html');
 
   // ── Terminal ──────────────────────────────────────────────────────────────
   const [terminalLines, setTerminalLines] = useState(['ubuntu@epicode:~/workspace (main) $ ']);
@@ -1057,6 +1059,13 @@ function EpiCodeSpaceApp() {
     const t = setTimeout(() => setDebouncedFS(fileSystem), 600);
     return () => clearTimeout(t);
   }, [fileSystem]);
+
+  useEffect(() => {
+    if (activeFile?.endsWith('.html') && fileSystem[activeFile]) {
+      setPreviewRenderMode('static');
+    }
+  }, [activeFile, fileSystem]);
+
   const deferredFS = useDeferredValue(debouncedFS);
   const allProblems = useMemo(() => {
     const results = [];
@@ -1202,16 +1211,23 @@ ${finalCode}
 
     // Keep compatibility with existing generate.js flow, but use the same robust builder.
     if (debouncedFS['generate.js'] && babelPreviewDoc) {
+      setPreviewSourcePath('React entry (Babel)');
       setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
       return;
     }
 
-    const htmlEntry = debouncedFS['index.html']
-      || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
+    const activeHtmlPath = activeFile && activeFile.endsWith('.html') && debouncedFS[activeFile] ? activeFile : null;
+    const htmlEntryPath = activeHtmlPath
+      || (debouncedFS['index.html'] ? 'index.html' : Object.keys(debouncedFS).find((k) => k.endsWith('.html')))
+      || null;
+    const htmlEntry = htmlEntryPath ? debouncedFS[htmlEntryPath] : null;
     if (!htmlEntry) {
+      if (babelPreviewDoc) setPreviewSourcePath('React entry (Babel)');
       setPreviewDoc(babelPreviewDoc ? appendPreviewOverlay(babelPreviewDoc) : null);
       return;
     }
+
+    setPreviewSourcePath(htmlEntryPath || 'index.html');
 
     let html = htmlEntry.content;
 
@@ -1219,6 +1235,7 @@ ${finalCode}
       /<script[^>]*type=["']module["'][^>]*src=["'][^"']*\/src\/[^"']+\.(jsx|tsx|js|ts)["'][^>]*><\/script>/i.test(html) ||
       /<script[^>]*src=["'][^"']*\/src\/[^"']+\.(jsx|tsx|js|ts)["'][^>]*type=["']module["'][^>]*><\/script>/i.test(html);
     if (hasViteLikeModuleEntry && babelPreviewDoc) {
+      setPreviewSourcePath('React entry (Babel)');
       setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
       return;
     }
@@ -1290,7 +1307,7 @@ ${finalCode}
     })();
 
     return () => { cancelled = true; };
-  }, [debouncedFS, previewKey]); // previewKey forces a rebuild on manual refresh
+  }, [debouncedFS, previewKey, activeFile]); // previewKey forces a rebuild on manual refresh
 
   // ── Build output (stable) ────────────────────────────────────────────────
   const buildOutput = useMemo(() => {
@@ -2980,18 +2997,43 @@ ${finalCode}
               {/* ── Live Preview Panel ─────────────────────────────────────── */}
               {activeTerminalTab === 'preview' && (
                 <div className={previewFullscreen ? 'fixed inset-0 z-[200] flex flex-col' : 'flex-1 flex flex-col overflow-hidden'}>
+                  {(() => {
+                    const showLive = !!wcServerUrl && (previewRenderMode === 'live' || !previewDoc);
+                    const showStatic = !!previewDoc && !showLive;
+                    return (
+                      <>
                   {/* Preview toolbar */}
                   <div className="flex items-center gap-2 px-3 py-1.5 border-b border-fuchsia-500/10 bg-[#0f0620] shrink-0">
                     <div className="flex-1 flex items-center gap-2 bg-[#1a0b35] rounded px-3 py-1 text-[11px] text-purple-300/50 border border-fuchsia-500/10 min-w-0">
                       <Globe size={11} className="text-fuchsia-400/60 shrink-0" />
                       <span className="truncate">
-                        {wcServerUrl
+                        {showLive
                           ? `Live Preview — ${wcServerUrl}`
                           : previewDoc
-                            ? `Preview — ${Object.entries(fileSystem).find(([k]) => k.endsWith('.html'))?.[0] || 'index.html'}`
+                            ? `Preview — ${previewSourcePath || 'index.html'}`
                             : 'No preview source available'}
                       </span>
                     </div>
+                    {wcServerUrl && previewDoc && (
+                      <div className="flex items-center rounded border border-fuchsia-500/20 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewRenderMode('static')}
+                          className={`px-2 py-1 text-[10px] transition-colors ${previewRenderMode === 'static' ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'text-purple-300/70 hover:bg-white/5'}`}
+                          title="Show static/generated HTML preview"
+                        >
+                          Static
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewRenderMode('live')}
+                          className={`px-2 py-1 text-[10px] transition-colors border-l border-fuchsia-500/20 ${previewRenderMode === 'live' ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'text-purple-300/70 hover:bg-white/5'}`}
+                          title="Show live runtime preview"
+                        >
+                          Live
+                        </button>
+                      </div>
+                    )}
                     <button
                       onClick={() => setPreviewKey(k => k + 1)}
                       className="p-1.5 hover:bg-[#25104a] rounded text-purple-400/60 hover:text-purple-200 transition-colors"
@@ -3000,7 +3042,7 @@ ${finalCode}
                       <RotateCcw size={13} />
                     </button>
                     <button
-                      onClick={() => { setTerminalState('open'); setActiveTerminalTab('runtime'); }}
+                      onClick={() => { setPreviewRenderMode('live'); setTerminalState('open'); setActiveTerminalTab('runtime'); }}
                       className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-green-400/70 hover:text-green-300 hover:bg-green-500/10 border border-green-500/20 transition-colors"
                       title="Open Runtime tab to boot WebContainer and run npm run dev"
                     >
@@ -3016,7 +3058,7 @@ ${finalCode}
                   </div>
 
                   {/* Preview content */}
-                  {wcServerUrl ? (
+                  {showLive ? (
                     <iframe
                       key={`${previewKey}:${wcServerUrl}`}
                       src={wcServerUrl}
@@ -3026,7 +3068,7 @@ ${finalCode}
                       referrerPolicy="no-referrer"
                       title="EpiCodeSpace Live Runtime Preview"
                     />
-                  ) : previewDoc ? (
+                  ) : showStatic ? (
                     <iframe
                       key={previewKey}
                       srcDoc={previewDoc}
@@ -3061,6 +3103,9 @@ ${finalCode}
                       </button>}
                     </div>
                   )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
