@@ -25,7 +25,7 @@ import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
 import {
   STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODELS_KEY, MODE_KEY,
-  loadJSON, storeJSON,
+  loadJSON, storeJSON, loadLatestSnapshot, saveLocalSnapshot,
 } from './lib/storage.js';
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
 import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
@@ -867,6 +867,8 @@ function EpiCodeSpaceApp() {
   const chatAbortRef = useRef(null);
   const autoDevStartedRef = useRef(false);
   const autoDevProcessRef = useRef(null);
+  const lastAutoSnapshotHashRef = useRef('');
+  const lastAutoSnapshotAtRef = useRef(0);
 
   // ── Track screen width ────────────────────────────────────────────────────
   useEffect(() => {
@@ -1395,6 +1397,69 @@ ${finalCode}
 
   // ── Project management ────────────────────────────────────────────────────
   useEffect(() => { storeJSON('epicodespace_project_v1', projectName); }, [projectName]);
+
+  const buildWorkspaceSnapshot = useCallback(() => {
+    const latest = getLatest();
+    const validTabs = openTabs.filter((p) => latest[p]);
+    const nextActive = activeFile && latest[activeFile]
+      ? activeFile
+      : (validTabs[0] || Object.keys(latest)[0] || null);
+    return {
+      files: latest,
+      projectName,
+      openTabs: validTabs,
+      activeFile: nextActive,
+      previewRenderMode,
+      previewSourcePath,
+    };
+  }, [getLatest, openTabs, activeFile, projectName, previewRenderMode, previewSourcePath]);
+
+  const handleSaveSnapshot = useCallback((opts = {}) => {
+    const { manual = true } = opts;
+    const payload = buildWorkspaceSnapshot();
+    const entry = saveLocalSnapshot(payload);
+    if (!entry) {
+      if (manual) toast.error('Snapshot save failed.');
+      return false;
+    }
+    const hash = stableStringify(payload);
+    lastAutoSnapshotHashRef.current = hash;
+    lastAutoSnapshotAtRef.current = Date.now();
+    if (manual) {
+      toast.success(`Snapshot saved (${Object.keys(payload.files).length} files).`);
+    }
+    return true;
+  }, [buildWorkspaceSnapshot, toast]);
+
+  const handleRestoreLatestSnapshot = useCallback(() => {
+    const loaded = loadLatestSnapshot();
+    if (!loaded?.snapshot) {
+      toast.warn('No snapshot found.');
+      return;
+    }
+    const snap = loaded.snapshot;
+    replaceAll(snap.files || {});
+    setProjectName(snap.projectName || 'My Project');
+    setOpenTabs(Array.isArray(snap.openTabs) ? snap.openTabs : []);
+    setActiveFile(snap.activeFile || null);
+    setPreviewRenderMode(snap.previewRenderMode === 'live' ? 'live' : 'static');
+    setPreviewSourcePath(snap.previewSourcePath || 'index.html');
+    lastAutoSnapshotHashRef.current = stableStringify(snap);
+    lastAutoSnapshotAtRef.current = Date.now();
+    toast.success(`Snapshot restored from ${new Date(loaded.createdAt).toLocaleString()}.`);
+  }, [replaceAll, toast]);
+
+  useEffect(() => {
+    const payload = buildWorkspaceSnapshot();
+    const hash = stableStringify(payload);
+    if (hash === lastAutoSnapshotHashRef.current) return;
+    const now = Date.now();
+    if (now - lastAutoSnapshotAtRef.current < 15000) return;
+    const saved = saveLocalSnapshot(payload);
+    if (!saved) return;
+    lastAutoSnapshotHashRef.current = hash;
+    lastAutoSnapshotAtRef.current = now;
+  }, [buildWorkspaceSnapshot, fileSystem]);
 
   const handleNewProject = useCallback((template, name) => {
     const templates = {
@@ -2484,6 +2549,8 @@ ${finalCode}
       { label: 'Save', shortcut: 'Ctrl+S', icon: Save, action: handleSave },
       { label: 'Save As...', shortcut: 'Ctrl+Shift+S', disabled: true },
       { label: 'Save All', shortcut: 'Ctrl+K S', action: handleSave },
+      { label: 'Create Snapshot', icon: Save, action: () => handleSaveSnapshot({ manual: true }) },
+      { label: 'Restore Latest Snapshot', icon: RotateCcw, action: handleRestoreLatestSnapshot },
       { type: 'separator' },
       { label: 'Export Project...', action: handleExportProject },
       { label: 'Deploy to Vercel', icon: Globe, action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('deploy vercel'); } },
@@ -2577,7 +2644,7 @@ ${finalCode}
       { type: 'separator' },
       { label: 'About EpiCodeSpace', icon: Info, action: () => setShowAbout(true) },
     ],
-  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, fileSystem]);
+  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleSaveSnapshot, handleRestoreLatestSnapshot, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, fileSystem]);
 
   // ═════════════════════════════════════════════════════════════════════════
   //  RENDER
