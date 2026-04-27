@@ -91,9 +91,27 @@ You are an autonomous agent with access to the workspace file system via these t
 
 const MODE_INSTRUCTIONS = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: '\n\nMode: AGENT — You can directly read, write, edit, create, and delete files in the user\'s workspace using the provided tools. When the user asks you to build, fix, or change something, USE THE TOOLS to make the actual changes. Do not just show code — apply it. EDITING RULES: (1) Use editFile to patch ANY existing file — supply an exact verbatim oldText block (unique in the file) and newText; never rewrite a whole file when only part changes. (2) Use writeFile ONLY to create files that do not yet exist. Work iteratively: read files first, then make targeted edits. Confirm what you did after.',
+  agent: '\n\nMode: AGENT — You can directly read, write, edit, create, and delete files in the user\'s workspace using the provided tools. When the user asks you to build, fix, or change something, USE THE TOOLS to make the actual changes. Do not just show code — apply it. EDITING RULES: (1) Use editFile to patch ANY existing file — supply an exact verbatim oldText block (unique in the file) and newText; never rewrite a whole file when only part changes. (2) Use writeFile when creating a new file OR replacing an entire file. Work iteratively: read files first, then make targeted edits. Confirm what you did after.',
   plan: '\n\nMode: PLAN — First read relevant files with readFile/listFiles to understand the codebase. Then create a numbered step-by-step plan of what you will change. Format with checkboxes:\n- [ ] Step 1: ...\n- [ ] Step 2: ...\nDo NOT call writeFile/editFile/deleteFile until the user approves. Only use read tools for research.',
 };
+
+function isAuthOrKeyError(err) {
+  if (!err) return false;
+  const s = `${err.status || ''} ${err.message || ''} ${err.body || ''}`.toLowerCase();
+  if (err.status === 401 || err.status === 403) return true;
+  return /invalid[_\s-]?api[_\s-]?key|incorrect api key|unauthorized|authentication|permission denied/.test(s);
+}
+
+function getDeepSeekFallback(currentAgent, currentConfig, pendingToolCalls) {
+  if (currentAgent === 'deepseek') return null;
+  const fallbackBase = PROVIDER_CONFIG.deepseek;
+  const fallbackKey = process.env[fallbackBase.envKey];
+  if (!fallbackKey) return null;
+  // Tool-result message shapes are provider-specific. If we are in a tool
+  // continuation round, only fallback when the wire format is compatible.
+  if (pendingToolCalls?.length && currentConfig?.transform !== fallbackBase.transform) return null;
+  return { agent: 'deepseek', config: { ...fallbackBase }, apiKey: fallbackKey };
+}
 
 const WORKSPACE_TOOLS = [
   { name: 'readFile', description: 'Read the full contents of a file.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, e.g. "src/App.jsx"' } }, required: ['path'] } },
@@ -407,9 +425,21 @@ export default async function handler(req, res) {
       resolvedModel = model;
     }
     const config = { ...baseConfig, model: resolvedModel };
+    let activeAgent = agent;
+    let activeConfig = config;
+    let activeApiKey = process.env[config.envKey];
+    let fallbackReason = null;
 
-    const apiKey = process.env[config.envKey];
-    if (!apiKey) return res.status(500).json({ error: `API key not configured. Set ${config.envKey} in Vercel env vars.`, missingKey: config.envKey });
+    if (!activeApiKey) {
+      const fallback = getDeepSeekFallback(agent, config, pendingToolCalls);
+      if (!fallback) {
+        return res.status(500).json({ error: `API key not configured. Set ${config.envKey} in Vercel env vars.`, missingKey: config.envKey });
+      }
+      activeAgent = fallback.agent;
+      activeConfig = fallback.config;
+      activeApiKey = fallback.apiKey;
+      fallbackReason = `missing_${config.envKey}`;
+    }
 
     const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
@@ -442,11 +472,31 @@ export default async function handler(req, res) {
 
     // Append tool results if this is a continuation
     if (toolResults && pendingToolCalls) {
-      appendToolResults(apiMessages, toolResults, pendingToolCalls, config.transform);
+      appendToolResults(apiMessages, toolResults, pendingToolCalls, activeConfig.transform);
     }
 
-    const result = await callProvider(config, apiKey, systemPrompt, apiMessages, useTools);
-    return res.status(200).json({ ...result, agent, model: config.model || agent });
+    let result;
+    try {
+      result = await callProvider(activeConfig, activeApiKey, systemPrompt, apiMessages, useTools);
+    } catch (err) {
+      const canFallback = activeAgent !== 'deepseek' && isAuthOrKeyError(err);
+      if (!canFallback) throw err;
+      const fallback = getDeepSeekFallback(activeAgent, activeConfig, pendingToolCalls);
+      if (!fallback) throw err;
+      activeAgent = fallback.agent;
+      activeConfig = fallback.config;
+      activeApiKey = fallback.apiKey;
+      fallbackReason = 'provider_auth_error';
+      result = await callProvider(activeConfig, activeApiKey, systemPrompt, apiMessages, useTools);
+    }
+
+    return res.status(200).json({
+      ...result,
+      agent: activeAgent,
+      model: activeConfig.model || activeAgent,
+      fallbackFrom: activeAgent !== agent ? agent : null,
+      fallbackReason,
+    });
   } catch (err) {
     console.error('Chat API error:', err);
     return res.status(502).json({ error: err.message || 'Upstream API error' });

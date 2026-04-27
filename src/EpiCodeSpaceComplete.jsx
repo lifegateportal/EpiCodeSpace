@@ -788,6 +788,8 @@ function EpiCodeSpaceApp() {
   const [chatInput, setChatInput] = useState('');
   const [chatImage, setChatImage] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [copiedMsgKey, setCopiedMsgKey] = useState('');
+  const [isNearBottom, setIsNearBottom] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
   const [sessionTokens, setSessionTokens] = useState(0);
   const [steerInput, setSteerInput] = useState('');
@@ -842,6 +844,7 @@ function EpiCodeSpaceApp() {
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
 
   // ── Refs ──────────────────────────────────────────────────────────────────
+  const chatScrollRef = useRef(null);
   const chatEndRef = useRef(null);
   const editorRef = useRef(null);
   const menuBarRef = useRef(null);
@@ -975,8 +978,18 @@ function EpiCodeSpaceApp() {
     return () => clearTimeout(t);
   }, [sidebarOpen, rightSidebarOpen, terminalState]);
 
-  // ── Chat auto-scroll ─────────────────────────────────────────────────────
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isTyping]);
+  // ── Chat scroll behavior ─────────────────────────────────────────────────
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsNearBottom(remaining < 72);
+  }, []);
+
+  useEffect(() => {
+    if (!isNearBottom) return;
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping, isNearBottom]);
 
   // ── Resizing logic (mouse + touch) ────────────────────────────────────────
   useEffect(() => {
@@ -1602,6 +1615,23 @@ ${finalJsx}
     } catch (err) {
       logger.warn('chat', 'image attach failed', err);
     }
+  }, []);
+
+  const handleCopyMessage = useCallback(async (content, key) => {
+    try {
+      await navigator.clipboard?.writeText(content || '');
+      setCopiedMsgKey(key);
+      setTimeout(() => setCopiedMsgKey(prev => (prev === key ? '' : prev)), 1800);
+    } catch {
+      // no-op: clipboard may be blocked by browser policy
+    }
+  }, []);
+
+  const handleQuoteToPrompt = useCallback((content) => {
+    const safe = (content || '').trim();
+    if (!safe) return;
+    const quote = safe.split('\n').map(line => `> ${line}`).join('\n');
+    setChatInput(prev => (prev ? `${prev}\n\n${quote}\n\n` : `${quote}\n\n`));
   }, []);
 
   const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
@@ -3036,7 +3066,15 @@ ${finalJsx}
             )}
 
             {/* Chat Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-5 font-sans text-[13px] bg-gradient-to-b from-[#15092a] to-[#0a0412]" role="log" aria-live="polite" aria-label="Chat history">
+            <div className="relative flex-1">
+            <div
+              ref={chatScrollRef}
+              onScroll={handleChatScroll}
+              className="h-full overflow-y-auto p-4 space-y-5 font-sans text-[13px] bg-gradient-to-b from-[#15092a] to-[#0a0412]"
+              role="log"
+              aria-live="polite"
+              aria-label="Chat history"
+            >
               {messages.length === 0 && (
                 <div className="text-center pt-8 space-y-4">
                   <div className="flex justify-center">
@@ -3073,6 +3111,27 @@ ${finalJsx}
                       : <><Sparkles size={12} className={AGENT_REGISTRY[msg.agent]?.color || 'text-fuchsia-400'} /> {msg.agentName || AGENT_REGISTRY[msg.agent]?.name || 'Agent'}</>
                     }
                     {msg.timestamp && <span className="text-[9px] text-purple-500/40 font-normal normal-case ml-auto">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                    {msg.role === 'assistant' && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(msg.content || '', `copy-${i}-${msg.timestamp || 0}`)}
+                          className="inline-flex items-center gap-1 rounded-md border border-fuchsia-500/20 bg-fuchsia-500/5 px-1.5 py-0.5 text-[9px] normal-case text-fuchsia-300/80 hover:bg-fuchsia-500/15 hover:text-fuchsia-200 transition-colors"
+                          title="Copy response"
+                        >
+                          <Copy size={9} />
+                          {copiedMsgKey === `copy-${i}-${msg.timestamp || 0}` ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuoteToPrompt(msg.content || '')}
+                          className="inline-flex items-center rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] normal-case text-purple-300/80 hover:bg-white/10 hover:text-purple-200 transition-colors"
+                          title="Quote into input"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {/* GitHub-Copilot-style thinking block */}
                   {msg.role === 'assistant' && (msg.steps?.length > 0 || msg.toolCalls?.length > 0) && (
@@ -3083,7 +3142,7 @@ ${finalJsx}
                       mode={msg.mode}
                     />
                   )}
-                  <div className={`rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-[#1f0e40] border border-purple-500/30 text-purple-100 shadow-md' : 'bg-transparent border border-fuchsia-500/20 text-purple-200'} text-[13px]`}>
+                  <div className={`rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-[#1f0e40] border border-purple-500/30 text-purple-100 shadow-md' : 'bg-[#100724] border border-fuchsia-500/25 text-purple-100/95 shadow-[0_8px_24px_rgba(0,0,0,0.28)]'} text-[13px]`}>
                     {msg.imageDataUrl && (
                       <img src={msg.imageDataUrl} className="max-w-xs rounded-md mb-2" alt="Uploaded preview" />
                     )}
@@ -3099,6 +3158,11 @@ ${finalJsx}
                       );
                     })()}
                   </div>
+                  {msg.role === 'assistant' && msg.usage && (
+                    <div className="text-[9px] text-purple-500/60 px-1">
+                      Tokens: {msg.usage.total_tokens ?? ((msg.usage.input_tokens ?? 0) + (msg.usage.output_tokens ?? 0)) ?? msg.usage.totalTokenCount ?? 'n/a'}
+                    </div>
+                  )}
                   {/* Extracted TODOs from assistant messages */}
                   {msg.role === 'assistant' && msg.content && (() => {
                     const todoLines = msg.content.split('\n').filter(l => /^[-*]\s*\[[ x]\]/i.test(l.trim()) || /^\d+\.\s/.test(l.trim()));
@@ -3183,6 +3247,19 @@ ${finalJsx}
                 </div>
               )}
               <div ref={chatEndRef} />
+            </div>
+            {!isNearBottom && (
+              <button
+                type="button"
+                onClick={() => {
+                  chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                  setIsNearBottom(true);
+                }}
+                className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 rounded-full border border-fuchsia-500/30 bg-[#120825]/95 px-3 py-1.5 text-[10px] font-semibold text-fuchsia-200 shadow-[0_8px_20px_rgba(0,0,0,0.45)] hover:bg-[#1a0b35] transition-colors"
+              >
+                <ChevronDown size={12} /> Latest
+              </button>
+            )}
             </div>
 
             {/* Kept TODOs Panel */}
