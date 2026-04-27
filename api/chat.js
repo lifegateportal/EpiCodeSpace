@@ -5,19 +5,19 @@ const PROVIDER_CONFIG = {
   'epicode-agent': {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
-    model: 'gpt-5',
+    model: 'gpt-4o',
     transform: 'openai',
   },
   copilot: {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
-    model: 'gpt-5-mini',
+    model: 'gpt-4o',
     transform: 'openai',
   },
   claude: {
     url: 'https://api.anthropic.com/v1/messages',
     envKey: 'ANTHROPIC_API_KEY',
-    model: 'claude-sonnet-4-5-20250929',
+    model: 'claude-3-7-sonnet-20250219',
     transform: 'anthropic',
   },
   gemini: {
@@ -37,11 +37,11 @@ const PROVIDER_CONFIG = {
 // Allowlist of model ids the user may request per agent. Must be kept in sync
 // with src/lib/agentRegistry.js so clients can't inject arbitrary model names.
 const ALLOWED_MODELS = {
-  'epicode-agent': ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
-  copilot:         ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
-  claude:          ['claude-sonnet-4-5-20250929', 'claude-opus-4-5-20251101', 'claude-opus-4-1-20250805', 'claude-haiku-4-5-20251101'],
-  gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
-  deepseek:        ['deepseek-reasoner', 'deepseek-chat', 'deepseek-coder'],
+  'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
+  copilot:         ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
+  claude:          ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+  gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'],
+  deepseek:        ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'],
 };
 
 const AGENT_PERSONAS = {
@@ -97,7 +97,7 @@ const MODE_INSTRUCTIONS = {
 
 const WORKSPACE_TOOLS = [
   { name: 'readFile', description: 'Read the full contents of a file.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path, e.g. "src/App.jsx"' } }, required: ['path'] } },
-  { name: 'writeFile', description: 'Create a NEW file that does not yet exist in the workspace. NEVER use on files that already exist — use editFile instead.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path' }, content: { type: 'string', description: 'Complete file content' } }, required: ['path', 'content'] } },
+  { name: 'writeFile', description: 'Create or fully overwrite a file with complete content. Use for new files or when replacing an entire file. Use editFile for surgical changes to existing files.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path' }, content: { type: 'string', description: 'Complete file content' } }, required: ['path', 'content'] } },
   { name: 'editFile', description: 'Surgically patch an existing file by replacing an exact block of text. ALWAYS prefer this over writeFile when the file already exists. oldText must appear verbatim exactly once in the file; newText is inserted in its place. Returns an error if oldText is not found or matches multiple times — read the file first to get the exact text.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path' }, oldText: { type: 'string', description: 'Verbatim text to find — must appear exactly once in the file. Include sufficient surrounding context to be unique.' }, newText: { type: 'string', description: 'Text to insert in place of oldText' } }, required: ['path', 'oldText', 'newText'] } },
   { name: 'deleteFile', description: 'Delete a file from the workspace.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File path to delete' } }, required: ['path'] } },
   { name: 'listFiles', description: 'List all files in the workspace with languages and line counts.', parameters: { type: 'object', properties: {} } },
@@ -367,7 +367,9 @@ export default async function handler(req, res) {
       let originHost = '';
       try { originHost = new URL(origin).host; } catch { /* ignore */ }
       const host = req.headers.host;
-      if (!host || originHost !== host) {
+      // Allow localhost/127.0.0.1 origins — Vite dev proxy rewrites the Host port
+      const isLocalOrigin = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(originHost);
+      if (!isLocalOrigin && (!host || originHost !== host)) {
         return res.status(403).json({ error: 'Forbidden (cross-origin). Set ALLOWED_ORIGIN env var to allow this origin.' });
       }
       res.setHeader('Access-Control-Allow-Origin', origin);

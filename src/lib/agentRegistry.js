@@ -7,20 +7,20 @@
 
 // OpenAI model catalog (shared by epicode-agent + copilot)
 const OPENAI_MODELS = [
-  { id: 'gpt-5',        name: 'GPT-5',        tier: 'premium',  description: 'Frontier reasoning + coding' },
-  { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant' },
-  { id: 'gpt-4.1',      name: 'GPT-4.1',      tier: 'standard', description: 'Large-context coding' },
-  { id: 'o3',           name: 'o3',           tier: 'premium',  description: 'Deep reasoning' },
-  { id: 'o3-mini',      name: 'o3 mini',      tier: 'fast',     description: 'Quick reasoning' },
-  { id: 'gpt-4o',       name: 'GPT-4o',       tier: 'standard', description: 'Legacy multimodal' },
+  { id: 'gpt-4o',       name: 'GPT-4o',       tier: 'standard', description: 'Reliable, widely available' },
+  { id: 'gpt-4.1',      name: 'GPT-4.1',      tier: 'standard', description: 'Large-context coding (Apr 2025)' },
   { id: 'gpt-4o-mini',  name: 'GPT-4o mini',  tier: 'fast',     description: 'Cheap + fast' },
+  { id: 'o3',           name: 'o3',            tier: 'premium',  description: 'Deep reasoning' },
+  { id: 'o3-mini',      name: 'o3 mini',       tier: 'fast',     description: 'Quick reasoning' },
+  { id: 'gpt-5',        name: 'GPT-5',         tier: 'premium',  description: 'Frontier model (if available)' },
+  { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant (if available)' },
 ];
 
 const CLAUDE_MODELS = [
-  { id: 'claude-sonnet-4-5-20250929',   name: 'Claude Sonnet 4.5',  tier: 'standard', description: 'Balanced Anthropic flagship' },
-  { id: 'claude-opus-4-5-20251101',     name: 'Claude Opus 4.5',    tier: 'premium',  description: 'Top-tier Anthropic reasoning' },
-  { id: 'claude-opus-4-1-20250805',     name: 'Claude Opus 4.1',    tier: 'premium',  description: 'Previous premium generation' },
-  { id: 'claude-haiku-4-5-20251101',    name: 'Claude Haiku 4.5',   tier: 'fast',     description: 'Fast + cheap Anthropic' },
+  { id: 'claude-3-7-sonnet-20250219',   name: 'Claude 3.7 Sonnet',  tier: 'standard', description: 'Balanced Anthropic flagship (Feb 2025)' },
+  { id: 'claude-3-5-sonnet-20241022',   name: 'Claude 3.5 Sonnet',  tier: 'standard', description: 'Reliable flagship (Oct 2024)' },
+  { id: 'claude-3-5-haiku-20241022',    name: 'Claude 3.5 Haiku',   tier: 'fast',     description: 'Fast + cheap Anthropic' },
+  { id: 'claude-3-opus-20240229',       name: 'Claude 3 Opus',      tier: 'premium',  description: 'Advanced reasoning' },
 ];
 
 const GEMINI_MODELS = [

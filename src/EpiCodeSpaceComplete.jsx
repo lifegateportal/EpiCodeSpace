@@ -1449,15 +1449,15 @@ ${finalJsx}
         return { ok: true, path: args.path, content: safeContent, language: f.language, lines: safeContent.split('\n').length };
       }
       case 'writeFile': {
-        if (currentFS[args.path]) {
-          return { ok: false, error: `'${args.path}' already exists — use editFile with oldText/newText to patch specific sections instead of overwriting the whole file.` };
-        }
-        const lang = args.path.endsWith('.jsx') || args.path.endsWith('.js') ? 'javascript'
+        if (!args.path || typeof args.path !== 'string') return { ok: false, error: 'writeFile: path is required' };
+        const existingLang = currentFS[args.path]?.language;
+        const lang = existingLang || (
+          args.path.endsWith('.jsx') || args.path.endsWith('.js') ? 'javascript'
           : args.path.endsWith('.tsx') || args.path.endsWith('.ts') ? 'typescript'
           : args.path.endsWith('.css') ? 'css'
           : args.path.endsWith('.json') ? 'json'
           : args.path.endsWith('.md') ? 'markdown'
-          : args.path.endsWith('.html') ? 'html' : 'text';
+          : args.path.endsWith('.html') ? 'html' : 'text');
         const safeContent = args.content ?? '';
         return { ok: true, action: 'write', path: args.path, language: lang, content: safeContent, lines: safeContent.split('\n').length };
       }
