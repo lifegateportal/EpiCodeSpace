@@ -24,12 +24,13 @@ import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
 import {
-  STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODELS_KEY, MODE_KEY,
+  STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODELS_KEY, MODE_KEY, SNAPSHOTS_KEY,
   loadJSON, storeJSON, loadLatestSnapshot, saveLocalSnapshot,
 } from './lib/storage.js';
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
 import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
+import { FsClient } from './lib/fs/FsClient.ts';
 import { bridge } from './lib/runtime/WebContainerBridge.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 
@@ -852,6 +853,17 @@ function EpiCodeSpaceApp() {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [wcServerUrl, setWcServerUrl] = useState('');
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
+  const [showStorageMonitor, setShowStorageMonitor] = useState(false);
+  const [storageMonitor, setStorageMonitor] = useState({
+    usage: 0,
+    quota: 0,
+    reserved: 0,
+    percent: 0,
+    source: 'browser',
+    localBytes: 0,
+    snapshotCount: 0,
+    lastUpdated: 0,
+  });
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const chatScrollRef = useRef(null);
@@ -869,6 +881,7 @@ function EpiCodeSpaceApp() {
   const autoDevProcessRef = useRef(null);
   const lastAutoSnapshotHashRef = useRef('');
   const lastAutoSnapshotAtRef = useRef(0);
+  const storageWarnedRef = useRef({ w80: false, w90: false });
 
   // ── Track screen width ────────────────────────────────────────────────────
   useEffect(() => {
@@ -975,6 +988,113 @@ function EpiCodeSpaceApp() {
       toast?.error?.(`OPFS init failed (${fsInitError.code}): ${fsInitError.message}. Running in localStorage mode.`);
     }
   }, [fsInitError, toast]);
+
+  const estimateLocalStorageBytes = useCallback(() => {
+    try {
+      let total = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const v = localStorage.getItem(k) || '';
+        total += (k.length + v.length) * 2;
+      }
+      return total;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const refreshStorageMonitor = useCallback(async () => {
+    let usage = 0;
+    let quota = 0;
+    let reserved = 0;
+    let source = 'browser';
+
+    try {
+      if (fsMode === 'opfs') {
+        const u = await FsClient.usage();
+        usage = Number(u?.usage || 0);
+        quota = Number(u?.quota || 0);
+        reserved = Number(u?.reserved || 0);
+        source = 'opfs';
+      } else {
+        const est = await navigator.storage?.estimate?.();
+        usage = Number(est?.usage || 0);
+        quota = Number(est?.quota || 0);
+      }
+    } catch {
+      // Keep monitor resilient; fallback values below still render.
+    }
+
+    const localBytes = estimateLocalStorageBytes();
+    const snapshots = loadJSON(SNAPSHOTS_KEY, []);
+    const snapshotCount = Array.isArray(snapshots) ? snapshots.length : 0;
+    const effectiveUsage = Math.max(usage, localBytes);
+    const percent = quota > 0 ? Math.round((effectiveUsage / quota) * 100) : 0;
+
+    setStorageMonitor({
+      usage: effectiveUsage,
+      quota,
+      reserved,
+      percent,
+      source,
+      localBytes,
+      snapshotCount,
+      lastUpdated: Date.now(),
+    });
+
+    if (percent >= 90 && !storageWarnedRef.current.w90) {
+      storageWarnedRef.current.w90 = true;
+      toast?.error?.('Storage usage is above 90%. Open the Storage Monitor to clean up snapshots before writes fail.');
+    } else if (percent >= 80 && !storageWarnedRef.current.w80) {
+      storageWarnedRef.current.w80 = true;
+      toast?.warn?.('Storage usage is above 80%. Consider pruning snapshots in Storage Monitor.');
+    } else if (percent < 80) {
+      storageWarnedRef.current.w80 = false;
+      storageWarnedRef.current.w90 = false;
+    }
+  }, [estimateLocalStorageBytes, fsMode, toast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await refreshStorageMonitor();
+      if (cancelled) return;
+    })();
+    const id = setInterval(() => { void refreshStorageMonitor(); }, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [refreshStorageMonitor]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { void refreshStorageMonitor(); }, 900);
+    return () => clearTimeout(t);
+  }, [fileSystem, refreshStorageMonitor]);
+
+  const handlePruneSnapshots = useCallback(() => {
+    const snapshots = loadJSON(SNAPSHOTS_KEY, []);
+    if (!Array.isArray(snapshots) || snapshots.length <= 5) {
+      toast?.info?.('Nothing to prune.');
+      return;
+    }
+    const next = snapshots.slice(0, 5);
+    storeJSON(SNAPSHOTS_KEY, next);
+    toast?.success?.(`Pruned ${snapshots.length - next.length} old snapshots.`);
+    void refreshStorageMonitor();
+  }, [refreshStorageMonitor, toast]);
+
+  const handleClearSnapshots = useCallback(() => {
+    const snapshots = loadJSON(SNAPSHOTS_KEY, []);
+    if (!Array.isArray(snapshots) || snapshots.length === 0) {
+      toast?.info?.('No snapshots to clear.');
+      return;
+    }
+    storeJSON(SNAPSHOTS_KEY, []);
+    toast?.success?.('Cleared all snapshots.');
+    void refreshStorageMonitor();
+  }, [refreshStorageMonitor, toast]);
   useEffect(() => {
     const t = setTimeout(() => storeJSON(CONVOS_KEY, conversations), 400);
     return () => clearTimeout(t);
@@ -4048,10 +4168,48 @@ ${finalCode}
           <div className="hidden lg:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">LF</div>
           <div className="hidden md:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors font-semibold gap-1"><CheckCircle2 size={12} className="text-fuchsia-400"/> Prettier</div>
           <Suspense fallback={null}><LspStatusBadge /></Suspense>
+          <button
+            type="button"
+            onClick={() => setShowStorageMonitor((p) => !p)}
+            className={`px-2 h-full flex items-center gap-1 border-l border-fuchsia-500/10 transition-colors hover:bg-[#25104a] ${storageMonitor.percent >= 90 ? 'text-red-300' : storageMonitor.percent >= 80 ? 'text-amber-300' : 'text-purple-300'}`}
+            title={`Storage monitor (${storageMonitor.source})`}
+          >
+            <Save size={11} />
+            <span className="hidden sm:inline">Storage {storageMonitor.percent || 0}%</span>
+          </button>
           <div className="hidden lg:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">Layout: U.S.</div>
           <div className={`px-2 h-full flex items-center border-l border-fuchsia-500/10 ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`}>⚡ <span className="hidden sm:inline ml-1">{AGENT_REGISTRY[activeAgent]?.name || 'Agent'}</span></div>
         </div>
       </footer>
+
+      {showStorageMonitor && (
+        <div className="fixed bottom-8 right-3 z-[80] w-72 bg-[#15092a] border border-fuchsia-500/30 rounded-lg shadow-[0_12px_28px_rgba(0,0,0,0.55)] p-3 text-xs">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-semibold text-fuchsia-200">Storage Monitor</span>
+            <button type="button" onClick={() => setShowStorageMonitor(false)} className="text-purple-400/70 hover:text-fuchsia-300 transition-colors"><X size={13} /></button>
+          </div>
+          <div className="space-y-1 text-purple-300/80">
+            <div>Usage: {(storageMonitor.usage / 1024 / 1024).toFixed(2)} MB</div>
+            <div>Quota: {storageMonitor.quota > 0 ? `${(storageMonitor.quota / 1024 / 1024).toFixed(2)} MB` : 'Unknown'}</div>
+            <div>Source: {storageMonitor.source === 'opfs' ? 'OPFS' : 'Browser estimate'}</div>
+            <div>localStorage: {(storageMonitor.localBytes / 1024 / 1024).toFixed(2)} MB</div>
+            <div>Snapshots: {storageMonitor.snapshotCount}</div>
+            {storageMonitor.reserved > 0 && <div>Reserved headroom: {(storageMonitor.reserved / 1024 / 1024).toFixed(2)} MB</div>}
+          </div>
+          <div className="mt-2 h-2 rounded bg-[#0a0412] border border-fuchsia-500/15 overflow-hidden">
+            <div
+              className={`${storageMonitor.percent >= 90 ? 'bg-red-500/80' : storageMonitor.percent >= 80 ? 'bg-amber-500/80' : 'bg-cyan-500/80'} h-full transition-all`}
+              style={{ width: `${Math.max(4, Math.min(100, storageMonitor.percent || 0))}%` }}
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => void refreshStorageMonitor()} className="px-2 py-1 rounded bg-white/5 border border-white/10 text-purple-200 hover:bg-white/10 transition-colors">Refresh</button>
+            <button type="button" onClick={handlePruneSnapshots} className="px-2 py-1 rounded bg-white/5 border border-white/10 text-purple-200 hover:bg-white/10 transition-colors">Prune old snapshots</button>
+            <button type="button" onClick={handleClearSnapshots} className="col-span-2 px-2 py-1 rounded bg-red-500/10 border border-red-500/30 text-red-200 hover:bg-red-500/20 transition-colors">Clear all snapshots</button>
+          </div>
+          <div className="mt-2 text-[10px] text-purple-500/70">Updated {storageMonitor.lastUpdated ? new Date(storageMonitor.lastUpdated).toLocaleTimeString() : 'just now'}</div>
+        </div>
+      )}
     </div>
   );
 }
