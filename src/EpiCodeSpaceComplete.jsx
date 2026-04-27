@@ -1079,41 +1079,96 @@ function EpiCodeSpaceApp() {
   const [previewDoc, setPreviewDoc] = useState(null);
 
   useEffect(() => {
-    // If generate.js is present, build a Babel CDN preview from src/*.jsx + src/*.css
-    if (debouncedFS['generate.js']) {
+    const previewErrorOverlayScript = `<script>
+(function () {
+  function ensureOverlay() {
+    let el = document.getElementById('__epicode_preview_error__');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = '__epicode_preview_error__';
+      el.style.position = 'fixed';
+      el.style.left = '0';
+      el.style.right = '0';
+      el.style.bottom = '0';
+      el.style.maxHeight = '45vh';
+      el.style.overflow = 'auto';
+      el.style.background = 'rgba(13, 5, 32, 0.96)';
+      el.style.borderTop = '1px solid rgba(244, 114, 182, 0.5)';
+      el.style.color = '#fca5a5';
+      el.style.padding = '10px 12px';
+      el.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+      el.style.fontSize = '12px';
+      el.style.zIndex = '2147483647';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function showError(title, detail) {
+    const el = ensureOverlay();
+    const safeTitle = String(title || 'Preview error');
+    const safeDetail = String(detail || '').slice(0, 6000);
+    el.innerHTML = '<div style="font-weight:700;color:#fda4af;margin-bottom:4px">' + safeTitle + '</div>' +
+      '<pre style="white-space:pre-wrap;margin:0;color:#fecaca">' + safeDetail + '</pre>';
+  }
+  window.addEventListener('error', function (ev) {
+    showError('Runtime error', (ev && (ev.error && ev.error.stack || ev.message)) || 'Unknown error');
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    const reason = ev && ev.reason;
+    showError('Unhandled promise rejection', reason && reason.stack ? reason.stack : String(reason || 'Unknown rejection'));
+  });
+})();
+<\/script>`;
+
+    const appendPreviewOverlay = (doc) => {
+      if (!doc) return doc;
+      if (/<\/body>/i.test(doc)) return doc.replace(/<\/body>/i, `${previewErrorOverlayScript}\n</body>`);
+      return doc + previewErrorOverlayScript;
+    };
+
+    const buildReactBabelPreview = (fs) => {
+      const entryCandidates = ['src/index.jsx', 'src/main.jsx', 'src/index.tsx', 'src/main.tsx', 'src/index.js', 'src/main.js'];
+      const entryPath = entryCandidates.find((p) => typeof fs[p]?.content === 'string' && fs[p].content.trim().length > 0);
+      if (!entryPath) return null;
+
       const excluded = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
       let combinedCss = '';
-      let combinedJsx = '';
-      let indexJsx = '';
+      let combinedCode = '';
+      let entryCode = '';
 
-      Object.entries(debouncedFS).forEach(([filePath, f]) => {
+      Object.entries(fs).forEach(([filePath, f]) => {
         if (!filePath.startsWith('src/') || !f?.content) return;
         const name = filePath.split('/').pop().toLowerCase();
         if (excluded.has(name)) return;
 
         if (name.endsWith('.css')) {
           combinedCss += f.content + '\n';
-        } else if (name.endsWith('.jsx')) {
-          const cleaned = f.content
-            .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
-            .replace(/^\s*export\s+default\s+/gm, '')
-            .replace(/^\s*export\s+/gm, '')
-            .trim();
-          if (name === 'index.jsx') {
-            indexJsx = cleaned;
-          } else {
-            combinedJsx += cleaned + '\n\n';
-          }
+          return;
         }
+
+        if (!/\.(jsx|tsx|js|ts)$/i.test(name)) return;
+        if (name.endsWith('.d.ts') || /\.(test|spec)\.[jt]sx?$/i.test(name)) return;
+
+        const cleaned = f.content
+          .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
+          .replace(/^\s*export\s+default\s+/gm, '')
+          .replace(/^\s*export\s+/gm, '')
+          .replace(/import\.meta\.env\.[A-Z0-9_]+/g, 'undefined')
+          .trim();
+
+        if (!cleaned) return;
+        if (filePath === entryPath) entryCode = cleaned;
+        else combinedCode += cleaned + '\n\n';
       });
 
-      const finalJsx = (combinedJsx.trim() + '\n\n' + indexJsx.trim())
+      const finalCode = (combinedCode.trim() + '\n\n' + entryCode.trim())
         .replace(/(?<!ReactDOM\.)\bcreateRoot\b/g, 'ReactDOM.createRoot')
         .replace(/<\/script>/gi, '<\\/script>')
         .trim();
 
-      if (finalJsx) {
-        setPreviewDoc(`<!doctype html>
+      if (!finalCode) return null;
+
+      return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -1126,21 +1181,38 @@ function EpiCodeSpaceApp() {
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script type="text/babel">
-      const { useState, useRef, useEffect, useCallback } = React;
-${finalJsx}
+    <script type="text/babel" data-presets="typescript,react">
+      const { useState, useRef, useEffect, useCallback, useMemo } = React;
+${finalCode}
     </script>
   </body>
-</html>`);
-        return;
-      }
+</html>`;
+    };
+
+    const babelPreviewDoc = buildReactBabelPreview(debouncedFS);
+
+    // Keep compatibility with existing generate.js flow, but use the same robust builder.
+    if (debouncedFS['generate.js'] && babelPreviewDoc) {
+      setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
+      return;
     }
 
     const htmlEntry = debouncedFS['index.html']
       || Object.entries(debouncedFS).find(([k]) => k.endsWith('.html'))?.[1];
-    if (!htmlEntry) { setPreviewDoc(null); return; }
+    if (!htmlEntry) {
+      setPreviewDoc(babelPreviewDoc ? appendPreviewOverlay(babelPreviewDoc) : null);
+      return;
+    }
 
     let html = htmlEntry.content;
+
+    const hasViteLikeModuleEntry =
+      /<script[^>]*type=["']module["'][^>]*src=["'][^"']*\/src\/[^"']+\.(jsx|tsx|js|ts)["'][^>]*><\/script>/i.test(html) ||
+      /<script[^>]*src=["'][^"']*\/src\/[^"']+\.(jsx|tsx|js|ts)["'][^>]*type=["']module["'][^>]*><\/script>/i.test(html);
+    if (hasViteLikeModuleEntry && babelPreviewDoc) {
+      setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
+      return;
+    }
 
     // Only inject a minimal reset if the page doesn't already include Tailwind
     // so we don't fight Tailwind's own preflight
@@ -1190,7 +1262,7 @@ ${finalJsx}
     }
 
     if (matches.length === 0) {
-      setPreviewDoc(html);
+      setPreviewDoc(appendPreviewOverlay(html));
       return;
     }
 
@@ -1205,7 +1277,7 @@ ${finalJsx}
           enriched = enriched.replace(full, `<style>\n${css}\n</style>`);
         } catch { /* leave original link tag if fetch fails */ }
       }));
-      if (!cancelled) setPreviewDoc(enriched);
+      if (!cancelled) setPreviewDoc(appendPreviewOverlay(enriched));
     })();
 
     return () => { cancelled = true; };
