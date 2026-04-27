@@ -127,6 +127,11 @@ const WORKSPACE_TOOLS = [
 function buildContextMessage(context) {
   if (!context) return '';
   const parts = [];
+  if (context.pinnedRules?.content) {
+    const p = context.pinnedRules;
+    const t = p.content.length > 12000 ? p.content.slice(0, 12000) + '\n...(truncated)' : p.content;
+    parts.push(`Pinned guidance (${p.path || 'rules'}):\n\`\`\`\n${t}\n\`\`\``);
+  }
   if (context.activeFile) parts.push(`Currently editing: ${context.activeFile}`);
   if (context.activeContent) {
     const t = context.activeContent.length > 8000 ? context.activeContent.slice(0, 8000) + '\n...(truncated)' : context.activeContent;

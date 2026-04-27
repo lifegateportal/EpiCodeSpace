@@ -737,6 +737,9 @@ function toModelUserContent(text, image, agentId) {
   return safeText;
 }
 
+const PREVIEW_MODE_KEY = 'epicodespace_preview_mode_v1';
+const PINNED_RULES_KEY = 'epicodespace_pinned_rules_v1';
+
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
   // ── Observability (Amendment #6) ──────────────────────────────────────────
@@ -773,7 +776,10 @@ function EpiCodeSpaceApp() {
   const [terminalState, setTerminalState] = useState(savedPanels.terminalState);
   const [activeTerminalTab, setActiveTerminalTab] = useState('terminal');
   const [previewKey, setPreviewKey] = useState(0);
-  const [previewRenderMode, setPreviewRenderMode] = useState('static'); // 'static' | 'live'
+  const [previewRenderMode, setPreviewRenderMode] = useState(() => {
+    const saved = loadJSON(PREVIEW_MODE_KEY, 'static');
+    return saved === 'live' ? 'live' : 'static';
+  }); // 'static' | 'live'
   const [previewSourcePath, setPreviewSourcePath] = useState('index.html');
 
   // ── Terminal ──────────────────────────────────────────────────────────────
@@ -785,7 +791,10 @@ function EpiCodeSpaceApp() {
     { port: 5173, protocol: 'https', state: 'running', label: 'Vite Dev Server', visibility: 'private', pid: 1024 },
   ]);
   const [chatTodos, setChatTodos] = useState([]);
-  const [pinnedFilePath, setPinnedFilePath] = useState(null);
+  const [pinnedFilePath, setPinnedFilePath] = useState(() => {
+    const saved = loadJSON(PINNED_RULES_KEY, null);
+    return typeof saved === 'string' ? saved : null;
+  });
   const [pinnedFileOpen, setPinnedFileOpen] = useState(true);
   const [changesBarOpen, setChangesBarOpen] = useState(true);
   const [selectedChangeMsgId, setSelectedChangeMsgId] = useState('');
@@ -1110,6 +1119,11 @@ function EpiCodeSpaceApp() {
     const t = setTimeout(() => storeJSON(PANELS_KEY, { sidebarOpen, rightSidebarOpen, terminalState }), 300);
     return () => clearTimeout(t);
   }, [sidebarOpen, rightSidebarOpen, terminalState]);
+  useEffect(() => { storeJSON(PREVIEW_MODE_KEY, previewRenderMode === 'live' ? 'live' : 'static'); }, [previewRenderMode]);
+  useEffect(() => {
+    if (typeof pinnedFilePath === 'string' && pinnedFilePath) storeJSON(PINNED_RULES_KEY, pinnedFilePath);
+    else storeJSON(PINNED_RULES_KEY, null);
+  }, [pinnedFilePath]);
 
   // ── Chat scroll behavior ─────────────────────────────────────────────────
   const handleChatScroll = useCallback(() => {
@@ -1181,12 +1195,6 @@ function EpiCodeSpaceApp() {
     const t = setTimeout(() => setDebouncedFS(fileSystem), 600);
     return () => clearTimeout(t);
   }, [fileSystem]);
-
-  useEffect(() => {
-    if (activeFile?.endsWith('.html') && fileSystem[activeFile]) {
-      setPreviewRenderMode('static');
-    }
-  }, [activeFile, fileSystem]);
 
   const deferredFS = useDeferredValue(debouncedFS);
   const allProblems = useMemo(() => {
@@ -2003,12 +2011,13 @@ ${finalCode}
   }, [pendingChangeSets, selectedChangeMsgId]);
 
   useEffect(() => {
-    if (!pinnedFilePath && fileSystem['.cursorrules']) {
-      setPinnedFilePath('.cursorrules');
+    const priority = [pinnedFilePath, '.cursorrules', 'copilot-instructions.md'].filter(Boolean);
+    const next = priority.find((p) => !!fileSystem[p]);
+    if (next && next !== pinnedFilePath) {
+      setPinnedFilePath(next);
+      return;
     }
-    if (pinnedFilePath && !fileSystem[pinnedFilePath]) {
-      setPinnedFilePath(null);
-    }
+    if (!next && pinnedFilePath) setPinnedFilePath(null);
   }, [fileSystem, pinnedFilePath]);
 
   const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
@@ -2076,6 +2085,14 @@ ${finalCode}
           lines: typeof f.content === 'string' ? f.content.split('\n').length : 0,
         })),
     };
+
+    const pinnedEntry = pinnedFilePath ? fileSystem[pinnedFilePath] : null;
+    if (pinnedEntry && typeof pinnedEntry.content === 'string' && pinnedEntry.content.trim()) {
+      context.pinnedRules = {
+        path: pinnedFilePath,
+        content: pinnedEntry.content.slice(0, 12000),
+      };
+    }
 
     const convo = conversations.find(c => c.id === activeConvoId);
     const history = [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
@@ -2337,7 +2354,7 @@ ${finalCode}
         setIsTyping(false);
       }
     })();
-  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, executeToolCall, applyToolMutations, conversations, summarizeFileChanges]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
