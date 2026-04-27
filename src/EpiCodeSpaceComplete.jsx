@@ -782,6 +782,10 @@ function EpiCodeSpaceApp() {
     { port: 5173, protocol: 'https', state: 'running', label: 'Vite Dev Server', visibility: 'private', pid: 1024 },
   ]);
   const [chatTodos, setChatTodos] = useState([]);
+  const [pinnedFilePath, setPinnedFilePath] = useState(null);
+  const [pinnedFileOpen, setPinnedFileOpen] = useState(true);
+  const [changesBarOpen, setChangesBarOpen] = useState(true);
+  const [selectedChangeMsgId, setSelectedChangeMsgId] = useState('');
 
   // ── Chat ──────────────────────────────────────────────────────────────────
   // Circuit-breaker limits: pause after this many consecutive tool rounds
@@ -1767,6 +1771,43 @@ ${finalCode}
     changeLedgerRef.current.delete(msgId);
     handleMarkChangeSet(msgId, 'undone');
   }, [getLatest, replaceAll, handleMarkChangeSet]);
+
+  const handlePinActiveFile = useCallback(() => {
+    if (!activeFile || !fileSystem[activeFile]) return;
+    setPinnedFilePath(activeFile);
+    setPinnedFileOpen(true);
+  }, [activeFile, fileSystem]);
+
+  const pendingChangeSets = useMemo(() => {
+    return messages
+      .filter((m) => m.role === 'assistant' && m.changeStatus === 'pending' && m.changedFiles?.length > 0)
+      .map((m) => ({
+        id: m.id,
+        timestamp: m.timestamp,
+        files: m.changedFiles,
+        plus: m.changedPlus || 0,
+        minus: m.changedMinus || 0,
+      }));
+  }, [messages]);
+
+  useEffect(() => {
+    if (pendingChangeSets.length === 0) {
+      if (selectedChangeMsgId) setSelectedChangeMsgId('');
+      return;
+    }
+    if (!selectedChangeMsgId || !pendingChangeSets.some((s) => s.id === selectedChangeMsgId)) {
+      setSelectedChangeMsgId(pendingChangeSets[0].id);
+    }
+  }, [pendingChangeSets, selectedChangeMsgId]);
+
+  useEffect(() => {
+    if (!pinnedFilePath && fileSystem['.cursorrules']) {
+      setPinnedFilePath('.cursorrules');
+    }
+    if (pinnedFilePath && !fileSystem[pinnedFilePath]) {
+      setPinnedFilePath(null);
+    }
+  }, [fileSystem, pinnedFilePath]);
 
   const handleExplorerDropFiles = useCallback(async (files, folderPath = '') => {
     const list = Array.from(files || []).filter((f) => isImageFile(f));
@@ -3107,6 +3148,7 @@ ${finalCode}
               <div className="flex gap-1 text-purple-400/60">
                 <button onClick={handleNewConversation} className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" title="New conversation"><Plus size={14} /></button>
                 <button onClick={() => setShowConversations(p => !p)} className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" title="Conversations"><MessageSquare size={14} /></button>
+                <button onClick={handlePinActiveFile} className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" title={activeFile ? `Pin ${activeFile}` : 'Pin active file'}><BookOpen size={14} /></button>
                 <button className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors"><Settings size={14} /></button>
                 <button className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" onClick={() => setRightSidebarOpen(false)}><X size={14} /></button>
               </div>
@@ -3243,6 +3285,126 @@ ${finalCode}
               </div>
             )}
 
+            {/* Pinned Guidance File */}
+            {pinnedFilePath && fileSystem[pinnedFilePath] && (
+              <div className="shrink-0 border-b border-cyan-500/20 bg-[#0d1322]">
+                <div className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-cyan-500/5 transition-colors">
+                  <BookOpen size={13} className="text-cyan-300" />
+                  <span className="text-[10px] uppercase tracking-wider text-cyan-200 font-semibold">Pinned Guidance</span>
+                  <span className="text-[10px] text-cyan-300/70 truncate">{pinnedFilePath}</span>
+                  <span className="ml-auto flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setPinnedFileOpen(v => !v)}
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-cyan-500/30 text-cyan-200/80 hover:bg-cyan-500/15"
+                      title={pinnedFileOpen ? 'Collapse' : 'Expand'}
+                    >
+                      {pinnedFileOpen ? 'Collapse' : 'Expand'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPinnedFilePath(null)}
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-cyan-500/30 text-cyan-200/80 hover:bg-cyan-500/15"
+                      title="Unpin"
+                    >
+                      Unpin
+                    </button>
+                    <ChevronDown size={12} className={`text-cyan-300/70 transition-transform ${pinnedFileOpen ? 'rotate-180' : ''}`} />
+                  </span>
+                </div>
+                {pinnedFileOpen && (
+                  <div className="px-3 pb-2">
+                    <div className="max-h-44 overflow-auto rounded-md border border-cyan-500/20 bg-[#0a0f1a]">
+                      {(fileSystem[pinnedFilePath]?.content || '').split('\n').slice(0, 80).map((line, idx) => (
+                        <div key={idx} className="grid grid-cols-[44px_1fr] text-[11px] font-mono leading-relaxed border-b border-cyan-500/5">
+                          <span className="select-none text-right pr-2 py-0.5 text-cyan-500/60 border-r border-cyan-500/10">{idx + 1}</span>
+                          <span className="py-0.5 px-2 text-cyan-100/85 whitespace-pre-wrap break-words">{line || ' '}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Top Files Changed Bar (GitHub-style) */}
+            {pendingChangeSets.length > 0 && (
+              <div className="shrink-0 border-b border-fuchsia-500/20 bg-[#120825]">
+                <button
+                  type="button"
+                  onClick={() => setChangesBarOpen(v => !v)}
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-fuchsia-500/5 transition-colors"
+                >
+                  <GitCommit size={13} className="text-fuchsia-300" />
+                  <span className="text-[10px] uppercase tracking-wider text-fuchsia-200 font-semibold">Files Changed</span>
+                  {(() => {
+                    const totalFiles = pendingChangeSets.reduce((n, s) => n + s.files.length, 0);
+                    const totalPlus = pendingChangeSets.reduce((n, s) => n + s.plus, 0);
+                    const totalMinus = pendingChangeSets.reduce((n, s) => n + s.minus, 0);
+                    return (
+                      <span className="text-[10px] text-fuchsia-300/80 normal-case">
+                        {totalFiles} file{totalFiles !== 1 ? 's' : ''} changed <span className="text-green-400/80">+{totalPlus}</span> <span className="text-red-400/80">-{totalMinus}</span>
+                      </span>
+                    );
+                  })()}
+                  <ChevronDown size={12} className={`ml-auto text-fuchsia-300/70 transition-transform ${changesBarOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {changesBarOpen && (
+                  <div className="px-3 pb-2 space-y-2">
+                    {pendingChangeSets.length > 1 && (
+                      <select
+                        value={selectedChangeMsgId}
+                        onChange={(e) => setSelectedChangeMsgId(e.target.value)}
+                        className="w-full bg-[#1a0b35] border border-fuchsia-500/20 rounded px-2 py-1 text-[11px] text-purple-100 outline-none"
+                      >
+                        {pendingChangeSets.map((s, idx) => (
+                          <option key={s.id} value={s.id}>
+                            Change set {idx + 1} · {s.files.length} file{s.files.length !== 1 ? 's' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {(() => {
+                      const set = pendingChangeSets.find((s) => s.id === selectedChangeMsgId) || pendingChangeSets[0];
+                      if (!set) return null;
+                      return (
+                        <>
+                          <div className="max-h-36 overflow-auto rounded-md border border-fuchsia-500/20 bg-[#0e0620] p-2 space-y-1">
+                            {set.files.map((f, fi) => (
+                              <div key={`${f.path}-${fi}`} className="flex items-center gap-2 text-[11px] text-purple-200/80">
+                                <span className={`shrink-0 ${f.action === 'delete' ? 'text-red-400/80' : f.action === 'create' ? 'text-green-400/80' : 'text-fuchsia-300/80'}`}>
+                                  {f.action === 'delete' ? '−' : f.action === 'create' ? '+' : '±'}
+                                </span>
+                                <span className="truncate flex-1">{f.path}</span>
+                                <span className="text-green-400/70">+{f.plus}</span>
+                                <span className="text-red-400/70">-{f.minus}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleKeepChangeSet(set.id)}
+                              className="px-2 py-0.5 text-[10px] rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors"
+                            >
+                              Keep
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleUndoChangeSet(set.id)}
+                              className="px-2 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
+                            >
+                              Undo
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Chat Messages */}
             <div className="relative flex-1 min-h-0">
             <div
@@ -3339,52 +3501,6 @@ ${finalCode}
                       );
                     })()}
                   </div>
-                  {msg.role === 'assistant' && msg.changedFiles?.length > 0 && (
-                    <div className="mt-1 rounded-lg border border-fuchsia-500/20 bg-[#120825] p-2.5">
-                      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-fuchsia-300/80 font-semibold">
-                        <span>{msg.changedFiles.length} file{msg.changedFiles.length > 1 ? 's' : ''} changed</span>
-                        <span className="text-green-400/80 normal-case">+{msg.changedPlus || 0}</span>
-                        <span className="text-red-400/80 normal-case">-{msg.changedMinus || 0}</span>
-                        <div className="ml-auto flex items-center gap-1 normal-case">
-                          {msg.changeStatus === 'pending' && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleKeepChangeSet(msg.id)}
-                                className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors"
-                              >
-                                Keep
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleUndoChangeSet(msg.id)}
-                                className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-500/30 hover:bg-amber-500/30 transition-colors"
-                              >
-                                Undo
-                              </button>
-                            </>
-                          )}
-                          {msg.changeStatus === 'kept' && <span className="text-cyan-300/80">Kept</span>}
-                          {msg.changeStatus === 'undone' && <span className="text-amber-300/80">Undone</span>}
-                        </div>
-                      </div>
-                      <div className="mt-2 space-y-1">
-                        {msg.changedFiles.slice(0, 8).map((f, fi) => (
-                          <div key={`${f.path}-${fi}`} className="flex items-center gap-2 text-[11px] text-purple-200/80">
-                            <span className={`shrink-0 ${f.action === 'delete' ? 'text-red-400/80' : f.action === 'create' ? 'text-green-400/80' : 'text-fuchsia-300/80'}`}>
-                              {f.action === 'delete' ? '−' : f.action === 'create' ? '+' : '±'}
-                            </span>
-                            <span className="truncate flex-1">{f.path}</span>
-                            <span className="text-green-400/70">+{f.plus}</span>
-                            <span className="text-red-400/70">-{f.minus}</span>
-                          </div>
-                        ))}
-                        {msg.changedFiles.length > 8 && (
-                          <div className="text-[10px] text-purple-500/60">…and {msg.changedFiles.length - 8} more</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
                   {msg.role === 'assistant' && msg.usage && (
                     <div className="text-[9px] text-purple-500/60 px-1">
                       Tokens: {msg.usage.total_tokens ?? ((msg.usage.input_tokens ?? 0) + (msg.usage.output_tokens ?? 0)) ?? msg.usage.totalTokenCount ?? 'n/a'}
