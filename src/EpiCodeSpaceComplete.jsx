@@ -1371,15 +1371,48 @@ function EpiCodeSpaceApp() {
       return doc + previewErrorOverlayScript;
     };
 
+    const BABEL_PREVIEW_MAX_MODULES = 40;
+    const BABEL_PREVIEW_MAX_SOURCE_CHARS = 220000;
+
+    const buildLargeProjectPreviewDoc = (reason) => `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Preview Safety Mode</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0f0620; color: #e9d5ff; }
+      .wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+      .card { width: min(760px, 100%); border: 1px solid rgba(217, 70, 239, 0.35); background: rgba(31, 12, 59, 0.9); border-radius: 12px; padding: 16px; box-shadow: 0 12px 42px rgba(0, 0, 0, 0.35); }
+      h1 { margin: 0 0 8px; font-size: 16px; color: #f0abfc; }
+      p { margin: 6px 0; font-size: 13px; line-height: 1.5; color: #e9d5ff; }
+      code { background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(217, 70, 239, 0.25); border-radius: 6px; padding: 1px 6px; color: #f5d0fe; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Preview Safety Mode Enabled</h1>
+        <p>This workspace is too large for the inline Babel preview path, which can become unstable and throw generic script errors.</p>
+        <p>${reason}</p>
+        <p>For full fidelity, switch to <code>Live</code> preview (Runtime tab) so the app runs through the real dev server.</p>
+      </div>
+    </div>
+  </body>
+</html>`;
+
     const buildReactBabelPreview = (fs) => {
       const entryCandidates = ['src/index.jsx', 'src/main.jsx', 'src/index.tsx', 'src/main.tsx', 'src/index.js', 'src/main.js'];
       const entryPath = entryCandidates.find((p) => typeof fs[p]?.content === 'string' && fs[p].content.trim().length > 0);
-      if (!entryPath) return null;
+      if (!entryPath) return { doc: null, disabledReason: '' };
 
       const excluded = new Set(['pictureeditor.css', 'pictureeditor.jsx', 'pictureedoitor.jsx']);
       let combinedCss = '';
       let combinedCode = '';
       let entryCode = '';
+      let moduleCount = 0;
+      let sourceChars = 0;
 
       Object.entries(fs).forEach(([filePath, f]) => {
         if (!filePath.startsWith('src/') || !f?.content) return;
@@ -1394,6 +1427,9 @@ function EpiCodeSpaceApp() {
         if (!/\.(jsx|tsx|js|ts)$/i.test(name)) return;
         if (name.endsWith('.d.ts') || /\.(test|spec)\.[jt]sx?$/i.test(name)) return;
 
+        moduleCount += 1;
+        sourceChars += f.content.length;
+
         const cleaned = f.content
           .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
           .replace(/^\s*export\s+default\s+/gm, '')
@@ -1406,14 +1442,19 @@ function EpiCodeSpaceApp() {
         else combinedCode += cleaned + '\n\n';
       });
 
+      if (moduleCount > BABEL_PREVIEW_MAX_MODULES || sourceChars > BABEL_PREVIEW_MAX_SOURCE_CHARS) {
+        const reason = `Detected ${moduleCount} source modules / ${Math.round(sourceChars / 1024)} KB source size (limit: ${BABEL_PREVIEW_MAX_MODULES} modules or ${Math.round(BABEL_PREVIEW_MAX_SOURCE_CHARS / 1024)} KB).`;
+        return { doc: null, disabledReason: reason };
+      }
+
       const finalCode = (combinedCode.trim() + '\n\n' + entryCode.trim())
         .replace(/(?<!ReactDOM\.)\bcreateRoot\b/g, 'ReactDOM.createRoot')
         .replace(/<\/script>/gi, '<\\/script>')
         .trim();
 
-      if (!finalCode) return null;
+      if (!finalCode) return { doc: null, disabledReason: '' };
 
-      return `<!doctype html>
+      return { doc: `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -1431,15 +1472,20 @@ function EpiCodeSpaceApp() {
 ${finalCode}
     </script>
   </body>
-</html>`;
+</html>`, disabledReason: '' };
     };
 
-    const babelPreviewDoc = buildReactBabelPreview(debouncedFS);
+    const { doc: babelPreviewDoc, disabledReason: babelPreviewDisabledReason } = buildReactBabelPreview(debouncedFS);
 
     // Keep compatibility with existing generate.js flow, but use the same robust builder.
     if (debouncedFS['generate.js'] && babelPreviewDoc) {
       setPreviewSourcePath('React entry (Babel)');
       setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
+      return;
+    }
+    if (debouncedFS['generate.js'] && !babelPreviewDoc && babelPreviewDisabledReason) {
+      setPreviewSourcePath('Preview safety mode');
+      setPreviewDoc(appendPreviewOverlay(buildLargeProjectPreviewDoc(babelPreviewDisabledReason)));
       return;
     }
 
@@ -1450,7 +1496,12 @@ ${finalCode}
     const htmlEntry = htmlEntryPath ? debouncedFS[htmlEntryPath] : null;
     if (!htmlEntry) {
       if (babelPreviewDoc) setPreviewSourcePath('React entry (Babel)');
-      setPreviewDoc(babelPreviewDoc ? appendPreviewOverlay(babelPreviewDoc) : null);
+      if (!babelPreviewDoc && babelPreviewDisabledReason) {
+        setPreviewSourcePath('Preview safety mode');
+        setPreviewDoc(appendPreviewOverlay(buildLargeProjectPreviewDoc(babelPreviewDisabledReason)));
+      } else {
+        setPreviewDoc(babelPreviewDoc ? appendPreviewOverlay(babelPreviewDoc) : null);
+      }
       return;
     }
 
@@ -1464,6 +1515,11 @@ ${finalCode}
     if (hasViteLikeModuleEntry && babelPreviewDoc) {
       setPreviewSourcePath('React entry (Babel)');
       setPreviewDoc(appendPreviewOverlay(babelPreviewDoc));
+      return;
+    }
+    if (hasViteLikeModuleEntry && !babelPreviewDoc && babelPreviewDisabledReason) {
+      setPreviewSourcePath('Preview safety mode');
+      setPreviewDoc(appendPreviewOverlay(buildLargeProjectPreviewDoc(babelPreviewDisabledReason)));
       return;
     }
 
