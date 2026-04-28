@@ -605,6 +605,11 @@ function makeMessageId(prefix = 'msg') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function looksLikeWorkspaceChangeRequest(text) {
+  const value = (text || '').toLowerCase();
+  return /(fix|update|change|modify|edit|patch|write|save|create|add|remove|delete|rename|refactor|implement|build|generate|scaffold)/.test(value);
+}
+
 const IMAGE_MIME_TO_EXT = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -2095,7 +2100,7 @@ ${finalCode}
     }
 
     const convo = conversations.find(c => c.id === activeConvoId);
-    const history = [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
+    let history = [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }));
@@ -2148,6 +2153,24 @@ ${finalCode}
 
           // If model returned text only, we're done
           if (data.type === 'text') {
+            const shouldForceToolRetry =
+              chatMode === 'agent' &&
+              round === 0 &&
+              allToolCalls.length === 0 &&
+              looksLikeWorkspaceChangeRequest(userMessage);
+
+            if (shouldForceToolRetry) {
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: 'System reminder: The user asked for a workspace change. Do not answer with prose only. Use workspace tools now: first inspect with readFile/listFiles/searchCode as needed, then apply edits with editFile/writeFile.',
+                },
+              ].slice(-22);
+              allSteps.push('⚠️ Plain-text reply in agent mode; retrying once with forced tool-use reminder.');
+              continue;
+            }
+
             const msgId = makeMessageId('assistant');
             const summary = summarizeFileChanges(allFileChanges);
             if (summary.files.length > 0) {
