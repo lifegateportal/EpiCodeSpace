@@ -8,5 +8,9 @@ For this specific project, I am working with limited bandwidth and need to adher
 6. Completion Gate Before Next Component: A component is considered complete only when all of the following are done: implementation, styles, state/logic, responsive behavior, accessibility basics, local tests/build checks (if present), and explicit confirmation from me to proceed.
 7. No Scope Expansion: Do not add extra features, refactors, helper utilities, or adjacent component changes unless I explicitly request them.
 8. Task Chunking Format: For each request, first state the single target component, then execute only that component, then stop and wait for my next instruction.
+9. Mandatory TODO Lifecycle: For every non-trivial task (anything more than a tiny one-line fix), create a checklist before coding using markdown checkboxes (e.g., - [ ] Step 1). Keep the list concise and action-based.
+10. Live TODO Updates: After each meaningful change, immediately update checklist status (mark completed items as - [x], leave pending as - [ ]). Do not defer updates until the end.
+11. One Active Item Rule: Work only on one unchecked TODO at a time. Do not start the next item until the current item is completed or explicitly blocked.
+12. Completion Report Format: End each task with a final checklist state plus a short "Done / Remaining / Blocked" summary aligned to the TODO items.
 
 Thank you for adopting these workflow standards for this workspace!
