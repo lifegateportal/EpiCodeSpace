@@ -4,5 +4,9 @@ For this specific project, I am working with limited bandwidth and need to adher
 2. Code-Only Output: Please omit conversational filler, apologies, or explanations unless I specifically ask for them. Just outputting the raw code or diff is perfect.
 3. Scoped Analysis: I will provide or @-mention the specific files we are working on. Please limit your analysis strictly to those files to save us both time.
 4. Pause on Errors: If we are debugging and your suggested fix throws an error, please halt and wait for my input rather than attempting multiple automated retries.
+5. Single-Component Execution Mode: Build exactly one component at a time and do not start, modify, or scaffold any other component until the current one is fully complete.
+6. Completion Gate Before Next Component: A component is considered complete only when all of the following are done: implementation, styles, state/logic, responsive behavior, accessibility basics, local tests/build checks (if present), and explicit confirmation from me to proceed.
+7. No Scope Expansion: Do not add extra features, refactors, helper utilities, or adjacent component changes unless I explicitly request them.
+8. Task Chunking Format: For each request, first state the single target component, then execute only that component, then stop and wait for my next instruction.
 
 Thank you for adopting these workflow standards for this workspace!
