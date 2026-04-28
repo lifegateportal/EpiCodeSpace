@@ -2508,12 +2508,11 @@ ${finalCode}
             if (changed) {
               currentFS = newFS;
               replaceAll(newFS);
-              data.tool_calls.forEach(tc => {
-                if (tc.name === 'writeFile') {
-                  setOpenTabs(prev => prev.includes(tc.arguments.path) ? prev : [...prev, tc.arguments.path]);
-                  setActiveFile(tc.arguments.path);
-                }
-              });
+              // Only open tab for the first tool call if it's a writeFile
+              if (tcToExecute.name === 'writeFile') {
+                setOpenTabs(prev => prev.includes(tcToExecute.arguments.path) ? prev : [...prev, tcToExecute.arguments.path]);
+                setActiveFile(tcToExecute.arguments.path);
+              }
             }
             // Run terminal commands requested by agent
             if (cmdsToRun.length > 0) {
@@ -2522,7 +2521,8 @@ ${finalCode}
               cmdsToRun.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
             }
 
-            pendingToolCalls = data.tool_calls;
+            // Only the FIRST tool call was executed, so report only that as pending
+            pendingToolCalls = [tcToExecute];
 
             // Update steps in real-time with a progress message
             setMessages(prev => {
