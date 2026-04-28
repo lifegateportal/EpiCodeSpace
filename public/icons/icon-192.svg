@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="EpiCodeSpace icon">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f472b6" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="40" fill="#120825" />
+  <rect x="24" y="24" width="144" height="144" rx="28" fill="#0a0412" stroke="url(#g)" stroke-width="8" />
+  <path d="M66 82 L48 96 L66 110" fill="none" stroke="#7dd3fc" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M126 82 L144 96 L126 110" fill="none" stroke="#f472b6" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M96 66 L84 126" fill="none" stroke="#c4b5fd" stroke-width="8" stroke-linecap="round" />
+</svg>

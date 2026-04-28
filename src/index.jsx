@@ -4,6 +4,14 @@ import './index.css';
 import EpiCodeSpaceApp from './EpiCodeSpaceComplete.jsx';
 import { ToastProvider } from './components/Toaster.jsx';
 
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Fail silently in unsupported or private browsing contexts.
+    });
+  });
+}
+
 try {
   const root = createRoot(document.getElementById('root'));
   root.render(

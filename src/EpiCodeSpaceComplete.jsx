@@ -742,8 +742,42 @@ function toModelUserContent(text, image, agentId) {
   return safeText;
 }
 
+function isIpadDevice() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /iPad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function canUseStreamCompression() {
+  return typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+}
+
+async function gzipText(text) {
+  const src = new TextEncoder().encode(text);
+  if (!canUseStreamCompression()) return src;
+  const stream = new Blob([src]).stream().pipeThrough(new CompressionStream('gzip'));
+  const out = await new Response(stream).arrayBuffer();
+  return new Uint8Array(out);
+}
+
+async function gunzipToText(bytes) {
+  const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  if (!canUseStreamCompression()) {
+    return new TextDecoder().decode(src);
+  }
+  const stream = new Blob([src]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const out = await new Response(stream).arrayBuffer();
+  return new TextDecoder().decode(out);
+}
+
+function isGzipBytes(bytes) {
+  return bytes && bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
 const PREVIEW_MODE_KEY = 'epicodespace_preview_mode_v1';
 const PINNED_RULES_KEY = 'epicodespace_pinned_rules_v1';
+const LITE_MODE_KEY = 'epicodespace_lite_mode_v1';
+const LAST_BACKUP_AT_KEY = 'epicodespace_last_backup_at_v1';
 
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
@@ -803,6 +837,14 @@ function EpiCodeSpaceApp() {
   const [pinnedFileOpen, setPinnedFileOpen] = useState(true);
   const [changesBarOpen, setChangesBarOpen] = useState(true);
   const [selectedChangeMsgId, setSelectedChangeMsgId] = useState('');
+  const [timelineOpen, setTimelineOpen] = useState(false);
+
+  const [canInstallPwa, setCanInstallPwa] = useState(false);
+  const [isPwaInstalled, setIsPwaInstalled] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia?.('(display-mode: standalone)')?.matches || window.navigator.standalone === true;
+  });
+  const installPromptRef = useRef(null);
 
   // ── Chat ──────────────────────────────────────────────────────────────────
   // Circuit-breaker limits: pause after this many consecutive tool rounds
@@ -853,6 +895,12 @@ function EpiCodeSpaceApp() {
   const [termHeight, setTermHeight] = useState(isMobile ? 200 : 256);
   const [isDragging, setIsDragging] = useState(null);
   const [screenWidth, setScreenWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const isIpad = useMemo(() => isIpadDevice(), []);
+  const [liteModePreference, setLiteModePreference] = useState(() => {
+    const saved = loadJSON(LITE_MODE_KEY, null);
+    if (saved === null) return null;
+    return !!saved;
+  });
 
   // ── Editor extras ─────────────────────────────────────────────────────────
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
@@ -896,6 +944,7 @@ function EpiCodeSpaceApp() {
   const lastAutoSnapshotHashRef = useRef('');
   const lastAutoSnapshotAtRef = useRef(0);
   const storageWarnedRef = useRef({ w80: false, w90: false });
+  const backupReminderShownRef = useRef(false);
 
   // ── Track screen width ────────────────────────────────────────────────────
   useEffect(() => {
@@ -916,6 +965,48 @@ function EpiCodeSpaceApp() {
   }, []);
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
+  const projectStats = useMemo(() => {
+    const entries = Object.values(fileSystem || {});
+    const fileCount = entries.length;
+    const totalBytes = entries.reduce((n, f) => n + (typeof f?.content === 'string' ? f.content.length : Number(f?.size || 0)), 0);
+    return { fileCount, totalBytes };
+  }, [fileSystem]);
+  const shouldSuggestLite = isIpad && (projectStats.fileCount >= 180 || projectStats.totalBytes >= 1_600_000);
+  const liteModeEnabled = liteModePreference === null ? shouldSuggestLite : !!liteModePreference;
+
+  useEffect(() => {
+    if (!shouldSuggestLite || liteModePreference !== null) return;
+    toast?.info?.('Lite performance mode auto-enabled for this large iPad workspace. You can switch it off from the quick actions bar.');
+  }, [shouldSuggestLite, liteModePreference, toast]);
+
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      installPromptRef.current = event;
+      setCanInstallPwa(true);
+    };
+    const onInstalled = () => {
+      installPromptRef.current = null;
+      setCanInstallPwa(false);
+      setIsPwaInstalled(true);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!projectStats.fileCount) return;
+    if (backupReminderShownRef.current) return;
+    const lastBackupAt = Number(loadJSON(LAST_BACKUP_AT_KEY, 0) || 0);
+    const hoursSince = lastBackupAt > 0 ? (Date.now() - lastBackupAt) / 3600000 : Number.POSITIVE_INFINITY;
+    if (hoursSince < 12) return;
+    backupReminderShownRef.current = true;
+    toast?.warn?.('Reminder: export a compressed backup before longer edit sessions.');
+  }, [projectStats.fileCount, toast]);
 
   // ── WebContainer outbound sync: mirror file edits into the live container.
   useEffect(() => {
@@ -1203,6 +1294,7 @@ function EpiCodeSpaceApp() {
 
   const deferredFS = useDeferredValue(debouncedFS);
   const allProblems = useMemo(() => {
+    if (liteModeEnabled) return [];
     const results = [];
     Object.entries(deferredFS).forEach(([path, f]) => {
       if (!f || typeof f.content !== 'string') return;
@@ -1217,7 +1309,7 @@ function EpiCodeSpaceApp() {
       });
     });
     return results;
-  }, [deferredFS]);
+  }, [deferredFS, liteModeEnabled]);
 
   const errorCount = useMemo(() => allProblems.filter(p => p.severity === 'error').length, [allProblems]);
   const warningCount = useMemo(() => allProblems.filter(p => p.severity === 'warning').length, [allProblems]);
@@ -1487,6 +1579,44 @@ ${finalCode}
     setTimeout(() => setSavedIndicator(false), 2000);
   }, []);
 
+  const handleInstallPwa = useCallback(async () => {
+    const prompt = installPromptRef.current;
+    if (prompt?.prompt) {
+      try {
+        await prompt.prompt();
+        await prompt.userChoice;
+      } catch {
+        // Browser ignored prompt or user dismissed it.
+      }
+      installPromptRef.current = null;
+      setCanInstallPwa(false);
+      return;
+    }
+    if (isIpad) {
+      toast?.info?.('To install on iPad Safari: Share → Add to Home Screen.');
+      return;
+    }
+    toast?.info?.('Install prompt is not available yet. Reload after using HTTPS and interacting with the app.');
+  }, [isIpad, toast]);
+
+  const handleEditorUndo = useCallback(() => {
+    const editor = editorRef.current?.getMonaco?.();
+    editor?.trigger('keyboard', 'undo', null);
+  }, []);
+
+  const handleEditorRedo = useCallback(() => {
+    const editor = editorRef.current?.getMonaco?.();
+    editor?.trigger('keyboard', 'redo', null);
+  }, []);
+
+  const handleToggleLiteMode = useCallback(() => {
+    setLiteModePreference((prev) => {
+      const next = prev === null ? false : !prev;
+      storeJSON(LITE_MODE_KEY, next);
+      return next;
+    });
+  }, []);
+
   const handleNewFile = useCallback(() => {
     setUntitledCount(prev => {
       const newPath = `untitled-${prev}.js`;
@@ -1642,56 +1772,76 @@ ${finalCode}
     setRenamingFile(null);
   }, [getLatest, hookRenameFile]);
 
-  const handleExportProject = useCallback(() => {
+  const handleExportProject = useCallback(async () => {
     const files = Object.entries(fileSystem);
     if (files.length === 0) return;
-    // Export as JSON bundle (downloadable)
-    const bundle = { name: projectName, files: fileSystem, exportedAt: new Date().toISOString() };
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const bundle = {
+      name: projectName,
+      files: fileSystem,
+      exportedAt: new Date().toISOString(),
+      backupVersion: 2,
+    };
+    const json = JSON.stringify(bundle, null, 2);
+    let blob;
+    let ext;
+    if (canUseStreamCompression()) {
+      const bytes = await gzipText(json);
+      blob = new Blob([bytes], { type: 'application/gzip' });
+      ext = 'epicode.json.gz';
+    } else {
+      blob = new Blob([json], { type: 'application/json' });
+      ext = 'epicode.json';
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${projectName.replace(/[^a-zA-Z0-9-_]/g, '_')}.epicode.json`;
+    a.download = `${projectName.replace(/[^a-zA-Z0-9-_]/g, '_')}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [fileSystem, projectName]);
+    storeJSON(LAST_BACKUP_AT_KEY, Date.now());
+    toast?.success?.(canUseStreamCompression() ? 'Compressed backup exported.' : 'Backup exported.');
+  }, [fileSystem, projectName, toast]);
 
   const handleImportProject = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.epicode.json';
-    input.onchange = (e) => {
+    input.accept = '.json,.epicode.json,.gz,.epicode.gz,.epicode.json.gz';
+    input.onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        try {
-          const data = JSON.parse(ev.target.result);
-          if (data.files && typeof data.files === 'object') {
-            // Validate: must not exceed 500 files or 5 MB total
-            const fileEntries = Object.entries(data.files);
-            if (fileEntries.length > 500) { toast.error('Import failed: too many files (max 500).'); return; }
-            const totalSize = fileEntries.reduce((s, [, f]) => s + (typeof f?.content === 'string' ? f.content.length : 0), 0);
-            if (totalSize > 5_000_000) { toast.error('Import failed: project exceeds 5 MB.'); return; }
-            // Sanitize each entry
-            const cleanFS = {};
-            fileEntries.forEach(([k, f]) => {
-              if (typeof k === 'string' && k.length <= 260 && f && typeof f.content === 'string') {
-                cleanFS[k] = { name: k.split('/').pop(), language: f.language || 'text', content: f.content };
-              }
-            });
-            replaceAll(cleanFS);
-            setProjectName(data.name || file.name.replace(/\.epicode\.json$|\.json$/, ''));
-            const first = Object.keys(cleanFS)[0] || null;
-            setOpenTabs(first ? [first] : []);
-            setActiveFile(first);
-          }
-        } catch { /* invalid file */ }
-      };
-      reader.readAsText(file);
+      try {
+        const bytes = new Uint8Array(await arrayBufferFromFile(file));
+        const rawText = isGzipBytes(bytes)
+          ? await gunzipToText(bytes)
+          : new TextDecoder().decode(bytes);
+        const data = JSON.parse(rawText);
+        if (data.files && typeof data.files === 'object') {
+          // Validate: must not exceed 500 files or 5 MB total
+          const fileEntries = Object.entries(data.files);
+          if (fileEntries.length > 500) { toast.error('Import failed: too many files (max 500).'); return; }
+          const totalSize = fileEntries.reduce((s, [, f]) => s + (typeof f?.content === 'string' ? f.content.length : 0), 0);
+          if (totalSize > 5_000_000) { toast.error('Import failed: project exceeds 5 MB.'); return; }
+          // Sanitize each entry
+          const cleanFS = {};
+          fileEntries.forEach(([k, f]) => {
+            if (typeof k === 'string' && k.length <= 260 && f && typeof f.content === 'string') {
+              cleanFS[k] = { name: k.split('/').pop(), language: f.language || 'text', content: f.content };
+            }
+          });
+          replaceAll(cleanFS);
+          setProjectName(data.name || file.name.replace(/\.epicode\.json\.gz$|\.epicode\.json$|\.json\.gz$|\.json$/, ''));
+          const first = Object.keys(cleanFS)[0] || null;
+          setOpenTabs(first ? [first] : []);
+          setActiveFile(first);
+          storeJSON(LAST_BACKUP_AT_KEY, Date.now());
+          toast?.success?.('Backup imported.');
+        }
+      } catch {
+        toast?.error?.('Import failed: unsupported or corrupted backup file.');
+      }
     };
     input.click();
-  }, []);
+  }, [replaceAll, toast]);
 
   // ── Clipboard operations ──────────────────────────────────────────────────
   const editorCut = useCallback(() => {
@@ -2003,6 +2153,21 @@ ${finalCode}
         plus: m.changedPlus || 0,
         minus: m.changedMinus || 0,
       }));
+  }, [messages]);
+
+  const sessionChangeTimeline = useMemo(() => {
+    return messages
+      .filter((m) => m.role === 'assistant' && m.changedFiles?.length > 0)
+      .map((m) => ({
+        id: m.id,
+        timestamp: m.timestamp,
+        status: m.changeStatus || 'kept',
+        files: m.changedFiles || [],
+        plus: m.changedPlus || 0,
+        minus: m.changedMinus || 0,
+        excerpt: (m.content || '').slice(0, 140),
+      }))
+      .reverse();
   }, [messages]);
 
   useEffect(() => {
@@ -2704,7 +2869,7 @@ ${finalCode}
       { label: 'New Project...', icon: FolderOpen, action: () => setNewProjectDialog({ template: 'react' }) },
       { label: 'New Window', shortcut: 'Ctrl+Shift+N', disabled: true },
       { type: 'separator' },
-      { label: 'Open Project...', icon: FolderOpen, action: handleImportProject },
+      { label: 'Import Backup / Project...', icon: FolderOpen, action: handleImportProject },
       { type: 'separator' },
       { label: 'Save', shortcut: 'Ctrl+S', icon: Save, action: handleSave },
       { label: 'Save As...', shortcut: 'Ctrl+Shift+S', disabled: true },
@@ -2712,15 +2877,15 @@ ${finalCode}
       { label: 'Create Snapshot', icon: Save, action: () => handleSaveSnapshot({ manual: true }) },
       { label: 'Restore Latest Snapshot', icon: RotateCcw, action: handleRestoreLatestSnapshot },
       { type: 'separator' },
-      { label: 'Export Project...', action: handleExportProject },
+      { label: 'Export Compressed Backup...', action: handleExportProject },
       { label: 'Deploy to Vercel', icon: Globe, action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('deploy vercel'); } },
       { label: 'Deploy to Netlify', icon: Globe, action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('deploy netlify'); } },
       { type: 'separator' },
       { label: 'Close Editor', shortcut: 'Ctrl+W', action: () => setActiveFile(Object.keys(fileSystem)[0] || null) },
     ],
     Edit: [
-      { label: 'Undo', shortcut: 'Ctrl+Z', icon: Undo2, disabled: true },
-      { label: 'Redo', shortcut: 'Ctrl+Y', icon: Redo2, disabled: true },
+      { label: 'Undo', shortcut: 'Ctrl+Z', icon: Undo2, action: handleEditorUndo },
+      { label: 'Redo', shortcut: 'Ctrl+Y', icon: Redo2, action: handleEditorRedo },
       { type: 'separator' },
       { label: 'Cut', shortcut: 'Ctrl+X', icon: Scissors, action: editorCut },
       { label: 'Copy', shortcut: 'Ctrl+C', icon: Copy, action: editorCopy },
@@ -2753,6 +2918,7 @@ ${finalCode}
       { type: 'separator' },
       { label: 'Explorer', shortcut: 'Ctrl+Shift+E', action: () => setSidebarOpen(p => !p) },
       { label: 'AI Chat Panel', action: () => setRightSidebarOpen(p => !p) },
+      { label: liteModeEnabled ? 'Disable Lite Performance Mode' : 'Enable Lite Performance Mode', action: handleToggleLiteMode },
       { type: 'separator' },
       { label: 'Terminal', shortcut: 'Ctrl+`', action: () => setTerminalState(p => p === 'open' ? 'closed' : 'open') },
       { type: 'separator' },
@@ -2804,7 +2970,7 @@ ${finalCode}
       { type: 'separator' },
       { label: 'About EpiCodeSpace', icon: Info, action: () => setShowAbout(true) },
     ],
-  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleSaveSnapshot, handleRestoreLatestSnapshot, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, fileSystem]);
+  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleSaveSnapshot, handleRestoreLatestSnapshot, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, fileSystem, handleEditorUndo, handleEditorRedo, liteModeEnabled, handleToggleLiteMode]);
 
   // ═════════════════════════════════════════════════════════════════════════
   //  RENDER
@@ -2861,6 +3027,30 @@ ${finalCode}
         </div>
         <div className="flex items-center gap-1 sm:gap-2">
           <OpfsToggle onNotify={(n) => toast?.[n.kind === 'error' ? 'error' : 'info']?.(n.message)} />
+          {!isPwaInstalled && (canInstallPwa || isIpad) && (
+            <button
+              type="button"
+              onClick={handleInstallPwa}
+              className="px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-wider border border-cyan-500/30 text-cyan-300/90 hover:bg-cyan-500/10 transition-colors"
+              title="Install EpiCodeSpace"
+            >
+              Install
+            </button>
+          )}
+          {isIpad && (
+            <button
+              type="button"
+              onClick={handleToggleLiteMode}
+              className={`px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-wider border transition-colors ${
+                liteModeEnabled
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                  : 'border-purple-500/20 text-purple-300/80 hover:bg-[#25104a]'
+              }`}
+              title="Toggle lightweight editor settings for large iPad projects"
+            >
+              Lite {liteModeEnabled ? 'On' : 'Off'}
+            </button>
+          )}
           <button
             onClick={() => setRightSidebarOpen(!rightSidebarOpen)}
             className={`p-2 sm:p-1.5 rounded-md transition-colors ${rightSidebarOpen ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'hover:bg-[#25104a] text-purple-300'}`}
@@ -2870,6 +3060,18 @@ ${finalCode}
           </button>
         </div>
       </header>
+
+      {isIpad && (
+        <div className="shrink-0 px-2 py-1.5 bg-[#120825] border-b border-fuchsia-500/20 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 min-w-max">
+            <button type="button" onClick={handleSave} className="touch-target px-2 rounded-md text-[11px] border border-fuchsia-500/25 text-fuchsia-200 hover:bg-fuchsia-500/10 transition-colors">Save</button>
+            <button type="button" onClick={handleEditorUndo} className="touch-target px-2 rounded-md text-[11px] border border-white/10 text-purple-200 hover:bg-white/5 transition-colors">Undo</button>
+            <button type="button" onClick={handleEditorRedo} className="touch-target px-2 rounded-md text-[11px] border border-white/10 text-purple-200 hover:bg-white/5 transition-colors">Redo</button>
+            <button type="button" onClick={() => { setTerminalState('open'); setActiveTerminalTab('preview'); }} className="touch-target px-2 rounded-md text-[11px] border border-cyan-500/25 text-cyan-200 hover:bg-cyan-500/10 transition-colors">Preview</button>
+            <button type="button" onClick={handlePinActiveFile} className="touch-target px-2 rounded-md text-[11px] border border-amber-500/25 text-amber-200 hover:bg-amber-500/10 transition-colors">Pin Rules</button>
+          </div>
+        </div>
+      )}
 
       {/* ── Main Workspace ────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -3041,6 +3243,7 @@ ${finalCode}
                       onCursorChange={handleCursorMove}
                       fontSize={fontSize}
                       wordWrap={wordWrap}
+                      liteMode={liteModeEnabled}
                     />
                   </Suspense>
                 );
@@ -3672,6 +3875,49 @@ ${finalCode}
                         </>
                       );
                     })()}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {sessionChangeTimeline.length > 0 && (
+              <div className="shrink-0 border-b border-fuchsia-500/20 bg-[#100720]">
+                <button
+                  type="button"
+                  onClick={() => setTimelineOpen((v) => !v)}
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-fuchsia-500/5 transition-colors"
+                >
+                  <GitCommit size={13} className="text-cyan-300" />
+                  <span className="text-[10px] uppercase tracking-wider text-cyan-200 font-semibold">Session Timeline</span>
+                  <span className="text-[10px] text-cyan-300/70 normal-case">{sessionChangeTimeline.length} change set{sessionChangeTimeline.length !== 1 ? 's' : ''}</span>
+                  <ChevronDown size={12} className={`ml-auto text-cyan-300/70 transition-transform ${timelineOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {timelineOpen && (
+                  <div className="px-3 pb-2">
+                    <div className="max-h-44 overflow-auto rounded-md border border-cyan-500/20 bg-[#0d0520] p-2 space-y-2">
+                      {sessionChangeTimeline.map((set) => (
+                        <div key={set.id} className="rounded border border-white/10 bg-white/5 p-2">
+                          <div className="flex items-center gap-2 text-[10px]">
+                            <span className="text-cyan-200">{new Date(set.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            <span className={`px-1.5 py-0.5 rounded uppercase tracking-wide ${set.status === 'pending' ? 'bg-amber-500/20 text-amber-200' : set.status === 'undone' ? 'bg-red-500/20 text-red-200' : 'bg-green-500/20 text-green-200'}`}>
+                              {set.status}
+                            </span>
+                            <span className="ml-auto text-green-300/80">+{set.plus}</span>
+                            <span className="text-red-300/80">-{set.minus}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-purple-200/85">
+                            {set.files.length} file{set.files.length !== 1 ? 's' : ''}: {set.files.slice(0, 2).map((f) => f.path).join(', ')}{set.files.length > 2 ? '…' : ''}
+                          </div>
+                          {set.excerpt && <div className="mt-1 text-[10px] text-purple-400/70 line-clamp-2">{set.excerpt}</div>}
+                          {set.status === 'pending' && (
+                            <div className="mt-1.5 flex justify-end gap-1">
+                              <button type="button" onClick={() => handleKeepChangeSet(set.id)} className="px-2 py-0.5 text-[10px] rounded bg-cyan-500/20 text-cyan-100 border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors">Keep</button>
+                              <button type="button" onClick={() => handleUndoChangeSet(set.id)} className="px-2 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-100 border border-amber-500/30 hover:bg-amber-500/30 transition-colors">Undo</button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
