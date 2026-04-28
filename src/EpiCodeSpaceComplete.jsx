@@ -2446,54 +2446,44 @@ ${finalCode}
               allSteps.push(`💭 ${data.content.slice(0, 200)}`);
             }
 
-            // SEQUENTIAL EXECUTION: Only execute the FIRST tool call per round.
-            // Subsequent calls are deferred until the agent processes the result.
-            const tcToExecute = data.tool_calls[0];
-            if (!tcToExecute) continue; // safety: shouldn't happen but guard it
+            // Execute each tool call locally
+            toolResults = data.tool_calls.map(tc => {
+              const signature = toolCallSignature(tc.name, tc.arguments);
+              const isConsecutiveDuplicate = signature === lastToolCallSig;
+              const result = isConsecutiveDuplicate
+                ? {
+                    ok: false,
+                    duplicate: true,
+                    systemMessage: 'You just read this file, please proceed with the data provided',
+                  }
+                : executeToolCall(tc.name, tc.arguments, currentFS);
 
-            // If there are extra tool calls queued up, notify agent to process one at a time
-            if (data.tool_calls.length > 1) {
-              allSteps.push(`⚠️ Queue: ${data.tool_calls.length} tools requested. Executing first. You will see the result next, then proceed with the remaining ${data.tool_calls.length - 1}.`);
-            }
+              if (!isConsecutiveDuplicate) {
+                lastToolCallSig = signature;
+              }
 
-            // Execute ONLY the first tool call locally
-            const signature = toolCallSignature(tcToExecute.name, tcToExecute.arguments);
-            const isConsecutiveDuplicate = signature === lastToolCallSig;
-            const result = isConsecutiveDuplicate
-              ? {
-                  ok: false,
-                  duplicate: true,
-                  systemMessage: 'You just read this file, please proceed with the data provided',
-                }
-              : executeToolCall(tcToExecute.name, tcToExecute.arguments, currentFS);
+              // Use result.lines — computed from the validated/safe content inside
+              // executeToolCall — so it can never show 0 from a raw undefined arg.
+              const argSummary = tc.name === 'writeFile' ? `"${tc.arguments.path}" (${result.lines ?? 0} lines)`
+                : tc.name === 'editFile' ? `"${tc.arguments.path}"`
+                : tc.name === 'deleteFile' ? `"${tc.arguments.path}"`
+                : tc.name === 'readFile' ? `"${tc.arguments.path}"`
+                : tc.name === 'searchCode' ? `"${tc.arguments.pattern}"`
+                : tc.name === 'analyzeFile' ? `"${tc.arguments.path || activeFile}"`
+                : '';
+              const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : '📋';
+              const resultSummary = isConsecutiveDuplicate
+                ? '⚠️ duplicate blocked'
+                : tc.name === 'analyzeFile' && result.ok
+                  ? `${result.issueCount} issue(s) [${result.summary}]`
+                  : result.ok ? '✅' : '❌ ' + result.error;
+              allSteps.push(`${icon} **${tc.name}**(${argSummary}) → ${resultSummary}`);
+              allToolCalls.push({ tool: tc.name, args: tc.arguments });
+              return { id: tc.id, name: tc.name, result };
+            });
 
-            if (!isConsecutiveDuplicate) {
-              lastToolCallSig = signature;
-            }
-
-            // Use result.lines — computed from the validated/safe content inside
-            // executeToolCall — so it can never show 0 from a raw undefined arg.
-            const argSummary = tcToExecute.name === 'writeFile' ? `"${tcToExecute.arguments.path}" (${result.lines ?? 0} lines)`
-              : tcToExecute.name === 'editFile' ? `"${tcToExecute.arguments.path}"`
-              : tcToExecute.name === 'deleteFile' ? `"${tcToExecute.arguments.path}"`
-              : tcToExecute.name === 'readFile' ? `"${tcToExecute.arguments.path}"`
-              : tcToExecute.name === 'searchCode' ? `"${tcToExecute.arguments.pattern}"`
-              : tcToExecute.name === 'analyzeFile' ? `"${tcToExecute.arguments.path || activeFile}"`
-              : '';
-            const icon = tcToExecute.name === 'writeFile' ? '📝' : tcToExecute.name === 'editFile' ? '✏️' : tcToExecute.name === 'deleteFile' ? '🗑️' : tcToExecute.name === 'readFile' ? '📖' : tcToExecute.name === 'searchCode' ? '🔍' : tcToExecute.name === 'analyzeFile' ? '🔬' : '📋';
-            const resultSummary = isConsecutiveDuplicate
-              ? '⚠️ duplicate blocked'
-              : tcToExecute.name === 'analyzeFile' && result.ok
-                ? `${result.issueCount} issue(s) [${result.summary}]`
-                : result.ok ? '✅' : '❌ ' + result.error;
-            allSteps.push(`${icon} **${tcToExecute.name}**(${argSummary}) → ${resultSummary}`);
-            allToolCalls.push({ tool: tcToExecute.name, args: tcToExecute.arguments });
-
-            // Return only the first tool call result; defer the rest
-            toolResults = [{ id: tcToExecute.id, name: tcToExecute.name, result }];
-
-            // Apply filesystem mutations for ONLY the first tool call
-            const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations([tcToExecute], toolResults, currentFS);
+            // Apply filesystem mutations
+            const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
             changeItems.forEach((item) => {
               const prev = allFileChanges.get(item.path);
               if (!prev) {
@@ -2508,11 +2498,12 @@ ${finalCode}
             if (changed) {
               currentFS = newFS;
               replaceAll(newFS);
-              // Only open tab for the first tool call if it's a writeFile
-              if (tcToExecute.name === 'writeFile') {
-                setOpenTabs(prev => prev.includes(tcToExecute.arguments.path) ? prev : [...prev, tcToExecute.arguments.path]);
-                setActiveFile(tcToExecute.arguments.path);
-              }
+              data.tool_calls.forEach(tc => {
+                if (tc.name === 'writeFile') {
+                  setOpenTabs(prev => prev.includes(tc.arguments.path) ? prev : [...prev, tc.arguments.path]);
+                  setActiveFile(tc.arguments.path);
+                }
+              });
             }
             // Run terminal commands requested by agent
             if (cmdsToRun.length > 0) {
@@ -2521,8 +2512,7 @@ ${finalCode}
               cmdsToRun.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
             }
 
-            // Only the FIRST tool call was executed, so report only that as pending
-            pendingToolCalls = [tcToExecute];
+            pendingToolCalls = data.tool_calls;
 
             // Update steps in real-time with a progress message
             setMessages(prev => {
