@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2 } from 'lucide-react';
+import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2, Settings } from 'lucide-react';
+import { PLATFORM_META } from '../lib/connections.js';
 
 const TOKEN_KEYS = {
   netlify: 'epicodespace_deploy_netlify_token',
@@ -230,7 +231,8 @@ const AUTH_TYPES = [
   { id: 'basic',  label: 'Basic'       },
 ];
 
-export default function DeployModal({ projectName, fileSystem, onClose }) {
+export default function DeployModal({ projectName, fileSystem, onClose, connections = [], onManageConnections }) {
+  const [selectedConn, setSelectedConn]   = useState(null);
   const [platform, setPlatform] = useState('netlify');
   const [showToken, setShowToken] = useState(false);
 
@@ -277,7 +279,26 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
       const onProgress = ({ message, percent }) => setProgress({ message, percent });
       let res;
 
-      if (platform === 'netlify') {
+      // ── Use a saved connection ───────────────────────────────────────────
+      if (selectedConn) {
+        const { platform: cp, token: ct, meta: cm = {} } = selectedConn;
+        if (cp === 'netlify') {
+          res = await deployNetlify({ token: ct, siteName: cm.siteName || '', projectName, files: fileSystem, onProgress });
+        } else if (cp === 'vercel') {
+          res = await deployVercel({ token: ct, projectName, files: fileSystem, onProgress });
+        } else if (cp === 'github') {
+          if (!cm.repo) throw new Error('Repository not set on this connection. Edit it in Manage Connections.');
+          res = await deployGitHub({ token: ct, repo: cm.repo, files: fileSystem, onProgress });
+        } else {
+          res = await deployCustom({
+            url: cm.url || '', method: cm.method || 'POST', authType: cm.authType || 'none',
+            authValue: cm.authVal || '', authHeader: cm.authHdr || '',
+            extraHeaders: cm.headers || [], projectName, files: fileSystem, onProgress,
+          });
+        }
+
+      // ── Manual entry ────────────────────────────────────────────────────
+      } else if (platform === 'netlify') {
         if (!netlifyToken.trim()) throw new Error('Netlify token is required');
         localStorage.setItem(TOKEN_KEYS.netlify, netlifyToken.trim());
         res = await deployNetlify({ token: netlifyToken.trim(), siteName: netlifySite.trim(), projectName, files: fileSystem, onProgress });
@@ -295,7 +316,6 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
         res = await deployGitHub({ token: githubToken.trim(), repo: githubRepo.trim(), files: fileSystem, onProgress });
 
       } else {
-        // Custom endpoint
         localStorage.setItem(CUSTOM_CFG_KEY, JSON.stringify({
           url: customUrl, method: customMethod, authType: customAuthType,
           authVal: customAuthVal, authHdr: customAuthHdr, headers: customHeaders,
@@ -313,7 +333,7 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
       setProgress(null);
       setResult({ error: err.message });
     }
-  }, [platform, netlifyToken, netlifySite, vercelToken, githubToken, githubRepo,
+  }, [selectedConn, platform, netlifyToken, netlifySite, vercelToken, githubToken, githubRepo,
       customUrl, customMethod, customAuthType, customAuthVal, customAuthHdr, customHeaders,
       projectName, fileSystem]);
 
@@ -326,7 +346,7 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
       aria-labelledby="deploy-title"
     >
       <div
-        className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-6 w-[440px] max-w-[95vw]"
+        className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-6 w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -341,6 +361,69 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
             <X size={15} />
           </button>
         </div>
+
+        {/* ── Saved Connections ── */}
+        {connections.length > 0 && (
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider">Saved Connections</span>
+              {onManageConnections && (
+                <button
+                  onClick={onManageConnections}
+                  className="text-[10px] text-fuchsia-400 hover:text-fuchsia-300 flex items-center gap-1 transition-colors"
+                >
+                  <Settings size={10} /> Manage
+                </button>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {connections.map(conn => {
+                const pm = PLATFORM_META[conn.platform] || PLATFORM_META.custom;
+                const isSelected = selectedConn?.id === conn.id;
+                const metaLine = conn.platform === 'github' ? conn.meta?.repo
+                  : conn.platform === 'netlify' ? conn.meta?.siteName
+                  : conn.platform === 'custom' ? conn.meta?.url
+                  : null;
+                return (
+                  <button
+                    key={conn.id}
+                    onClick={() => setSelectedConn(isSelected ? null : conn)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                      isSelected
+                        ? 'border-fuchsia-500/60 bg-fuchsia-900/20'
+                        : 'border-fuchsia-500/10 bg-[#0d0520] hover:border-fuchsia-500/30'
+                    }`}
+                  >
+                    <span className={`${pm.badge} text-white text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0`}>
+                      {pm.label.slice(0, 3).toUpperCase()}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs text-white">{conn.label}</span>
+                      {metaLine && <span className="text-[10px] text-purple-500/60 ml-2">{metaLine}</span>}
+                    </div>
+                    {isSelected && <CheckCircle2 size={13} className="text-fuchsia-400 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedConn && (
+              <p className="text-[10px] text-purple-500/50 mt-2 text-center">
+                Ready to deploy using <span className="text-fuchsia-400">{selectedConn.label}</span>. Hit Deploy below.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Show manual form only when no connection selected */}
+        {!selectedConn && (
+          <>
+          {connections.length > 0 && (
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex-1 h-px bg-fuchsia-500/10" />
+              <span className="text-[10px] text-purple-500/50">or deploy manually</span>
+              <div className="flex-1 h-px bg-fuchsia-500/10" />
+            </div>
+          )}
 
         {/* Platform tabs */}
         <div className="flex gap-1 mb-5 bg-[#0d0520] rounded-lg p-1">
@@ -555,6 +638,17 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
                 <code className="bg-black/30 px-0.5 rounded">{'{'}projectName, files: {'{'}path: content{'}'}, deployedAt{'}'}</code>
               </p>
             </div>
+          </div>
+        )}
+          </> // end !selectedConn manual form
+        )}
+
+        {/* Manage link when no saved connections exist */}
+        {connections.length === 0 && onManageConnections && (
+          <div className="mb-4 text-center">
+            <button onClick={onManageConnections} className="text-[10px] text-fuchsia-400/70 hover:text-fuchsia-300 flex items-center gap-1 mx-auto transition-colors">
+              <Settings size={10} /> Save a connection to skip token entry next time
+            </button>
           </div>
         )}
 

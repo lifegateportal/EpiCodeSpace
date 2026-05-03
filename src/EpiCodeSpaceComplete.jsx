@@ -21,6 +21,8 @@ const WebContainerTerminal = lazy(() => import('./components/WebContainerTermina
 const LspStatusBadge = lazy(() => import('./components/LspStatusBadge.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
 import DeployModal from './components/DeployModal.jsx';
+import ConnectionsManager from './components/ConnectionsManager.jsx';
+import { loadConnections, saveConnections } from './lib/connections.js';
 import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
@@ -917,7 +919,9 @@ function EpiCodeSpaceApp() {
   const [wcServerUrl, setWcServerUrl] = useState('');
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
   const [showStorageMonitor, setShowStorageMonitor] = useState(false);
-  const [showDeployModal,    setShowDeployModal]    = useState(false);
+  const [showDeployModal,          setShowDeployModal]          = useState(false);
+  const [showConnectionsManager,   setShowConnectionsManager]   = useState(false);
+  const [deployConnections,        setDeployConnections]        = useState(() => loadConnections());
   const [storageMonitor, setStorageMonitor] = useState({
     usage: 0,
     quota: 0,
@@ -2937,6 +2941,7 @@ ${finalCode}
       { type: 'separator' },
       { label: 'Export Compressed Backup...', action: handleExportProject },
       { label: 'Deploy Project…', icon: Rocket, action: () => setShowDeployModal(true) },
+      { label: 'Manage Connections…', icon: Settings, action: () => setShowConnectionsManager(true) },
       { type: 'separator' },
       { label: 'Close Editor', shortcut: 'Ctrl+W', action: () => setActiveFile(Object.keys(fileSystem)[0] || null) },
     ],
@@ -4463,6 +4468,17 @@ ${finalCode}
           projectName={projectName}
           fileSystem={fileSystem}
           onClose={() => setShowDeployModal(false)}
+          connections={deployConnections}
+          onManageConnections={() => { setShowDeployModal(false); setShowConnectionsManager(true); }}
+        />
+      )}
+
+      {/* Connections Manager */}
+      {showConnectionsManager && (
+        <ConnectionsManager
+          connections={deployConnections}
+          onChange={(next) => { saveConnections(next); setDeployConnections(next); }}
+          onClose={() => setShowConnectionsManager(false)}
         />
       )}
 
