@@ -1,13 +1,14 @@
 import React, { useState, useCallback } from 'react';
-import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2 } from 'lucide-react';
 
 const TOKEN_KEYS = {
   netlify: 'epicodespace_deploy_netlify_token',
   vercel:  'epicodespace_deploy_vercel_token',
   github:  'epicodespace_deploy_github_token',
 };
-const NETLIFY_SITE_KEY = 'epicodespace_deploy_netlify_site_';
-const GITHUB_REPO_KEY  = 'epicodespace_deploy_github_repo';
+const NETLIFY_SITE_KEY  = 'epicodespace_deploy_netlify_site_';
+const GITHUB_REPO_KEY   = 'epicodespace_deploy_github_repo';
+const CUSTOM_CFG_KEY    = 'epicodespace_deploy_custom_cfg';
 
 // ─── Crypto helpers ──────────────────────────────────────────────────────────
 async function sha1Hex(text) {
@@ -181,11 +182,52 @@ async function deployGitHub({ token, repo, files, onProgress }) {
   return { url: `https://github.com/${owner}/${repoName}` };
 }
 
+async function deployCustom({ url, method, authType, authValue, authHeader, extraHeaders, projectName, files, onProgress }) {
+  if (!url.trim()) throw new Error('Endpoint URL is required');
+  const reqHeaders = { 'Content-Type': 'application/json' };
+  if (authType === 'bearer' && authValue.trim()) {
+    reqHeaders['Authorization'] = `Bearer ${authValue.trim()}`;
+  } else if (authType === 'apikey' && authHeader.trim() && authValue.trim()) {
+    reqHeaders[authHeader.trim()] = authValue.trim();
+  } else if (authType === 'basic' && authValue.trim()) {
+    reqHeaders['Authorization'] = `Basic ${btoa(unescape(encodeURIComponent(authValue.trim())))}`;  // user:pass
+  }
+  for (const h of extraHeaders) {
+    if (h.key.trim() && h.value.trim()) reqHeaders[h.key.trim()] = h.value.trim();
+  }
+  onProgress({ message: 'Sending to endpoint…', percent: 30 });
+  const body = JSON.stringify({
+    projectName,
+    files: Object.fromEntries(
+      Object.entries(files)
+        .filter(([, f]) => f?.content != null)
+        .map(([p, f]) => [p, f.content])
+    ),
+    deployedAt: new Date().toISOString(),
+  });
+  const res = await fetch(url.trim(), { method, headers: reqHeaders, body });
+  onProgress({ message: 'Response received…', percent: 85 });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+  let data;
+  try { data = JSON.parse(text); } catch { data = null; }
+  const resultUrl = data?.url || data?.deploy_url || data?.deploymentUrl || data?.link || data?.href || null;
+  return { url: resultUrl || `Success (HTTP ${res.status})` };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 const PLATFORMS = [
   { id: 'netlify', label: 'Netlify' },
   { id: 'vercel',  label: 'Vercel'  },
   { id: 'github',  label: 'GitHub'  },
+  { id: 'custom',  label: 'Custom'  },
+];
+
+const AUTH_TYPES = [
+  { id: 'none',   label: 'None'        },
+  { id: 'bearer', label: 'Bearer Token'},
+  { id: 'apikey', label: 'API Key'     },
+  { id: 'basic',  label: 'Basic'       },
 ];
 
 export default function DeployModal({ projectName, fileSystem, onClose }) {
@@ -197,6 +239,21 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
   const [vercelToken,     setVercelToken]     = useState(() => localStorage.getItem(TOKEN_KEYS.vercel)  || '');
   const [githubToken,     setGithubToken]     = useState(() => localStorage.getItem(TOKEN_KEYS.github)  || '');
   const [githubRepo,      setGithubRepo]      = useState(() => localStorage.getItem(GITHUB_REPO_KEY)    || '');
+
+  // Custom endpoint state
+  const loadCustomCfg = () => { try { return JSON.parse(localStorage.getItem(CUSTOM_CFG_KEY) || '{}'); } catch { return {}; } };
+  const [customUrl,      setCustomUrl]      = useState(() => loadCustomCfg().url      || '');
+  const [customMethod,   setCustomMethod]   = useState(() => loadCustomCfg().method   || 'POST');
+  const [customAuthType, setCustomAuthType] = useState(() => loadCustomCfg().authType || 'bearer');
+  const [customAuthVal,  setCustomAuthVal]  = useState(() => loadCustomCfg().authVal  || '');
+  const [customAuthHdr,  setCustomAuthHdr]  = useState(() => loadCustomCfg().authHdr  || 'X-API-Key');
+  const [customHeaders,  setCustomHeaders]  = useState(() => loadCustomCfg().headers  || []);
+  const [showCustomPass, setShowCustomPass] = useState(false);
+
+  const addCustomHeader    = useCallback(() => setCustomHeaders(h => [...h, { key: '', value: '' }]), []);
+  const removeCustomHeader = useCallback((i) => setCustomHeaders(h => h.filter((_, idx) => idx !== i)), []);
+  const updateCustomHeader = useCallback((i, field, val) =>
+    setCustomHeaders(h => h.map((row, idx) => idx === i ? { ...row, [field]: val } : row)), []);
 
   const [progress, setProgress] = useState(null); // { message, percent }
   const [result,   setResult]   = useState(null); // { url } | { error }
@@ -230,12 +287,24 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
         localStorage.setItem(TOKEN_KEYS.vercel, vercelToken.trim());
         res = await deployVercel({ token: vercelToken.trim(), projectName, files: fileSystem, onProgress });
 
-      } else {
+      } else if (platform === 'github') {
         if (!githubToken.trim()) throw new Error('GitHub token is required');
         if (!githubRepo.trim())  throw new Error('Repository is required (owner/repo-name)');
         localStorage.setItem(TOKEN_KEYS.github, githubToken.trim());
         localStorage.setItem(GITHUB_REPO_KEY, githubRepo.trim());
         res = await deployGitHub({ token: githubToken.trim(), repo: githubRepo.trim(), files: fileSystem, onProgress });
+
+      } else {
+        // Custom endpoint
+        localStorage.setItem(CUSTOM_CFG_KEY, JSON.stringify({
+          url: customUrl, method: customMethod, authType: customAuthType,
+          authVal: customAuthVal, authHdr: customAuthHdr, headers: customHeaders,
+        }));
+        res = await deployCustom({
+          url: customUrl, method: customMethod, authType: customAuthType,
+          authValue: customAuthVal, authHeader: customAuthHdr,
+          extraHeaders: customHeaders, projectName, files: fileSystem, onProgress,
+        });
       }
 
       setProgress({ message: 'Done!', percent: 100 });
@@ -244,7 +313,9 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
       setProgress(null);
       setResult({ error: err.message });
     }
-  }, [platform, netlifyToken, netlifySite, vercelToken, githubToken, githubRepo, projectName, fileSystem]);
+  }, [platform, netlifyToken, netlifySite, vercelToken, githubToken, githubRepo,
+      customUrl, customMethod, customAuthType, customAuthVal, customAuthHdr, customHeaders,
+      projectName, fileSystem]);
 
   return (
     <div
@@ -286,40 +357,42 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
           ))}
         </div>
 
-        {/* Token input */}
-        <div className="mb-4">
-          <label className="block text-xs text-purple-400 mb-1.5">
-            {platform === 'netlify' ? 'Netlify Personal Access Token'
-              : platform === 'vercel' ? 'Vercel Token'
-              : 'GitHub Personal Access Token'}
-          </label>
-          <div className="flex gap-2">
-            <input
-              type={showToken ? 'text' : 'password'}
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              placeholder={
-                platform === 'netlify' ? 'nfp_…'
-                  : platform === 'vercel' ? 'your vercel token'
-                  : 'ghp_…'
-              }
-              autoComplete="off"
-              className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
-            />
-            <button
-              onClick={() => setShowToken(p => !p)}
-              className="px-3 py-2 text-purple-400 hover:text-white bg-[#0d0520] border border-fuchsia-500/20 rounded-lg transition-colors"
-              aria-label={showToken ? 'Hide token' : 'Show token'}
-            >
-              {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
-            </button>
+        {/* Token input — hidden for Custom tab */}
+        {platform !== 'custom' && (
+          <div className="mb-4">
+            <label className="block text-xs text-purple-400 mb-1.5">
+              {platform === 'netlify' ? 'Netlify Personal Access Token'
+                : platform === 'vercel' ? 'Vercel Token'
+                : 'GitHub Personal Access Token'}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                placeholder={
+                  platform === 'netlify' ? 'nfp_…'
+                    : platform === 'vercel' ? 'your vercel token'
+                    : 'ghp_…'
+                }
+                autoComplete="off"
+                className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+              />
+              <button
+                onClick={() => setShowToken(p => !p)}
+                className="px-3 py-2 text-purple-400 hover:text-white bg-[#0d0520] border border-fuchsia-500/20 rounded-lg transition-colors"
+                aria-label={showToken ? 'Hide token' : 'Show token'}
+              >
+                {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+            <p className="text-[10px] text-purple-500/50 mt-1">
+              {platform === 'netlify' && <>Get it at: app.netlify.com/user/applications</>}
+              {platform === 'vercel'  && <>Get it at: vercel.com/account/tokens</>}
+              {platform === 'github'  && <>Get it at: github.com/settings/tokens (needs <code>repo</code> scope)</>}
+            </p>
           </div>
-          <p className="text-[10px] text-purple-500/50 mt-1">
-            {platform === 'netlify' && <>Get it at: app.netlify.com/user/applications</>}
-            {platform === 'vercel'  && <>Get it at: vercel.com/account/tokens</>}
-            {platform === 'github'  && <>Get it at: github.com/settings/tokens (needs <code>repo</code> scope)</>}
-          </p>
-        </div>
+        )}
 
         {/* Platform-specific extras */}
         {platform === 'netlify' && (
@@ -356,6 +429,132 @@ export default function DeployModal({ projectName, fileSystem, onClose }) {
               If the deploy fails, use the terminal command instead:{' '}
               <code className="font-mono bg-black/30 px-1 rounded">deploy vercel</code>
             </p>
+          </div>
+        )}
+
+        {/* ─── Custom endpoint UI ─── */}
+        {platform === 'custom' && (
+          <div className="space-y-3 mb-4">
+            {/* URL + Method */}
+            <div className="flex gap-2">
+              <select
+                value={customMethod}
+                onChange={e => setCustomMethod(e.target.value)}
+                className="bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-2 py-2 text-xs text-white focus:outline-none focus:border-fuchsia-400/60 shrink-0"
+              >
+                <option>POST</option>
+                <option>PUT</option>
+                <option>PATCH</option>
+              </select>
+              <input
+                type="url"
+                value={customUrl}
+                onChange={e => setCustomUrl(e.target.value)}
+                placeholder="https://your-platform.com/api/deploy"
+                className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+              />
+            </div>
+
+            {/* Auth type */}
+            <div>
+              <label className="block text-xs text-purple-400 mb-1.5">Auth</label>
+              <div className="flex gap-1 flex-wrap">
+                {AUTH_TYPES.map(a => (
+                  <button
+                    key={a.id}
+                    onClick={() => setCustomAuthType(a.id)}
+                    className={`px-2.5 py-1 text-[10px] rounded-md border transition-colors ${
+                      customAuthType === a.id
+                        ? 'bg-fuchsia-600 border-fuchsia-600 text-white'
+                        : 'border-fuchsia-500/20 text-purple-400 hover:text-white'
+                    }`}
+                  >{a.label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Auth value inputs */}
+            {customAuthType !== 'none' && (
+              <div className="space-y-2">
+                {customAuthType === 'apikey' && (
+                  <input
+                    type="text"
+                    value={customAuthHdr}
+                    onChange={e => setCustomAuthHdr(e.target.value)}
+                    placeholder="Header name (e.g. X-API-Key)"
+                    className="w-full bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+                  />
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type={showCustomPass ? 'text' : 'password'}
+                    value={customAuthVal}
+                    onChange={e => setCustomAuthVal(e.target.value)}
+                    placeholder={
+                      customAuthType === 'bearer' ? 'Token or API key'
+                        : customAuthType === 'basic' ? 'username:password'
+                        : 'Value'
+                    }
+                    autoComplete="off"
+                    className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+                  />
+                  <button
+                    onClick={() => setShowCustomPass(p => !p)}
+                    className="px-3 py-2 text-purple-400 hover:text-white bg-[#0d0520] border border-fuchsia-500/20 rounded-lg transition-colors"
+                    aria-label={showCustomPass ? 'Hide' : 'Show'}
+                  >
+                    {showCustomPass ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Extra headers */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-purple-400">Extra Headers</label>
+                <button
+                  onClick={addCustomHeader}
+                  className="text-[10px] text-fuchsia-400 hover:text-fuchsia-300 flex items-center gap-1 transition-colors"
+                >
+                  <Plus size={10} /> Add
+                </button>
+              </div>
+              {customHeaders.length === 0 && (
+                <p className="text-[10px] text-purple-600">None</p>
+              )}
+              {customHeaders.map((h, i) => (
+                <div key={i} className="flex gap-2 mb-1.5">
+                  <input
+                    type="text"
+                    value={h.key}
+                    onChange={e => updateCustomHeader(i, 'key', e.target.value)}
+                    placeholder="Header"
+                    className="w-2/5 bg-[#0d0520] border border-fuchsia-500/20 rounded px-2 py-1.5 text-xs text-white placeholder-purple-600 focus:outline-none focus:border-fuchsia-400/60"
+                  />
+                  <input
+                    type="text"
+                    value={h.value}
+                    onChange={e => updateCustomHeader(i, 'value', e.target.value)}
+                    placeholder="Value"
+                    className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded px-2 py-1.5 text-xs text-white placeholder-purple-600 focus:outline-none focus:border-fuchsia-400/60"
+                  />
+                  <button
+                    onClick={() => removeCustomHeader(i)}
+                    className="text-red-400/60 hover:text-red-400 transition-colors px-1"
+                    aria-label="Remove header"
+                  ><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </div>
+
+            {/* Payload note */}
+            <div className="p-2.5 rounded-lg bg-sky-900/20 border border-sky-500/20">
+              <p className="text-[10px] text-sky-300/80 leading-relaxed">
+                Sends a <code className="bg-black/30 px-0.5 rounded">POST</code> (or chosen method) with JSON body:<br />
+                <code className="bg-black/30 px-0.5 rounded">{'{'}projectName, files: {'{'}path: content{'}'}, deployedAt{'}'}</code>
+              </p>
+            </div>
           </div>
         )}
 
