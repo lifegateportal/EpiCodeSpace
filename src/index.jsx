@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import EpiCodeSpaceApp from './EpiCodeSpaceComplete.jsx';
 import { ToastProvider } from './components/Toaster.jsx';
+import LockScreen from './components/LockScreen.jsx';
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -15,9 +16,11 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 try {
   const root = createRoot(document.getElementById('root'));
   root.render(
-    <ToastProvider>
-      <EpiCodeSpaceApp />
-    </ToastProvider>
+    <LockScreen>
+      <ToastProvider>
+        <EpiCodeSpaceApp />
+      </ToastProvider>
+    </LockScreen>
   );
 } catch (err) {
   // Build error UI with safe DOM construction — never use innerHTML with error details (XSS risk)
