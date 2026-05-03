@@ -1,14 +1,12 @@
 // Vercel Serverless Function — proxies chat to AI providers with tool calling
 // POST /api/chat  { agent, model?, messages, context, mode, toolResults, pendingToolCalls }
 
+// Extend Vercel serverless function timeout to 60 s (Pro plan max).
+// Prevents premature 10-s timeout on long multi-tool agent responses.
+export const config = { maxDuration: 60 };
+
 const PROVIDER_CONFIG = {
   'epicode-agent': {
-    url: 'https://api.openai.com/v1/chat/completions',
-    envKey: 'OPENAI_API_KEY',
-    model: 'gpt-4o',
-    transform: 'openai',
-  },
-  copilot: {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
     model: 'gpt-4o',
@@ -38,15 +36,13 @@ const PROVIDER_CONFIG = {
 // with src/lib/agentRegistry.js so clients can't inject arbitrary model names.
 const ALLOWED_MODELS = {
   'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
-  copilot:         ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
-  claude:          ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
-  gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash'],
+  claude:          ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+  gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
   deepseek:        ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'],
 };
 
 const AGENT_PERSONAS = {
   'epicode-agent': 'EpiCode Agent, a full-stack autonomous coding assistant with deep knowledge of React, Node.js, Vite, Tailwind, and modern web architecture',
-  copilot:        'Copilot, a lightning-fast coding assistant specialising in inline completions, test generation, and documentation',
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek Coder V2, a code-specialised model that prefers dense code blocks over prose and excels at generation and refactoring',
@@ -267,7 +263,7 @@ async function callGemini(config, apiKey, systemPrompt, messages, useTools) {
   }
   const body = {
     contents,
-    systemInstruction: { role: 'user', parts: [{ text: systemPrompt }] },
+    systemInstruction: { parts: [{ text: systemPrompt }] },
     generationConfig: { maxOutputTokens: 16384, temperature: 0.7 },
   };
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }

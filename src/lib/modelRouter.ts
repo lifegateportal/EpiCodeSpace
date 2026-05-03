@@ -12,7 +12,7 @@
 export const AUTO_MODEL_ID = '__auto__';
 
 // Thresholds
-const HEAVY_CONTEXT_CHARS = 2_000;   // prompt longer than this → Gemini Flash
+const HEAVY_CONTEXT_CHARS = 10_000;  // prompt longer than this → Gemini Flash
 const CODING_KEYWORDS = /\b(function|class|def |import |export |const |let |var |loop|boilerplate|refactor|scaffold|generate|write.*code|implement|typescript|javascript|python|snippet)\b/i;
 
 export interface AutoRoute {
@@ -28,7 +28,7 @@ export function resolveAutoRoute(prompt: string): AutoRoute {
     return { agent: 'gemini', model: 'gemini-2.5-flash' };
   }
   if (CODING_KEYWORDS.test(prompt)) {
-    return { agent: 'deepseek', model: 'deepseek-coder' };
+    return { agent: 'deepseek', model: 'deepseek-chat' };
   }
   return { agent: 'deepseek', model: 'deepseek-chat' };
 }

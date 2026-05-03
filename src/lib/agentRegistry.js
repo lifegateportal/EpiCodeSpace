@@ -17,6 +17,8 @@ const OPENAI_MODELS = [
 ];
 
 const CLAUDE_MODELS = [
+  { id: 'claude-opus-4-5',              name: 'Claude Opus 4.5',    tier: 'premium',  description: 'Frontier Anthropic flagship (2026)' },
+  { id: 'claude-sonnet-4-5',            name: 'Claude Sonnet 4.5',  tier: 'standard', description: 'Balanced flagship (2026)' },
   { id: 'claude-3-7-sonnet-20250219',   name: 'Claude 3.7 Sonnet',  tier: 'standard', description: 'Balanced Anthropic flagship (Feb 2025)' },
   { id: 'claude-3-5-sonnet-20241022',   name: 'Claude 3.5 Sonnet',  tier: 'standard', description: 'Reliable flagship (Oct 2024)' },
   { id: 'claude-3-5-haiku-20241022',    name: 'Claude 3.5 Haiku',   tier: 'fast',     description: 'Fast + cheap Anthropic' },
@@ -43,15 +45,6 @@ export const AGENT_REGISTRY = {
     color: 'text-fuchsia-400',
     description: 'Full-stack coding assistant (OpenAI-backed)',
     capabilities: ['code_gen', 'refactor', 'explain', 'debug', 'file_ops', 'review'],
-    models: OPENAI_MODELS,
-  },
-  copilot: {
-    id: 'copilot',
-    name: 'Copilot',
-    icon: 'cpu',
-    color: 'text-cyan-400',
-    description: 'GitHub Copilot-style autocomplete & chat',
-    capabilities: ['code_gen', 'explain', 'test_gen', 'docs'],
     models: OPENAI_MODELS,
   },
   claude: {
