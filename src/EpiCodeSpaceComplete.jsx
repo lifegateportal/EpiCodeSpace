@@ -967,6 +967,8 @@ function EpiCodeSpaceApp() {
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
   const [activeMobileTab, setActiveMobileTab] = useState('editor'); // 'explorer' | 'editor' | 'terminal' | 'chat'
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [activeMobileMenuName, setActiveMobileMenuName] = useState(null);
   const projectStats = useMemo(() => {
     const entries = Object.values(fileSystem || {});
     const fileCount = entries.length;
@@ -3053,6 +3055,17 @@ ${finalCode}
             <Cpu className="text-fuchsia-400 drop-shadow-[0_0_8px_rgba(232,121,249,0.6)]" size={sm ? 16 : 18} />
             <span className="tracking-wide font-bold bg-clip-text text-transparent bg-gradient-to-r from-fuchsia-300 to-purple-300 text-xs sm:text-sm">EpiCodeSpace</span>
           </div>
+          {/* Mobile menu trigger */}
+          {sm && (
+            <button
+              onClick={() => { setShowMobileMenu(p => !p); setActiveMobileMenuName(null); }}
+              className="ml-1 p-2 hover:bg-[#25104a] rounded-md transition-colors text-purple-300"
+              aria-label="Open menu"
+              aria-expanded={showMobileMenu}
+            >
+              <ChevronDown size={16} />
+            </button>
+          )}
           <div ref={menuBarRef} className="hidden md:flex items-center gap-1 ml-4 text-purple-300/80 relative">
             {Object.keys(menuDefinitions).map(menuName => (
               <div key={menuName} className="relative">
@@ -3123,6 +3136,57 @@ ${finalCode}
           </button>
         </div>
       </header>
+
+      {/* ── Mobile Menu Sheet ─────────────────────────────────────────────── */}
+      {sm && showMobileMenu && (
+        <div className="shrink-0 bg-[#15092a] border-b border-fuchsia-500/20 z-30 overflow-y-auto" style={{ maxHeight: '65vh' }}>
+          {/* Backdrop tap-to-close */}
+          <div className="fixed inset-0 z-[-1]" onClick={() => { setShowMobileMenu(false); setActiveMobileMenuName(null); }} />
+          {activeMobileMenuName === null ? (
+            /* Top-level menu list */
+            <div className="flex flex-col py-1">
+              {Object.keys(menuDefinitions).map(menuName => (
+                <button
+                  key={menuName}
+                  onClick={() => setActiveMobileMenuName(menuName)}
+                  className="flex items-center justify-between w-full px-4 py-3 text-sm text-purple-200 hover:bg-[#25104a] transition-colors border-b border-fuchsia-500/10 last:border-0"
+                >
+                  <span className="font-semibold">{menuName}</span>
+                  <ChevronRight size={14} className="text-purple-500/50" />
+                </button>
+              ))}
+            </div>
+          ) : (
+            /* Sub-menu items */
+            <div className="flex flex-col py-1">
+              <button
+                onClick={() => setActiveMobileMenuName(null)}
+                className="flex items-center gap-2 w-full px-4 py-3 text-xs text-fuchsia-300 hover:bg-[#25104a] transition-colors border-b border-fuchsia-500/20 font-semibold uppercase tracking-wider"
+              >
+                <ChevronRight size={13} className="rotate-180" /> {activeMobileMenuName}
+              </button>
+              {menuDefinitions[activeMobileMenuName].map((item, idx) =>
+                item.type === 'separator'
+                  ? <div key={idx} className="my-1 border-t border-fuchsia-500/10" />
+                  : (
+                    <button
+                      key={idx}
+                      disabled={item.disabled}
+                      onClick={() => { if (item.action) item.action(); setShowMobileMenu(false); setActiveMobileMenuName(null); }}
+                      className={`w-full flex items-center justify-between px-4 py-3 text-sm transition-colors ${item.disabled ? 'text-purple-500/35 cursor-not-allowed' : 'text-purple-200 hover:bg-[#25104a] cursor-pointer'}`}
+                    >
+                      <span className="flex items-center gap-3">
+                        {item.icon ? <item.icon size={15} className="text-fuchsia-400/70 shrink-0" /> : <span className="w-[15px] shrink-0" />}
+                        {item.label}
+                      </span>
+                      {item.shortcut && <span className="text-[11px] text-purple-500/50 font-mono">{item.shortcut}</span>}
+                    </button>
+                  )
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {isIpad && (
         <div className="shrink-0 px-2 py-1.5 bg-[#120825] border-b border-fuchsia-500/20 overflow-x-auto no-scrollbar">
