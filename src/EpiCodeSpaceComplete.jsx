@@ -9,7 +9,7 @@ import {
   Bug, Square, CheckSquare, HelpCircle, BookOpen, Info,
   Zap, ListChecks, FileEdit, FileMinus, Eye,
   Wifi, WifiOff, Trash2, Globe, TerminalSquare,
-  RotateCcw, ExternalLink, MonitorPlay
+  RotateCcw, ExternalLink, MonitorPlay, Rocket, EyeOff
 } from 'lucide-react';
 
 // ─── Extracted modules (Amendment #6 — split monolith) ────────────────────────
@@ -20,6 +20,7 @@ const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
 const WebContainerTerminal = lazy(() => import('./components/WebContainerTerminal.jsx'));
 const LspStatusBadge = lazy(() => import('./components/LspStatusBadge.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
+import DeployModal from './components/DeployModal.jsx';
 import PanelErrorBoundary from './components/ErrorBoundary.jsx';
 import { useToast } from './components/Toaster.jsx';
 import { logger } from './lib/logger.js';
@@ -916,6 +917,7 @@ function EpiCodeSpaceApp() {
   const [wcServerUrl, setWcServerUrl] = useState('');
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
   const [showStorageMonitor, setShowStorageMonitor] = useState(false);
+  const [showDeployModal,    setShowDeployModal]    = useState(false);
   const [storageMonitor, setStorageMonitor] = useState({
     usage: 0,
     quota: 0,
@@ -2934,8 +2936,7 @@ ${finalCode}
       { label: 'Restore Latest Snapshot', icon: RotateCcw, action: handleRestoreLatestSnapshot },
       { type: 'separator' },
       { label: 'Export Compressed Backup...', action: handleExportProject },
-      { label: 'Deploy to Vercel', icon: Globe, action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('deploy vercel'); } },
-      { label: 'Deploy to Netlify', icon: Globe, action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); handleTerminalCommand('deploy netlify'); } },
+      { label: 'Deploy Project…', icon: Rocket, action: () => setShowDeployModal(true) },
       { type: 'separator' },
       { label: 'Close Editor', shortcut: 'Ctrl+W', action: () => setActiveFile(Object.keys(fileSystem)[0] || null) },
     ],
@@ -4453,6 +4454,15 @@ ${finalCode}
           initialTemplate={newProjectDialog.template}
           onConfirm={(template, name) => { handleNewProject(template, name); setNewProjectDialog(null); }}
           onCancel={() => setNewProjectDialog(null)}
+        />
+      )}
+
+      {/* Deploy Modal */}
+      {showDeployModal && (
+        <DeployModal
+          projectName={projectName}
+          fileSystem={fileSystem}
+          onClose={() => setShowDeployModal(false)}
         />
       )}
 
