@@ -966,6 +966,7 @@ function EpiCodeSpaceApp() {
   }, []);
   const sm = screenWidth < 768;
   const md = screenWidth >= 768 && screenWidth < 1024;
+  const [activeMobileTab, setActiveMobileTab] = useState('editor'); // 'explorer' | 'editor' | 'terminal' | 'chat'
   const projectStats = useMemo(() => {
     const entries = Object.values(fileSystem || {});
     const fileCount = entries.length;
@@ -3045,7 +3046,7 @@ ${finalCode}
       {/* ── Top Bar ───────────────────────────────────────────────────────── */}
       <header className="flex items-end justify-between px-2 sm:px-3 bg-[#15092a] border-b border-fuchsia-500/20 z-20 shrink-0 shadow-[0_4px_20px_rgba(192,38,211,0.05)]" style={{ paddingTop: 'var(--sat)', minHeight: 'calc(44px + var(--sat))', paddingBottom: '6px' }}>
         <div className="flex items-center gap-1.5 sm:gap-2 text-sm">
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle Explorer" className="p-2 sm:p-1.5 hover:bg-[#25104a] rounded-md transition-colors text-purple-300">
+          <button onClick={() => sm ? setActiveMobileTab(t => t === 'explorer' ? 'editor' : 'explorer') : setSidebarOpen(!sidebarOpen)} aria-label="Toggle Explorer" className="p-2 sm:p-1.5 hover:bg-[#25104a] rounded-md transition-colors text-purple-300">
             <Menu size={18} />
           </button>
           <div className="flex items-center gap-1.5 sm:gap-2 text-fuchsia-50 font-semibold px-1 sm:px-2">
@@ -3114,8 +3115,8 @@ ${finalCode}
             </button>
           )}
           <button
-            onClick={() => setRightSidebarOpen(!rightSidebarOpen)}
-            className={`p-2 sm:p-1.5 rounded-md transition-colors ${rightSidebarOpen ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'hover:bg-[#25104a] text-purple-300'}`}
+            onClick={() => sm ? setActiveMobileTab(t => t === 'chat' ? 'editor' : 'chat') : setRightSidebarOpen(!rightSidebarOpen)}
+            className={`p-2 sm:p-1.5 rounded-md transition-colors ${(sm ? activeMobileTab === 'chat' : rightSidebarOpen) ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'hover:bg-[#25104a] text-purple-300'}`}
             aria-label="Toggle AI Chat"
           >
             {sm ? <MessageSquare size={18} /> : <Layout size={18} />}
@@ -3158,10 +3159,9 @@ ${finalCode}
         )}
 
         {/* Left Sidebar */}
-        {sidebarOpen && (
+        {(sm ? activeMobileTab === 'explorer' : sidebarOpen) && (
           <>
-            {sm && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
-            <aside className="absolute md:relative z-10 h-full bg-[#15092a] border-r border-fuchsia-500/20 flex flex-col shrink-0 panel-transition" style={{ width: sm ? Math.min(leftWidth, screenWidth * 0.85) : leftWidth }} aria-label="File explorer">
+            <aside className={`${sm ? 'flex-1 relative' : 'absolute md:relative z-10'} h-full bg-[#15092a] border-r border-fuchsia-500/20 flex flex-col shrink-0 panel-transition`} style={sm ? {} : { width: leftWidth }} aria-label="File explorer">
               {!sm && <div className="absolute top-0 -right-[2px] w-1.5 h-full cursor-col-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('left'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('left'); }} />}
               <PanelErrorBoundary scope="Explorer">
                 <FileExplorer
@@ -3185,8 +3185,8 @@ ${finalCode}
         )}
 
         {/* Middle Column */}
-        <main className="flex-1 flex flex-col min-w-0 bg-[#0a0412]">
-          <div className="flex-1 flex flex-col min-h-0">
+        <main className={`${sm && activeMobileTab !== 'editor' && activeMobileTab !== 'terminal' ? 'hidden' : ''} flex-1 flex flex-col min-w-0 bg-[#0a0412]`}>
+          <div className={`${sm && activeMobileTab === 'terminal' ? 'hidden' : 'flex-1'} flex flex-col min-h-0`}>
             {/* Editor Tabs */}
             <div className="flex bg-[#15092a] overflow-x-auto no-scrollbar border-b border-fuchsia-500/20 shrink-0">
               {openTabs.map(path => {
@@ -3316,8 +3316,8 @@ ${finalCode}
           </div>
 
           {/* Terminal Pane */}
-          {terminalState === 'open' && (
-            <div className="border-t border-fuchsia-500/20 bg-[#0a0412] flex flex-col shrink-0 relative" style={{ height: sm ? Math.min(termHeight, window.innerHeight * 0.4) : termHeight }}>
+          {(terminalState === 'open' || (sm && activeMobileTab === 'terminal')) && (
+            <div className={`border-t border-fuchsia-500/20 bg-[#0a0412] flex flex-col shrink-0 relative ${sm && activeMobileTab === 'terminal' ? 'flex-1' : ''}`} style={sm && activeMobileTab === 'terminal' ? undefined : { height: sm ? Math.min(termHeight, window.innerHeight * 0.4) : termHeight }}>
               <div className="absolute top-0 left-0 w-full h-3 sm:h-1.5 -mt-[2px] cursor-row-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('terminal'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('terminal'); }} />
               <div role="tablist" aria-label="Panel tabs" className="flex items-center px-2 sm:px-4 pt-2 gap-1 sm:gap-3 shrink-0 overflow-x-auto no-scrollbar">
                 {[
@@ -3668,10 +3668,9 @@ ${finalCode}
         </main>
 
         {/* Right Sidebar (AI Chat) */}
-        {rightSidebarOpen && (
+        {(sm ? activeMobileTab === 'chat' : rightSidebarOpen) && (
           <>
-            {sm && <div className="sidebar-backdrop" onClick={() => setRightSidebarOpen(false)} />}
-            <aside className={`${sm ? 'fixed inset-0 z-20' : 'relative'} border-l border-fuchsia-500/20 bg-[#15092a] flex flex-col min-h-0 shrink-0 shadow-[-4px_0_20px_rgba(192,38,211,0.03)] panel-transition overflow-hidden`} style={sm ? {} : { width: rightWidth }}>
+            <aside className={`${sm ? 'flex-1 relative' : 'relative'} border-l border-fuchsia-500/20 bg-[#15092a] flex flex-col min-h-0 shrink-0 shadow-[-4px_0_20px_rgba(192,38,211,0.03)] panel-transition overflow-hidden`} style={sm ? {} : { width: rightWidth }}>
               {!sm && <div className="absolute top-0 -left-[2px] w-1.5 h-full cursor-col-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('right'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('right'); }} />}
 
             {/* Chat Header */}
@@ -3687,7 +3686,7 @@ ${finalCode}
                 <button onClick={() => setShowConversations(p => !p)} className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" title="Conversations"><MessageSquare size={14} /></button>
                 <button onClick={handlePinActiveFile} className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" title={activeFile ? `Pin ${activeFile}` : 'Pin active file'}><BookOpen size={14} /></button>
                 <button className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors"><Settings size={14} /></button>
-                <button className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" onClick={() => setRightSidebarOpen(false)}><X size={14} /></button>
+                <button className="p-1.5 sm:p-1 hover:text-purple-200 hover:bg-[#25104a] rounded transition-colors" onClick={() => sm ? setActiveMobileTab('editor') : setRightSidebarOpen(false)}><X size={14} /></button>
               </div>
             </div>
 
@@ -4446,6 +4445,36 @@ ${finalCode}
         )}
       </div>
 
+      {/* ── Mobile Bottom Navigation ──────────────────────────────────────── */}
+      {sm && (
+        <nav
+          aria-label="Mobile panels"
+          className="sm:hidden flex items-stretch bg-[#15092a] border-t border-fuchsia-500/20 z-30 shrink-0"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        >
+          {[
+            { id: 'explorer', icon: Folder,        label: 'Explorer' },
+            { id: 'editor',   icon: Code2,          label: 'Editor'   },
+            { id: 'terminal', icon: Terminal,        label: 'Terminal' },
+            { id: 'chat',     icon: MessageSquare,   label: 'Chat'     },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveMobileTab(tab.id)}
+              aria-current={activeMobileTab === tab.id ? 'page' : undefined}
+              className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 text-[10px] font-semibold tracking-wide transition-colors border-t-2 ${
+                activeMobileTab === tab.id
+                  ? 'text-fuchsia-300 bg-fuchsia-500/10 border-t-fuchsia-400'
+                  : 'text-purple-400/55 hover:text-purple-200 border-t-transparent'
+              }`}
+            >
+              <tab.icon size={20} />
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+
       {/* Saved Toast */}
       {savedIndicator && (
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[60] bg-[#1a0b35] border border-fuchsia-500/30 rounded-lg px-4 py-2 text-xs text-fuchsia-200 flex items-center gap-2 shadow-xl animate-pulse">
@@ -4512,7 +4541,7 @@ ${finalCode}
       )}
 
       {/* ── Status Bar ────────────────────────────────────────────────────── */}
-      <footer className="flex items-start justify-between px-1 sm:px-2 bg-[#15092a] border-t border-fuchsia-500/30 text-[10px] sm:text-[11px] text-purple-300 z-20 shrink-0 overflow-x-auto no-scrollbar" style={{ paddingTop: '4px', paddingBottom: 'var(--sab)', minHeight: 'calc(24px + var(--sab))' }}>
+      <footer className="hidden sm:flex items-start justify-between px-1 sm:px-2 bg-[#15092a] border-t border-fuchsia-500/30 text-[10px] sm:text-[11px] text-purple-300 z-20 shrink-0 overflow-x-auto no-scrollbar" style={{ paddingTop: '4px', paddingBottom: 'var(--sab)', minHeight: 'calc(24px + var(--sab))' }}>
         <div className="flex items-center h-full">
           <div className="hidden sm:flex items-center gap-1 h-full px-2 sm:px-3 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-semibold cursor-pointer hover:from-cyan-500 hover:to-blue-500 transition-colors rounded-tl-sm">
             <span className="text-[10px]">&gt;&lt;</span> <span className="hidden md:inline">EpiCodeSpace</span><span className="md:hidden">ECS</span>
