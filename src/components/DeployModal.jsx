@@ -7,10 +7,11 @@ const TOKEN_KEYS = {
   vercel:  'epicodespace_deploy_vercel_token',
   github:  'epicodespace_deploy_github_token',
 };
-const NETLIFY_SITE_KEY   = 'epicodespace_deploy_netlify_site_';
-const GITHUB_REPO_KEY    = 'epicodespace_deploy_github_repo';
-const CUSTOM_CFG_KEY     = 'epicodespace_deploy_custom_cfg';
-const DEPLOY_HISTORY_KEY = 'epicodespace_deploy_history';
+const NETLIFY_SITE_KEY    = 'epicodespace_deploy_netlify_site_';
+const GITHUB_REPO_KEY     = 'epicodespace_deploy_github_repo';
+const CUSTOM_CFG_KEY      = 'epicodespace_deploy_custom_cfg';
+const DEPLOY_HISTORY_KEY  = 'epicodespace_deploy_history';
+const EPICGLOBAL_CFG_KEY  = 'epicodespace_deploy_epicglobal_cfg';
 
 // ─── Deploy URL history helpers ───────────────────────────────────────────────
 function loadDeployHistory() {
@@ -233,12 +234,40 @@ async function deployCustom({ url, method, authType, authValue, authHeader, extr
   return { url: resultUrl || `Success (HTTP ${res.status})` };
 }
 
+async function deployEpiGlobal({ apiUrl, apiKey, projectName, files, onProgress }) {
+  if (!apiUrl.trim()) throw new Error('EpiGlobal API URL is required');
+  if (!apiKey.trim())  throw new Error('EpiGlobal API Key is required');
+  onProgress({ message: 'Deploying to EpiGlobal…', percent: 20 });
+  const fileEntries = Object.fromEntries(
+    Object.entries(files)
+      .filter(([, f]) => f?.content != null)
+      .map(([p, f]) => [p, f.content])
+  );
+  const res = await fetch(apiUrl.trim().replace(/\/$/, '') + '/deploy', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey.trim()}`,
+      'X-Api-Key': apiKey.trim(),
+    },
+    body: JSON.stringify({ projectName, files: fileEntries, deployedAt: new Date().toISOString() }),
+  });
+  onProgress({ message: 'Waiting for response…', percent: 80 });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`EpiGlobal error (${res.status}): ${text.slice(0, 200)}`);
+  let data;
+  try { data = JSON.parse(text); } catch { data = null; }
+  const url = data?.url || data?.deploy_url || data?.deploymentUrl || data?.appUrl || data?.link || null;
+  return { url: url || `Deployed (HTTP ${res.status})` };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 const PLATFORMS = [
-  { id: 'netlify', label: 'Netlify' },
-  { id: 'vercel',  label: 'Vercel'  },
-  { id: 'github',  label: 'GitHub'  },
-  { id: 'custom',  label: 'Custom'  },
+  { id: 'epicglobal', label: 'EpiGlobal' },
+  { id: 'netlify',    label: 'Netlify'   },
+  { id: 'vercel',     label: 'Vercel'    },
+  { id: 'github',     label: 'GitHub'    },
+  { id: 'custom',     label: 'Custom'    },
 ];
 
 const AUTH_TYPES = [
@@ -258,6 +287,12 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
   const [vercelToken,     setVercelToken]     = useState(() => localStorage.getItem(TOKEN_KEYS.vercel)  || '');
   const [githubToken,     setGithubToken]     = useState(() => localStorage.getItem(TOKEN_KEYS.github)  || '');
   const [githubRepo,      setGithubRepo]      = useState(() => localStorage.getItem(GITHUB_REPO_KEY)    || '');
+
+  // EpiGlobal state
+  const loadEpiGlobalCfg = () => { try { return JSON.parse(localStorage.getItem(EPICGLOBAL_CFG_KEY) || '{}'); } catch { return {}; } };
+  const [epicglobalApiUrl, setEpicglobalApiUrl] = useState(() => loadEpiGlobalCfg().apiUrl || 'https://api.epicglobal.app');
+  const [epicglobalApiKey, setEpicglobalApiKey] = useState(() => loadEpiGlobalCfg().apiKey || '');
+  const [showEpicglobalKey, setShowEpicglobalKey] = useState(false);
 
   // Custom endpoint state
   const loadCustomCfg = () => { try { return JSON.parse(localStorage.getItem(CUSTOM_CFG_KEY) || '{}'); } catch { return {}; } };
@@ -323,6 +358,11 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
         }
 
       // ── Manual entry ────────────────────────────────────────────────────
+      } else if (platform === 'epicglobal') {
+        if (!epicglobalApiKey.trim()) throw new Error('EpiGlobal API Key is required');
+        localStorage.setItem(EPICGLOBAL_CFG_KEY, JSON.stringify({ apiUrl: epicglobalApiUrl, apiKey: epicglobalApiKey }));
+        res = await deployEpiGlobal({ apiUrl: epicglobalApiUrl, apiKey: epicglobalApiKey, projectName, files: fileSystem, onProgress });
+
       } else if (platform === 'netlify') {
         if (!netlifyToken.trim()) throw new Error('Netlify token is required');
         localStorage.setItem(TOKEN_KEYS.netlify, netlifyToken.trim());
@@ -340,7 +380,7 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
         localStorage.setItem(GITHUB_REPO_KEY, githubRepo.trim());
         res = await deployGitHub({ token: githubToken.trim(), repo: githubRepo.trim(), files: fileSystem, onProgress });
 
-      } else {
+      } else if (platform === 'custom') {
         localStorage.setItem(CUSTOM_CFG_KEY, JSON.stringify({
           url: customUrl, method: customMethod, authType: customAuthType,
           authVal: customAuthVal, authHdr: customAuthHdr, headers: customHeaders,
@@ -509,8 +549,8 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
           ))}
         </div>
 
-        {/* Token input — hidden for Custom tab */}
-        {platform !== 'custom' && (
+        {/* Token input — hidden for Custom and EpiGlobal tabs (they have their own UI) */}
+        {platform !== 'custom' && platform !== 'epicglobal' && (
           <div className="mb-4">
             <label className="block text-xs text-purple-400 mb-1.5">
               {platform === 'netlify' ? 'Netlify Personal Access Token'
@@ -543,6 +583,48 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
               {platform === 'vercel'  && <>Get it at: vercel.com/account/tokens</>}
               {platform === 'github'  && <>Get it at: github.com/settings/tokens (needs <code>repo</code> scope)</>}
             </p>
+          </div>
+        )}
+
+        {/* ─── EpiGlobal form ─── */}
+        {platform === 'epicglobal' && (
+          <div className="space-y-3 mb-4">
+            <div className="p-3 rounded-lg bg-fuchsia-900/20 border border-fuchsia-500/20">
+              <p className="text-[10px] text-fuchsia-300/80 leading-relaxed">
+                Deploy directly to <strong>EpiGlobal</strong> — no Git required.
+                Find your API key on the EpiGlobal dashboard under <em>Setup → EpiCodeSpaces API credentials</em>.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs text-purple-400 mb-1.5">EpiGlobal API URL</label>
+              <input
+                type="url"
+                value={epicglobalApiUrl}
+                onChange={e => setEpicglobalApiUrl(e.target.value)}
+                placeholder="https://api.epicglobal.app"
+                className="w-full bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-purple-400 mb-1.5">EpiGlobal API Key <span className="text-purple-600">(VITE_ORCHESTRATOR_API_KEY)</span></label>
+              <div className="flex gap-2">
+                <input
+                  type={showEpicglobalKey ? 'text' : 'password'}
+                  value={epicglobalApiKey}
+                  onChange={e => setEpicglobalApiKey(e.target.value)}
+                  placeholder="Paste your API key here"
+                  autoComplete="off"
+                  className="flex-1 bg-[#0d0520] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+                />
+                <button
+                  onClick={() => setShowEpicglobalKey(v => !v)}
+                  className="px-3 py-2 text-purple-400 hover:text-white bg-[#0d0520] border border-fuchsia-500/20 rounded-lg transition-colors"
+                  aria-label={showEpicglobalKey ? 'Hide key' : 'Show key'}
+                >
+                  {showEpicglobalKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
