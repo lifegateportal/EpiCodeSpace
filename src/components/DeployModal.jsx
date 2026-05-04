@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2, Settings } from 'lucide-react';
+import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2, Settings, Link, Copy, Clock } from 'lucide-react';
 import { PLATFORM_META } from '../lib/connections.js';
 
 const TOKEN_KEYS = {
@@ -7,9 +7,26 @@ const TOKEN_KEYS = {
   vercel:  'epicodespace_deploy_vercel_token',
   github:  'epicodespace_deploy_github_token',
 };
-const NETLIFY_SITE_KEY  = 'epicodespace_deploy_netlify_site_';
-const GITHUB_REPO_KEY   = 'epicodespace_deploy_github_repo';
-const CUSTOM_CFG_KEY    = 'epicodespace_deploy_custom_cfg';
+const NETLIFY_SITE_KEY   = 'epicodespace_deploy_netlify_site_';
+const GITHUB_REPO_KEY    = 'epicodespace_deploy_github_repo';
+const CUSTOM_CFG_KEY     = 'epicodespace_deploy_custom_cfg';
+const DEPLOY_HISTORY_KEY = 'epicodespace_deploy_history';
+
+// ─── Deploy URL history helpers ───────────────────────────────────────────────
+function loadDeployHistory() {
+  try { return JSON.parse(localStorage.getItem(DEPLOY_HISTORY_KEY) || '[]'); } catch { return []; }
+}
+function saveDeployRecord(projectName, platform, url) {
+  const history = loadDeployHistory();
+  // Upsert: same project+platform combo → replace, keep latest on top
+  const filtered = history.filter(r => !(r.projectName === projectName && r.platform === platform));
+  filtered.unshift({ projectName, platform, url, deployedAt: new Date().toISOString() });
+  // Keep at most 50 records
+  localStorage.setItem(DEPLOY_HISTORY_KEY, JSON.stringify(filtered.slice(0, 50)));
+}
+function getProjectHistory(projectName) {
+  return loadDeployHistory().filter(r => r.projectName === projectName);
+}
 
 // ─── Crypto helpers ──────────────────────────────────────────────────────────
 async function sha1Hex(text) {
@@ -259,6 +276,14 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
 
   const [progress, setProgress] = useState(null); // { message, percent }
   const [result,   setResult]   = useState(null); // { url } | { error }
+  const [urlHistory, setUrlHistory] = useState(() => getProjectHistory(projectName));
+  const [copiedUrl, setCopiedUrl] = useState(null);
+
+  const copyUrl = useCallback((url) => {
+    navigator.clipboard?.writeText(url).catch(() => {});
+    setCopiedUrl(url);
+    setTimeout(() => setCopiedUrl(null), 1500);
+  }, []);
 
   const isDeploying = progress !== null && result === null;
 
@@ -329,6 +354,9 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
 
       setProgress({ message: 'Done!', percent: 100 });
       setResult({ url: res.url });
+      const usedPlatform = selectedConn ? selectedConn.platform : platform;
+      saveDeployRecord(projectName, usedPlatform, res.url);
+      setUrlHistory(getProjectHistory(projectName));
     } catch (err) {
       setProgress(null);
       setResult({ error: err.message });
@@ -349,6 +377,47 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
         className="bg-[#15092a] border border-fuchsia-500/30 rounded-xl shadow-[0_0_40px_rgba(192,38,211,0.25)] p-6 w-[480px] max-w-[95vw] max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
+        {/* Project URL History */}
+        {urlHistory.length > 0 && (
+          <div className="mb-5 p-3 rounded-lg bg-[#0d0520] border border-fuchsia-500/15">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Link size={11} className="text-fuchsia-400" />
+              <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider">Project URLs</span>
+            </div>
+            <div className="space-y-1.5">
+              {urlHistory.map((rec, i) => {
+                const pm = PLATFORM_META[rec.platform] || PLATFORM_META.custom;
+                const dateStr = new Date(rec.deployedAt).toLocaleDateString();
+                return (
+                  <div key={i} className="flex items-center gap-2 group">
+                    <span className={`${pm.badge} text-white text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0`}>
+                      {pm.label.slice(0, 3).toUpperCase()}
+                    </span>
+                    <a
+                      href={rec.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 min-w-0 text-[11px] text-fuchsia-300 hover:text-fuchsia-200 truncate underline"
+                    >{rec.url}</a>
+                    <span className="text-[9px] text-purple-600 flex items-center gap-0.5 shrink-0">
+                      <Clock size={8} />{dateStr}
+                    </span>
+                    <button
+                      onClick={() => copyUrl(rec.url)}
+                      className="shrink-0 text-purple-500 hover:text-fuchsia-300 transition-colors"
+                      aria-label="Copy URL"
+                    >
+                      {copiedUrl === rec.url
+                        ? <CheckCircle2 size={12} className="text-emerald-400" />
+                        : <Copy size={12} />}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
