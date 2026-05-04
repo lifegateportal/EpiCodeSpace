@@ -13,6 +13,9 @@ const crossOriginIsolationHeaders = {
 };
 
 export default defineConfig({
+  // Use relative asset URLs so the built app works on hosts that serve
+  // projects from subpaths or non-root static locations.
+  base: './',
   plugins: [
     react(),
     {
