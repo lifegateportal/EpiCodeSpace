@@ -37,22 +37,45 @@ async function sha1Hex(text) {
     .join('');
 }
 
+// Safe base64 encoding for Unicode strings (replaces deprecated btoa/unescape)
+function toBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// Extract a readable message from a failed fetch response
+async function extractErrMsg(res) {
+  try {
+    const j = await res.clone().json();
+    return j.message || j.error?.message || j.error || JSON.stringify(j);
+  } catch {
+    try { return await res.text(); } catch { return `HTTP ${res.status}`; }
+  }
+}
+
 // ─── Platform deployers ───────────────────────────────────────────────────────
 async function deployNetlify({ token, siteName, projectName, files, onProgress }) {
-  const safeName = (siteName || projectName).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const safeName = (siteName || projectName).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '') || 'app';
   const authHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
   // 1. Create or reuse site
   onProgress({ message: 'Finding/creating Netlify site…', percent: 5 });
   let siteId = localStorage.getItem(NETLIFY_SITE_KEY + safeName);
+  if (siteId) {
+    // Verify cached siteId is still accessible (token may have changed)
+    const check = await fetch(`https://api.netlify.com/api/v1/sites/${siteId}`, { headers: authHeaders });
+    if (!check.ok) { localStorage.removeItem(NETLIFY_SITE_KEY + safeName); siteId = null; }
+  }
   if (!siteId) {
     const r = await fetch('https://api.netlify.com/api/v1/sites', {
       method: 'POST', headers: authHeaders,
       body: JSON.stringify({ name: safeName }),
     });
     if (!r.ok) {
-      const txt = await r.text();
-      throw new Error(`Site create failed (${r.status}): ${txt}`);
+      const msg = await extractErrMsg(r);
+      throw new Error(`Site create failed (${r.status}): ${msg}`);
     }
     const site = await r.json();
     siteId = site.id;
@@ -78,8 +101,9 @@ async function deployNetlify({ token, siteName, projectName, files, onProgress }
     body: JSON.stringify({ files: fileMap }),
   });
   if (!deployRes.ok) {
-    const txt = await deployRes.text();
-    throw new Error(`Deploy open failed (${deployRes.status}): ${txt}`);
+    const msg = await extractErrMsg(deployRes);
+    throw new Error(`Deploy open failed (${deployRes.status}): ${msg}`);
+  }
   }
   const deploy = await deployRes.json();
   const required = deploy.required || [];
@@ -111,28 +135,29 @@ async function deployNetlify({ token, siteName, projectName, files, onProgress }
 }
 
 async function deployVercel({ token, projectName, files, onProgress }) {
-  const name = projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const name = projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 52) || 'app';
   onProgress({ message: 'Creating Vercel deployment…', percent: 15 });
 
   const fileEntries = Object.entries(files).filter(([, f]) => f?.content != null);
   const vercelFiles = fileEntries.map(([path, f]) => ({
     file: path,
-    data: f.content ?? '',
-    encoding: 'utf8',
+    data: toBase64(f.content ?? ''),
+    encoding: 'base64',
   }));
 
   const res = await fetch('https://api.vercel.com/v13/deployments', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, files: vercelFiles, projectSettings: { framework: null } }),
+    body: JSON.stringify({ name, files: vercelFiles }),
   });
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Vercel deploy failed (${res.status}): ${txt}`);
+    const msg = await extractErrMsg(res);
+    throw new Error(`Vercel deploy failed (${res.status}): ${msg}`);
   }
   const data = await res.json();
   onProgress({ message: 'Deployment queued!', percent: 95 });
-  return { url: data.url ? `https://${data.url}` : `https://${name}.vercel.app` };
+  const deployUrl = data.url || data.alias?.[0];
+  return { url: deployUrl ? (deployUrl.startsWith('http') ? deployUrl : `https://${deployUrl}`) : `https://${name}.vercel.app` };
 }
 
 async function deployGitHub({ token, repo, files, onProgress }) {
@@ -159,8 +184,8 @@ async function deployGitHub({ token, repo, files, onProgress }) {
       body: JSON.stringify({ name: repoName, private: false, auto_init: true }),
     });
     if (!createRes.ok) {
-      const txt = await createRes.text();
-      throw new Error(`Repo create failed (${createRes.status}): ${txt}`);
+      const msg = await extractErrMsg(createRes);
+      throw new Error(`Repo create failed (${createRes.status}): ${msg}`);
     }
     // Brief wait for GitHub to initialise the repo
     await new Promise(r => setTimeout(r, 1200));
@@ -170,8 +195,7 @@ async function deployGitHub({ token, repo, files, onProgress }) {
   let done = 0;
   for (const [path, f] of entries) {
     const content = f.content ?? '';
-    // btoa safe for Unicode
-    const encoded = btoa(unescape(encodeURIComponent(content)));
+    const encoded = toBase64(content);
 
     // Fetch existing SHA so we can update rather than create a conflict
     let existingSha;
@@ -188,8 +212,9 @@ async function deployGitHub({ token, repo, files, onProgress }) {
       method: 'PUT', headers, body: JSON.stringify(body),
     });
     if (!putRes.ok) {
-      const txt = await putRes.text();
-      throw new Error(`Push failed for ${path} (${putRes.status}): ${txt}`);
+      const msg = await extractErrMsg(putRes);
+      throw new Error(`Push failed for ${path} (${putRes.status}): ${msg}`);
+    }
     }
     done++;
     onProgress({
@@ -235,15 +260,16 @@ async function deployCustom({ url, method, authType, authValue, authHeader, extr
 }
 
 async function deployEpiGlobal({ apiUrl, apiKey, projectName, files, onProgress }) {
-  if (!apiUrl.trim()) throw new Error('EpiGlobal API URL is required');
-  if (!apiKey.trim())  throw new Error('EpiGlobal API Key is required');
+  const resolvedUrl = (apiUrl || 'https://api.epicglobal.app').trim();
+  if (!resolvedUrl) throw new Error('EpiGlobal API URL is required');
+  if (!apiKey.trim()) throw new Error('EpiGlobal API Key is required');
   onProgress({ message: 'Deploying to EpiGlobal…', percent: 20 });
   const fileEntries = Object.fromEntries(
     Object.entries(files)
       .filter(([, f]) => f?.content != null)
       .map(([p, f]) => [p, f.content])
   );
-  const res = await fetch(apiUrl.trim().replace(/\/$/, '') + '/deploy', {
+  const res = await fetch(resolvedUrl.replace(/\/+$/, '') + '/deploy', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -253,8 +279,11 @@ async function deployEpiGlobal({ apiUrl, apiKey, projectName, files, onProgress 
     body: JSON.stringify({ projectName, files: fileEntries, deployedAt: new Date().toISOString() }),
   });
   onProgress({ message: 'Waiting for response…', percent: 80 });
+  if (!res.ok) {
+    const msg = await extractErrMsg(res);
+    throw new Error(`EpiGlobal error (${res.status}): ${msg}`);
+  }
   const text = await res.text();
-  if (!res.ok) throw new Error(`EpiGlobal error (${res.status}): ${text}`);
   let data;
   try { data = JSON.parse(text); } catch { data = null; }
   const url = data?.url || data?.deploy_url || data?.deploymentUrl || data?.appUrl || data?.link || null;
@@ -323,8 +352,8 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
 
   const isDeploying = progress !== null && result === null;
 
-  const token    = platform === 'netlify' ? netlifyToken : platform === 'vercel' ? vercelToken : githubToken;
-  const setToken = platform === 'netlify' ? setNetlifyToken : platform === 'vercel' ? setVercelToken : setGithubToken;
+  const token    = platform === 'netlify' ? netlifyToken : platform === 'vercel' ? vercelToken : platform === 'github' ? githubToken : '';
+  const setToken = platform === 'netlify' ? setNetlifyToken : platform === 'vercel' ? setVercelToken : platform === 'github' ? setGithubToken : (() => {});
 
   const switchPlatform = useCallback((id) => {
     setPlatform(id);
