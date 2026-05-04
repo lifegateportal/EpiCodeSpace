@@ -61,6 +61,7 @@ function AddForm({ onSave, onCancel }) {
   // platform-specific meta
   const [siteName,    setSiteName]    = useState('');
   const [repo,        setRepo]        = useState('');
+  const [epicApiUrl,  setEpicApiUrl]  = useState('https://api.epicglobal.app');
   const [customUrl,   setCustomUrl]   = useState('');
   const [method,      setMethod]      = useState('POST');
   const [authType,    setAuthType]    = useState('bearer');
@@ -75,9 +76,10 @@ function AddForm({ onSave, onCancel }) {
 
   const handleSave = useCallback(() => {
     const meta =
-      platform === 'netlify' ? { siteName } :
-      platform === 'github'  ? { repo } :
-      platform === 'custom'  ? { url: customUrl, method, authType, authVal, authHdr, headers: extraHdrs } :
+      platform === 'netlify'    ? { siteName } :
+      platform === 'github'     ? { repo } :
+      platform === 'epicglobal' ? { apiUrl: epicApiUrl } :
+      platform === 'custom'     ? { url: customUrl, method, authType, authVal, authHdr, headers: extraHdrs } :
       {};
     onSave(makeConnection({
       platform,
@@ -85,7 +87,7 @@ function AddForm({ onSave, onCancel }) {
       token: token.trim(),
       meta,
     }));
-  }, [platform, label, token, siteName, repo, customUrl, method, authType, authVal, authHdr, extraHdrs, onSave]);
+  }, [platform, label, token, siteName, repo, epicApiUrl, customUrl, method, authType, authVal, authHdr, extraHdrs, onSave]);
 
   const pm = PLATFORM_META[platform];
 
@@ -132,6 +134,13 @@ function AddForm({ onSave, onCancel }) {
         </div>
       )}
       <p className="text-[10px] text-purple-500/50">{pm.hint}</p>
+
+      {/* EpiGlobal API URL */}
+      {platform === 'epicglobal' && (
+        <input type="url" value={epicApiUrl} onChange={e => setEpicApiUrl(e.target.value)}
+          placeholder="https://api.epicglobal.app"
+          className="w-full bg-[#15092a] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60" />
+      )}
 
       {/* Netlify site name */}
       {platform === 'netlify' && (

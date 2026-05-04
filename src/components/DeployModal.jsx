@@ -342,7 +342,9 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
       // ── Use a saved connection ───────────────────────────────────────────
       if (selectedConn) {
         const { platform: cp, token: ct, meta: cm = {} } = selectedConn;
-        if (cp === 'netlify') {
+        if (cp === 'epicglobal') {
+          res = await deployEpiGlobal({ apiUrl: cm.apiUrl || 'https://api.epicglobal.app', apiKey: ct, projectName, files: fileSystem, onProgress });
+        } else if (cp === 'netlify') {
           res = await deployNetlify({ token: ct, siteName: cm.siteName || '', projectName, files: fileSystem, onProgress });
         } else if (cp === 'vercel') {
           res = await deployVercel({ token: ct, projectName, files: fileSystem, onProgress });
