@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2, Settings, Link, Copy, Clock } from 'lucide-react';
+import { X, Eye, EyeOff, Rocket, CheckCircle2, AlertCircle, Loader2, Plus, Trash2, Settings, Link, Copy, Clock, Zap } from 'lucide-react';
 import { PLATFORM_META } from '../lib/connections.js';
 
 const TOKEN_KEYS = {
@@ -52,7 +52,7 @@ async function deployNetlify({ token, siteName, projectName, files, onProgress }
     });
     if (!r.ok) {
       const txt = await r.text();
-      throw new Error(`Site create failed (${r.status}): ${txt.slice(0, 200)}`);
+      throw new Error(`Site create failed (${r.status}): ${txt}`);
     }
     const site = await r.json();
     siteId = site.id;
@@ -79,7 +79,7 @@ async function deployNetlify({ token, siteName, projectName, files, onProgress }
   });
   if (!deployRes.ok) {
     const txt = await deployRes.text();
-    throw new Error(`Deploy open failed (${deployRes.status}): ${txt.slice(0, 200)}`);
+    throw new Error(`Deploy open failed (${deployRes.status}): ${txt}`);
   }
   const deploy = await deployRes.json();
   const required = deploy.required || [];
@@ -128,7 +128,7 @@ async function deployVercel({ token, projectName, files, onProgress }) {
   });
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Vercel deploy failed (${res.status}): ${txt.slice(0, 200)}`);
+    throw new Error(`Vercel deploy failed (${res.status}): ${txt}`);
   }
   const data = await res.json();
   onProgress({ message: 'Deployment queued!', percent: 95 });
@@ -160,7 +160,7 @@ async function deployGitHub({ token, repo, files, onProgress }) {
     });
     if (!createRes.ok) {
       const txt = await createRes.text();
-      throw new Error(`Repo create failed (${createRes.status}): ${txt.slice(0, 200)}`);
+      throw new Error(`Repo create failed (${createRes.status}): ${txt}`);
     }
     // Brief wait for GitHub to initialise the repo
     await new Promise(r => setTimeout(r, 1200));
@@ -189,7 +189,7 @@ async function deployGitHub({ token, repo, files, onProgress }) {
     });
     if (!putRes.ok) {
       const txt = await putRes.text();
-      throw new Error(`Push failed for ${path} (${putRes.status}): ${txt.slice(0, 120)}`);
+      throw new Error(`Push failed for ${path} (${putRes.status}): ${txt}`);
     }
     done++;
     onProgress({
@@ -227,7 +227,7 @@ async function deployCustom({ url, method, authType, authValue, authHeader, extr
   const res = await fetch(url.trim(), { method, headers: reqHeaders, body });
   onProgress({ message: 'Response received…', percent: 85 });
   const text = await res.text();
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${text}`);
   let data;
   try { data = JSON.parse(text); } catch { data = null; }
   const resultUrl = data?.url || data?.deploy_url || data?.deploymentUrl || data?.link || data?.href || null;
@@ -254,7 +254,7 @@ async function deployEpiGlobal({ apiUrl, apiKey, projectName, files, onProgress 
   });
   onProgress({ message: 'Waiting for response…', percent: 80 });
   const text = await res.text();
-  if (!res.ok) throw new Error(`EpiGlobal error (${res.status}): ${text.slice(0, 200)}`);
+  if (!res.ok) throw new Error(`EpiGlobal error (${res.status}): ${text}`);
   let data;
   try { data = JSON.parse(text); } catch { data = null; }
   const url = data?.url || data?.deploy_url || data?.deploymentUrl || data?.appUrl || data?.link || null;
@@ -290,9 +290,10 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
 
   // EpiGlobal state
   const loadEpiGlobalCfg = () => { try { return JSON.parse(localStorage.getItem(EPICGLOBAL_CFG_KEY) || '{}'); } catch { return {}; } };
-  const [epicglobalApiUrl, setEpicglobalApiUrl] = useState(() => loadEpiGlobalCfg().apiUrl || 'https://api.epicglobal.app');
+  const [epicglobalApiUrl, setEpicglobalApiUrl] = useState(() => loadEpiGlobalCfg().apiUrl || '');
   const [epicglobalApiKey, setEpicglobalApiKey] = useState(() => loadEpiGlobalCfg().apiKey || '');
   const [showEpicglobalKey, setShowEpicglobalKey] = useState(false);
+  const [epicglobalTestStatus, setEpicglobalTestStatus] = useState(null); // null | 'testing' | 'ok' | 'fail'
 
   // Custom endpoint state
   const loadCustomCfg = () => { try { return JSON.parse(localStorage.getItem(CUSTOM_CFG_KEY) || '{}'); } catch { return {}; } };
@@ -331,6 +332,24 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
     setProgress(null);
     setShowToken(false);
   }, []);
+
+  const handleTestEpiGlobal = useCallback(async () => {
+    if (!epicglobalApiUrl.trim() || !epicglobalApiKey.trim()) return;
+    setEpicglobalTestStatus('testing');
+    try {
+      const res = await fetch(epicglobalApiUrl.trim().replace(/\/+$/, '') + '/health', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${epicglobalApiKey.trim()}`,
+          'X-Api-Key': epicglobalApiKey.trim(),
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      setEpicglobalTestStatus(res.ok ? 'ok' : 'fail');
+    } catch {
+      setEpicglobalTestStatus('fail');
+    }
+  }, [epicglobalApiUrl, epicglobalApiKey]);
 
   const handleDeploy = useCallback(async () => {
     setProgress({ message: 'Starting…', percent: 0 });
@@ -627,6 +646,20 @@ export default function DeployModal({ projectName, fileSystem, onClose, connecti
                 </button>
               </div>
             </div>
+            <button
+              onClick={handleTestEpiGlobal}
+              disabled={!epicglobalApiUrl.trim() || !epicglobalApiKey.trim() || epicglobalTestStatus === 'testing'}
+              className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg border border-fuchsia-500/20 text-fuchsia-400 hover:text-white hover:border-fuchsia-400/60 disabled:opacity-40 transition-colors"
+            >
+              {epicglobalTestStatus === 'testing'
+                ? <><Loader2 size={10} className="animate-spin" /> Testing…</>
+                : epicglobalTestStatus === 'ok'
+                ? <><CheckCircle2 size={10} className="text-emerald-400" /> Connection OK</>
+                : epicglobalTestStatus === 'fail'
+                ? <><AlertCircle size={10} className="text-red-400" /> Connection failed — check URL &amp; key</>
+                : <><Zap size={10} /> Test Connection</>
+              }
+            </button>
           </div>
         )}
 
