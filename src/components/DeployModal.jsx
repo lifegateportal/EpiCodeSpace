@@ -214,7 +214,6 @@ async function deployGitHub({ token, repo, files, onProgress }) {
       const msg = await extractErrMsg(putRes);
       throw new Error(`Push failed for ${path} (${putRes.status}): ${msg}`);
     }
-    }
     done++;
     onProgress({
       message: `Pushing files… ${done}/${entries.length}`,
