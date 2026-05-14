@@ -104,7 +104,6 @@ async function deployNetlify({ token, siteName, projectName, files, onProgress }
     const msg = await extractErrMsg(deployRes);
     throw new Error(`Deploy open failed (${deployRes.status}): ${msg}`);
   }
-  }
   const deploy = await deployRes.json();
   const required = deploy.required || [];
 
