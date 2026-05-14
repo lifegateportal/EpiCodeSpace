@@ -1057,7 +1057,9 @@ function EpiCodeSpaceApp() {
         if (cancelled) return;
 
         const container = bridge.getContainer();
-        const proc = await container.spawn('npm', ['run', 'dev']);
+        const proc = await container.spawn('npm', ['run', 'dev'], {
+          terminal: { cols: 80, rows: 24 },
+        });
         autoDevProcessRef.current = proc;
 
         // Fire-and-forget output drain so backpressure never stalls the process.
