@@ -1436,7 +1436,10 @@ function EpiCodeSpaceApp() {
           .replace(/^\s*import[\s\S]*?;\s*$/gm, '')
           .replace(/^\s*export\s+default\s+/gm, '')
           .replace(/^\s*export\s+/gm, '')
-          .replace(/import\.meta\.env\.[A-Z0-9_]+/g, 'undefined')
+          .replace(/import\.meta\.env\.[A-Z0-9_]*/g, 'undefined')
+          .replace(/import\.meta\.hot\b/g, 'undefined')
+          .replace(/import\.meta\.url\b/g, '"about:blank"')
+          .replace(/import\.meta\b/g, '{}')
           .trim();
 
         if (!cleaned) return;
@@ -1470,7 +1473,8 @@ function EpiCodeSpaceApp() {
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script type="text/babel" data-presets="typescript,react">
-      const { useState, useRef, useEffect, useCallback, useMemo } = React;
+      const { useState, useRef, useEffect, useCallback, useMemo, useContext, useReducer, useLayoutEffect, useId, useTransition, useDeferredValue, useImperativeHandle, useInsertionEffect, createContext, createRef, forwardRef, memo, Fragment, Children, cloneElement, isValidElement, Component, PureComponent, StrictMode } = React;
+      const { createPortal } = ReactDOM;
 ${finalCode}
     </script>
   </body>

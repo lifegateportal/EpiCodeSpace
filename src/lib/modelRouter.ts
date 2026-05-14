@@ -13,7 +13,7 @@ export const AUTO_MODEL_ID = '__auto__';
 
 // Thresholds
 const HEAVY_CONTEXT_CHARS = 10_000;  // prompt longer than this → Gemini Flash
-const CODING_KEYWORDS = /\b(function|class|def |import |export |const |let |var |loop|boilerplate|refactor|scaffold|generate|write.*code|implement|typescript|javascript|python|snippet)\b/i;
+const CODING_KEYWORDS = /\b(function|class|def |import |export |const |let |var |loop|boilerplate|refactor|scaffold|generate|write.*code|implement|typescript|javascript|python|snippet|debug|fix|bug|error|crash|broken|not working|exception|undefined|null|fails|failing)\b/i;
 
 export interface AutoRoute {
   agent: string;
