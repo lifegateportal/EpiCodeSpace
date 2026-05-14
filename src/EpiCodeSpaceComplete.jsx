@@ -9,7 +9,7 @@ import {
   Bug, Square, CheckSquare, HelpCircle, BookOpen, Info,
   Zap, ListChecks, FileEdit, FileMinus, Eye,
   Wifi, WifiOff, Trash2, Globe, TerminalSquare,
-  RotateCcw, ExternalLink, MonitorPlay, Rocket, EyeOff
+  RotateCcw, ExternalLink, MonitorPlay, Rocket, EyeOff, Cloud, CloudOff
 } from 'lucide-react';
 
 // ─── Extracted modules (Amendment #6 — split monolith) ────────────────────────
@@ -37,6 +37,7 @@ import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
 import { FsClient } from './lib/fs/FsClient.ts';
 import { bridge } from './lib/runtime/WebContainerBridge.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
+import { isGistSyncEnabled, pushToGist, pullFromGist, GIST_TOKEN_KEY, GIST_ID_KEY } from './lib/gistSync.js';
 
 /* ─── OPFS Toggle (advanced storage) ─────────────────────────────────────────
  * Tapping the toggle is a direct user gesture, which is what Safari requires
@@ -1222,6 +1223,21 @@ function EpiCodeSpaceApp() {
     if (typeof pinnedFilePath === 'string' && pinnedFilePath) storeJSON(PINNED_RULES_KEY, pinnedFilePath);
     else storeJSON(PINNED_RULES_KEY, null);
   }, [pinnedFilePath]);
+
+  // ── Gist sync: debounced push on every FS change ──────────────────────────
+  const [gistSyncStatus, setGistSyncStatus] = useState('idle'); // 'idle'|'syncing'|'ok'|'error'
+  const gistSyncTimerRef = useRef(null);
+  useEffect(() => {
+    if (!isGistSyncEnabled()) return;
+    clearTimeout(gistSyncTimerRef.current);
+    gistSyncTimerRef.current = setTimeout(async () => {
+      setGistSyncStatus('syncing');
+      const result = await pushToGist(fileSystem, projectName);
+      setGistSyncStatus(result.ok ? 'ok' : 'error');
+      if (!result.ok) console.warn('[GistSync] push failed:', result.error);
+    }, 3000); // 3 s debounce — only push when user pauses
+    return () => clearTimeout(gistSyncTimerRef.current);
+  }, [fileSystem, projectName]);
 
   // ── Chat scroll behavior ─────────────────────────────────────────────────
   const handleChatScroll = useCallback(() => {
@@ -4574,6 +4590,15 @@ ${finalCode}
           connections={deployConnections}
           onChange={(next) => { saveConnections(next); setDeployConnections(next); }}
           onClose={() => setShowConnectionsManager(false)}
+          fileSystem={fileSystem}
+          projectName={projectName}
+          onGistPull={(result) => {
+            if (result?.files) {
+              replaceAll(result.files);
+              if (result.projectName) setProjectName(result.projectName);
+              setShowConnectionsManager(false);
+            }
+          }}
         />
       )}
 
@@ -4631,6 +4656,23 @@ ${finalCode}
           <div className="hidden lg:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors">LF</div>
           <div className="hidden md:flex px-2 h-full items-center hover:bg-[#25104a] cursor-pointer transition-colors font-semibold gap-1"><CheckCircle2 size={12} className="text-fuchsia-400"/> Prettier</div>
           <Suspense fallback={null}><LspStatusBadge /></Suspense>
+          {/* Gist Sync status badge */}
+          {gistSyncStatus !== 'idle' && (
+            <button
+              type="button"
+              onClick={() => setShowConnectionsManager(true)}
+              title={gistSyncStatus === 'syncing' ? 'Syncing to Gist…' : gistSyncStatus === 'ok' ? 'Synced to Gist' : 'Gist sync error — click to configure'}
+              className={`px-2 h-full flex items-center gap-1 border-l border-fuchsia-500/10 transition-colors hover:bg-[#25104a] ${
+                gistSyncStatus === 'error' ? 'text-red-400' : gistSyncStatus === 'syncing' ? 'text-fuchsia-300' : 'text-emerald-400'
+              }`}
+            >
+              {gistSyncStatus === 'syncing'
+                ? <><Loader2 size={11} className="animate-spin" /><span className="hidden sm:inline text-[10px]">Syncing…</span></>
+                : gistSyncStatus === 'ok'
+                  ? <><Cloud size={11} /><span className="hidden sm:inline text-[10px]">Synced</span></>
+                  : <><CloudOff size={11} /><span className="hidden sm:inline text-[10px]">Sync error</span></>}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setShowStorageMonitor((p) => !p)}

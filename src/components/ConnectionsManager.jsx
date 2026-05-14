@@ -1,11 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import {
   X, Plus, Trash2, CheckCircle2, AlertCircle,
-  Loader2, Eye, EyeOff, RefreshCw,
+  Loader2, Eye, EyeOff, RefreshCw, CloudUpload, CloudDownload, Cloud,
 } from 'lucide-react';
 import {
   loadConnections, saveConnections, makeConnection, PLATFORM_META,
 } from '../lib/connections.js';
+import {
+  verifyGistToken, pushToGist, pullFromGist, GIST_TOKEN_KEY, GIST_ID_KEY,
+} from '../lib/gistSync.js';
 
 const AUTH_TYPES = [
   { id: 'none',   label: 'None'         },
@@ -303,8 +306,138 @@ function ConnectionCard({ conn, onDisconnect, onReplace }) {
   );
 }
 
+// ─── Gist Sync Panel ──────────────────────────────────────────────────────────
+function GistSyncPanel({ fileSystem, projectName, onPullSuccess }) {
+  const [token,    setToken]    = useState(() => { try { return localStorage.getItem(GIST_TOKEN_KEY) || ''; } catch { return ''; } });
+  const [showTok,  setShowTok]  = useState(false);
+  const [gistId,   setGistIdUI] = useState(() => { try { return localStorage.getItem(GIST_ID_KEY) || ''; } catch { return ''; } });
+  const [status,   setStatus]   = useState(null); // null | 'verifying' | 'pushing' | 'pulling' | { ok, msg }
+  const [open,     setOpen]     = useState(false);
+
+  const saveToken = useCallback((val) => {
+    setToken(val);
+    try { if (val.trim()) localStorage.setItem(GIST_TOKEN_KEY, val.trim()); else localStorage.removeItem(GIST_TOKEN_KEY); } catch { /* quota */ }
+  }, []);
+
+  const handleVerify = useCallback(async () => {
+    if (!token.trim()) return;
+    setStatus('verifying');
+    const r = await verifyGistToken(token.trim());
+    setStatus({ ok: r.ok, msg: r.ok ? `Authenticated as @${r.login}` : r.error });
+  }, [token]);
+
+  const handlePush = useCallback(async () => {
+    setStatus('pushing');
+    const r = await pushToGist(fileSystem || {}, projectName || '');
+    if (r.ok) {
+      setGistIdUI(r.gistId || '');
+      setStatus({ ok: true, msg: `Pushed — Gist ${r.gistId}` });
+    } else {
+      setStatus({ ok: false, msg: r.error });
+    }
+  }, [fileSystem, projectName]);
+
+  const handlePull = useCallback(async () => {
+    setStatus('pulling');
+    const r = await pullFromGist();
+    if (r.ok) {
+      setStatus({ ok: true, msg: `Pulled workspace: ${Object.keys(r.files || {}).length} files` });
+      onPullSuccess?.(r);
+    } else {
+      setStatus({ ok: false, msg: r.error });
+    }
+  }, [onPullSuccess]);
+
+  const isLoading = status === 'verifying' || status === 'pushing' || status === 'pulling';
+  const loadingLabel = status === 'verifying' ? 'Verifying…' : status === 'pushing' ? 'Pushing…' : status === 'pulling' ? 'Pulling…' : '';
+
+  return (
+    <div className="border border-fuchsia-500/20 rounded-xl overflow-hidden mb-2">
+      {/* Header toggle */}
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-[#0d0520] hover:bg-[#130a28] transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Cloud size={13} className="text-fuchsia-400" />
+          <span className="text-xs font-medium text-white">Gist Sync</span>
+          {token && <span className="text-[9px] bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full">ON</span>}
+        </div>
+        <span className="text-[10px] text-purple-500">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="bg-[#0a0418] px-4 py-3 space-y-3">
+          <p className="text-[10px] text-purple-400/70 leading-relaxed">
+            Auto-saves your workspace to a private GitHub Gist. Accessible from any device with the same token.
+            Requires a token with <code className="bg-black/30 px-1 rounded">gist</code> scope.
+          </p>
+
+          {/* Token input */}
+          <div className="flex gap-2">
+            <input
+              type={showTok ? 'text' : 'password'}
+              value={token}
+              onChange={e => saveToken(e.target.value)}
+              placeholder="ghp_… (gist scope)"
+              autoComplete="off"
+              className="flex-1 bg-[#15092a] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none focus:border-fuchsia-400/60"
+            />
+            <button onClick={() => setShowTok(p => !p)}
+              className="px-3 py-2 text-purple-400 hover:text-white bg-[#15092a] border border-fuchsia-500/20 rounded-lg transition-colors">
+              {showTok ? <EyeOff size={12} /> : <Eye size={12} />}
+            </button>
+          </div>
+
+          {/* Gist ID (read-only) */}
+          {gistId && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-purple-500/60">Gist ID:</span>
+              <code className="text-[10px] text-purple-300/70 font-mono">{gistId}</code>
+              <button onClick={() => { try { localStorage.removeItem(GIST_ID_KEY); setGistIdUI(''); } catch { /* */ } }}
+                className="text-[10px] text-red-400/60 hover:text-red-400 ml-auto">clear</button>
+            </div>
+          )}
+
+          {/* Status */}
+          {status && typeof status === 'object' && (
+            <div className={`flex items-center gap-1.5 text-[11px] ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+              {status.ok ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+              <span className="truncate">{status.msg}</span>
+            </div>
+          )}
+          {isLoading && (
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400">
+              <Loader2 size={11} className="animate-spin" /> {loadingLabel}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={handleVerify} disabled={!token.trim() || isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-fuchsia-400/50 text-fuchsia-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+              <RefreshCw size={11} /> Verify Token
+            </button>
+            <button onClick={handlePush} disabled={!token.trim() || isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-fuchsia-400/50 text-fuchsia-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+              <CloudUpload size={11} /> Push Now
+            </button>
+            <button onClick={handlePull} disabled={!token.trim() || !gistId || isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-fuchsia-400/50 text-fuchsia-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+              <CloudDownload size={11} /> Pull & Restore
+            </button>
+          </div>
+          <p className="text-[10px] text-purple-500/50">
+            Auto-push fires 3 s after you stop editing. "Pull & Restore" replaces your current workspace with the Gist copy.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
-export default function ConnectionsManager({ connections, onChange, onClose }) {
+export default function ConnectionsManager({ connections, onChange, onClose, onGistPull, fileSystem, projectName }) {
   const [showAdd, setShowAdd] = useState(connections.length === 0);
 
   const handleSave = useCallback((conn) => {
@@ -342,6 +475,9 @@ export default function ConnectionsManager({ connections, onChange, onClose }) {
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+          {/* Gist Sync section always visible at top */}
+          <GistSyncPanel fileSystem={fileSystem} projectName={projectName} onPullSuccess={onGistPull} />
+
           {connections.length === 0 && !showAdd && (
             <p className="text-xs text-purple-500/60 text-center py-4">No saved connections yet.</p>
           )}
