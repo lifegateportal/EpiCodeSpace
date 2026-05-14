@@ -30,6 +30,7 @@ import {
   STORAGE_KEY, CONVOS_KEY, PREFS_KEY, PANELS_KEY, AGENT_KEY, MODELS_KEY, MODE_KEY, SNAPSHOTS_KEY,
   loadJSON, storeJSON, loadLatestSnapshot, saveLocalSnapshot,
 } from './lib/storage.js';
+import DOMPurify from 'dompurify';
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
 import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
@@ -456,7 +457,7 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
               <span className="text-[12px] shrink-0 mt-0.5">{s.emoji}</span>
               <span
                 className={`text-[11px] leading-snug ${s.isThought ? 'text-purple-200/80 italic' : s.isWarning ? 'text-amber-400/80' : 'text-purple-400/70'}`}
-                dangerouslySetInnerHTML={{ __html: s.text.replace(/\*\*(.*?)\*\*/g, '<strong class="text-purple-200/90 not-italic">$1</strong>').replace(/`([^`]+)`/g, '<code class="text-fuchsia-300/80 bg-fuchsia-500/10 px-1 rounded text-[10px] not-italic">$1</code>') }}
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(s.text.replace(/\*\*(.*?)\*\*/g, '<strong class="text-purple-200/90 not-italic">$1</strong>').replace(/`([^`]+)`/g, '<code class="text-fuchsia-300/80 bg-fuchsia-500/10 px-1 rounded text-[10px] not-italic">$1</code>'), { ALLOWED_TAGS: ['strong', 'code'], ALLOWED_ATTR: ['class'] }) }}
               />
             </div>
           ))}
@@ -807,10 +808,9 @@ function EpiCodeSpaceApp() {
   const [renameValue, setRenameValue] = useState('');
 
   // ── Panels ────────────────────────────────────────────────────────────────
-  const savedPanels = loadJSON(PANELS_KEY, { sidebarOpen: true, rightSidebarOpen: true, terminalState: 'open' });
-  const [sidebarOpen, setSidebarOpen] = useState(savedPanels.sidebarOpen);
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(savedPanels.rightSidebarOpen);
-  const [terminalState, setTerminalState] = useState(savedPanels.terminalState);
+  const [sidebarOpen, setSidebarOpen] = useState(() => loadJSON(PANELS_KEY, { sidebarOpen: true, rightSidebarOpen: true, terminalState: 'open' }).sidebarOpen);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(() => loadJSON(PANELS_KEY, { sidebarOpen: true, rightSidebarOpen: true, terminalState: 'open' }).rightSidebarOpen);
+  const [terminalState, setTerminalState] = useState(() => loadJSON(PANELS_KEY, { sidebarOpen: true, rightSidebarOpen: true, terminalState: 'open' }).terminalState);
   const [activeTerminalTab, setActiveTerminalTab] = useState('terminal');
   const [previewKey, setPreviewKey] = useState(0);
   const [previewRenderMode, setPreviewRenderMode] = useState(() => {
@@ -861,7 +861,6 @@ function EpiCodeSpaceApp() {
   const [isSteerOpen, setIsSteerOpen] = useState(false);
   const steerInputRef = useRef(null);
   const [chatMode, setChatMode] = useState(() => loadJSON(MODE_KEY, 'agent'));
-  const savedConvos = loadJSON(CONVOS_KEY, [{ id: 1, name: 'Chat 1', messages: [], agent: 'epicode-agent', createdAt: Date.now() }]);
   const [activeAgent, setActiveAgent] = useState(() => loadJSON(AGENT_KEY, 'epicode-agent'));
   // Per-agent model selection (map agentId → modelId). Validated on load so
   // stale entries from a previous catalogue don't break the API call.
@@ -881,18 +880,18 @@ function EpiCodeSpaceApp() {
   const [convoSearch, setConvoSearch] = useState('');
   const [renamingConvo, setRenamingConvo] = useState(null);
   const [renameConvoValue, setRenameConvoValue] = useState('');
-  const [conversations, setConversations] = useState(savedConvos);
-  const [activeConvoId, setActiveConvoId] = useState(savedConvos[0]?.id ?? 1);
-  const convoCountRef = useRef(Math.max(...savedConvos.map(c => c.id), 1));
+  const [conversations, setConversations] = useState(() => loadJSON(CONVOS_KEY, [{ id: 1, name: 'Chat 1', messages: [], agent: 'epicode-agent', createdAt: Date.now() }]));
+  const [activeConvoId, setActiveConvoId] = useState(() => conversations[0]?.id ?? 1);
+  const convoCountRef = useRef(Math.max(...conversations.map(c => c.id), 1));
 
   // ── Resizing ──────────────────────────────────────────────────────────────
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-  const isTablet = typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024;
+  const [screenWidth, setScreenWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const isMobile = screenWidth < 768;
+  const isTablet = screenWidth >= 768 && screenWidth < 1024;
   const [leftWidth, setLeftWidth] = useState(isMobile ? 280 : 240);
   const [rightWidth, setRightWidth] = useState(isMobile ? window.innerWidth : isTablet ? 300 : 320);
   const [termHeight, setTermHeight] = useState(isMobile ? 200 : 256);
   const [isDragging, setIsDragging] = useState(null);
-  const [screenWidth, setScreenWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
   const isIpad = useMemo(() => isIpadDevice(), []);
   const [liteModePreference, setLiteModePreference] = useState(() => {
     const saved = loadJSON(LITE_MODE_KEY, null);
@@ -902,9 +901,8 @@ function EpiCodeSpaceApp() {
 
   // ── Editor extras ─────────────────────────────────────────────────────────
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
-  const savedPrefs = loadJSON(PREFS_KEY, { fontSize: 13, wordWrap: false });
-  const [fontSize, setFontSize] = useState(savedPrefs.fontSize);
-  const [wordWrap, setWordWrap] = useState(savedPrefs.wordWrap);
+  const [fontSize, setFontSize] = useState(() => loadJSON(PREFS_KEY, { fontSize: 13, wordWrap: false }).fontSize);
+  const [wordWrap, setWordWrap] = useState(() => loadJSON(PREFS_KEY, { fontSize: 13, wordWrap: false }).wordWrap);
   const [showFind, setShowFind] = useState(false);
   const [findQuery, setFindQuery] = useState('');
   const [savedIndicator, setSavedIndicator] = useState(false);
@@ -947,11 +945,11 @@ function EpiCodeSpaceApp() {
   const storageWarnedRef = useRef({ w80: false, w90: false });
   const backupReminderShownRef = useRef(false);
 
-  // ── Track screen width ────────────────────────────────────────────────────
+  // ── Track screen width (drives reactive isMobile / isTablet) ────────────
   useEffect(() => {
-    const onResize = () => setScreenWidth(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const ac = new AbortController();
+    window.addEventListener('resize', () => setScreenWidth(window.innerWidth), { signal: ac.signal });
+    return () => ac.abort();
   }, []);
 
   // ── Wire logger → DEBUG CONSOLE panel ────────────────────────────────────
@@ -1959,7 +1957,7 @@ ${finalCode}
   };
 
   // ── Execute tool calls against virtual filesystem ────────────────────────
-  const executeToolCall = useCallback((name, args, currentFS) => {
+  const executeToolCall = useCallback(async (name, args, currentFS) => {
     switch (name) {
       case 'readFile': {
         const f = currentFS[args.path];
@@ -2016,7 +2014,7 @@ ${finalCode}
         const cmd = (args.command || '').trim();
         const isDestructive = /\brm\b|\brmdir\b|\bdrop\b|\bdelete\b|\bformat\b|>\s*\//.test(cmd);
         if (isDestructive) {
-          const ok = window.confirm(`The AI agent wants to run:\n\n  ${cmd}\n\nAllow this command?`);
+          const ok = await toast.confirm(`The AI agent wants to run:\n\n  ${cmd}\n\nAllow this command?`, { danger: true, confirmLabel: 'Allow' });
           if (!ok) return { ok: false, error: 'User cancelled command execution.' };
         }
         return {

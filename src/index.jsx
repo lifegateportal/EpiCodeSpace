@@ -7,9 +7,18 @@ import LockScreen from './components/LockScreen.jsx';
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // Fail silently in unsupported or private browsing contexts.
-    });
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .then(async () => {
+        if (!('caches' in window)) return;
+        const cacheKeys = await caches.keys();
+        await Promise.all(cacheKeys
+          .filter((key) => key.startsWith('epicodespace-'))
+          .map((key) => caches.delete(key)));
+      })
+      .catch(() => {
+        // Fail silently in unsupported or private browsing contexts.
+      });
   });
 }
 

@@ -28,7 +28,7 @@ export function resolveAutoRoute(prompt: string): AutoRoute {
     return { agent: 'gemini', model: 'gemini-2.5-flash' };
   }
   if (CODING_KEYWORDS.test(prompt)) {
-    return { agent: 'deepseek', model: 'deepseek-chat' };
+    return { agent: 'deepseek', model: 'deepseek-coder' };
   }
   return { agent: 'deepseek', model: 'deepseek-chat' };
 }

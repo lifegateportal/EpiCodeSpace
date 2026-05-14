@@ -4,6 +4,7 @@ import {
   FilePlus, FolderPlus, FileEdit, Trash2, Copy, Scissors, ClipboardPaste,
   Search, X, RefreshCw, Save, ImagePlus, FolderOpen as FolderOpenIcon,
 } from 'lucide-react';
+import { useToast } from './Toaster.jsx';
 
 /* ── Tree builder: converts flat {path: file} map into a nested tree ───────── */
 function buildTree(fileSystem, emptyFolders) {
@@ -105,6 +106,7 @@ export default function FileExplorer({
   useEffect(() => { try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(emptyFolders)); } catch {} }, [emptyFolders]);
 
   /* ── Local UI state ──────────────────────────────────────────────────── */
+  const toast = useToast();
   const [filter, setFilter] = useState('');
   const [renaming, setRenaming] = useState(null);   // path being renamed
   const [renameValue, setRenameValue] = useState('');
@@ -225,8 +227,12 @@ export default function FileExplorer({
     if (fileSystem[oldPath]) onRenameFile?.(oldPath, newPath);
   };
 
-  const deleteNode = (node) => {
-    if (!window.confirm(`Delete ${node.type === 'folder' ? 'folder' : 'file'} "${node.path}"?`)) return;
+  const deleteNode = async (node) => {
+    const confirmed = await toast.confirm(
+      `Delete ${node.type === 'folder' ? 'folder' : 'file'} "${node.path}"?`,
+      { danger: true, confirmLabel: 'Delete' }
+    );
+    if (!confirmed) return;
     if (node.type === 'file') {
       onDeleteFile?.(node.path);
     } else {
