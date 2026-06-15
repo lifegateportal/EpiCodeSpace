@@ -1281,7 +1281,7 @@ function EpiCodeSpaceApp() {
       const { x, y } = getXY(e);
       if (isDragging === 'left') setLeftWidth(Math.max(160, Math.min(sm ? screenWidth * 0.85 : 600, x)));
       else if (isDragging === 'right') setRightWidth(Math.max(250, Math.min(sm ? screenWidth : 800, window.innerWidth - x)));
-      else if (isDragging === 'terminal') setTermHeight(Math.max(80, Math.min(window.innerHeight - 150, window.innerHeight - y - 24)));
+      else if (isDragging === 'terminal') setTermHeight(Math.max(80, Math.min(Math.floor(window.innerHeight * 0.65), window.innerHeight - y - 24)));
     };
     const onUp = () => setIsDragging(null);
     document.addEventListener('mousemove', onMove);
@@ -2080,6 +2080,70 @@ ${finalCode}
           note: `Command dispatched to terminal: \`${cmd}\`. Output will appear in the terminal panel. If you need to verify the result (e.g. build errors, test output, git status), ask the user to share the terminal output or issue a follow-up readFile.`,
         };
       }
+      case 'getProjectStructure': {
+        const allPaths = Object.keys(currentFS).sort();
+        const tree = {};
+        for (const path of allPaths) {
+          const parts = path.split('/');
+          let node = tree;
+          for (let i = 0; i < parts.length - 1; i++) {
+            if (!node[parts[i]]) node[parts[i]] = {};
+            node = node[parts[i]];
+          }
+          const f = currentFS[path];
+          node[parts[parts.length - 1]] = `(${f.language || 'text'}, ${(f.content || '').split('\n').length} lines)`;
+        }
+        const flat = allPaths.map(p => {
+          const f = currentFS[p];
+          return `${p} (${f.language || 'text'}, ${(f.content || '').split('\n').length} lines)`;
+        });
+        return { ok: true, totalFiles: allPaths.length, flat, structure: tree };
+      }
+      case 'searchAndReplace': {
+        const { pattern, replacement = '', targetFile, regex = false, caseSensitive = false } = args;
+        if (!pattern) return { ok: false, error: 'pattern is required' };
+        const filesToSearch = targetFile
+          ? (currentFS[targetFile] ? [targetFile] : [])
+          : Object.keys(currentFS).filter(p => currentFS[p]?.language && currentFS[p].language !== 'binary');
+        if (filesToSearch.length === 0 && targetFile) return { ok: false, error: `File not found: ${targetFile}` };
+        const changes = [];
+        for (const path of filesToSearch) {
+          const f = currentFS[path];
+          if (!f) continue;
+          const content = f.content || '';
+          let newContent, count = 0;
+          try {
+            const flags = 'g' + (caseSensitive ? '' : 'i');
+            const re = regex
+              ? new RegExp(pattern, flags)
+              : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+            const matches = content.match(re);
+            count = matches?.length || 0;
+            newContent = count > 0 ? content.replace(re, replacement) : content;
+          } catch (e) {
+            return { ok: false, error: `Regex error: ${e.message}` };
+          }
+          if (count > 0) {
+            changes.push({ ok: true, action: 'edit', path, content: newContent, lines: newContent.split('\n').length, replacements: count });
+          }
+        }
+        return {
+          ok: true,
+          filesChanged: changes.length,
+          totalReplacements: changes.reduce((a, r) => a + r.replacements, 0),
+          changes,
+          note: changes.length > 0
+            ? `Replaced "${pattern}" → "${replacement}" in ${changes.length} file(s) (${changes.reduce((a, r) => a + r.replacements, 0)} occurrences)`
+            : `No matches for "${pattern}"`,
+        };
+      }
+      case 'npmInstall': {
+        const { packages = '', dev = false } = args;
+        const cmd = packages.trim()
+          ? `npm install${dev ? ' --save-dev' : ''} ${packages.trim()}`
+          : 'npm install';
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched: ${cmd}` };
+      }
       case 'diagnoseProject': {
         const files = Object.keys(currentFS);
         const issues = [];
@@ -2229,6 +2293,18 @@ ${finalCode}
         if (before) changeItems.push({ path: tc.arguments.path, action: 'delete', before, after: null });
       } else if (tc.name === 'runCommand' && r.action === 'runCommand') {
         cmdsToRun.push(tc.arguments.command);
+      } else if (tc.name === 'npmInstall' && r.action === 'runCommand') {
+        cmdsToRun.push(r.command);
+      } else if (tc.name === 'searchAndReplace' && r.changes?.length) {
+        for (const change of r.changes) {
+          if (change.ok && change.action === 'edit' && typeof change.content === 'string') {
+            const before = currentFS[change.path] ? { ...currentFS[change.path] } : null;
+            const after = before ? { ...before, content: change.content } : null;
+            newFS[change.path] = { ...newFS[change.path], content: change.content };
+            changed = true;
+            if (before && after) changeItems.push({ path: change.path, action: 'edit', before, after });
+          }
+        }
       }
     });
     return { newFS, changed, cmdsToRun, changeItems };
@@ -2504,7 +2580,7 @@ ${finalCode}
       let pendingToolCalls = null;
       let toolResults = null;
       let lastToolCallSig = null;
-      const MAX_ROUNDS = 8;
+      const MAX_ROUNDS = 15;
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = MAX_ROUNDS;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
@@ -3205,7 +3281,7 @@ ${finalCode}
   //  RENDER
   // ═════════════════════════════════════════════════════════════════════════
   return (
-    <div className="app-shell flex flex-col bg-[#0a0412] text-purple-100 font-sans overflow-hidden selection:bg-fuchsia-500/30">
+    <div className="app-shell flex flex-col bg-[#0a0412] text-purple-100 font-sans overflow-hidden selection:bg-fuchsia-500/30" style={{ height: '100dvh' }}>
 
       {isDragging && <div className={`fixed inset-0 z-50 ${isDragging === 'terminal' ? 'cursor-row-resize' : 'cursor-col-resize'}`} style={{ touchAction: 'none' }} />}
 
@@ -3548,7 +3624,7 @@ ${finalCode}
 
           {/* Terminal Pane */}
           {(terminalState === 'open' || (sm && activeMobileTab === 'terminal')) && (
-            <div className={`border-t border-fuchsia-500/20 bg-[#0a0412] flex flex-col shrink-0 relative ${sm && activeMobileTab === 'terminal' ? 'flex-1' : ''}`} style={sm && activeMobileTab === 'terminal' ? undefined : { height: sm ? Math.min(termHeight, window.innerHeight * 0.4) : termHeight }}>
+            <div className={`border-t border-fuchsia-500/20 bg-[#0a0412] flex flex-col shrink-0 relative ${sm && activeMobileTab === 'terminal' ? 'flex-1' : ''}`} style={sm && activeMobileTab === 'terminal' ? undefined : { height: sm ? Math.min(termHeight, window.innerHeight * 0.4) : Math.min(termHeight, Math.floor(window.innerHeight * 0.65)) }}>
               <div className="absolute top-0 left-0 w-full h-3 sm:h-1.5 -mt-[2px] cursor-row-resize drag-handle hover:bg-fuchsia-400/50 active:bg-fuchsia-400 z-20 transition-colors" onMouseDown={(e) => { e.preventDefault(); setIsDragging('terminal'); }} onTouchStart={(e) => { e.preventDefault(); setIsDragging('terminal'); }} />
               <div role="tablist" aria-label="Panel tabs" className="flex items-center px-2 sm:px-4 pt-2 gap-1 sm:gap-3 shrink-0 overflow-x-auto no-scrollbar">
                 {[

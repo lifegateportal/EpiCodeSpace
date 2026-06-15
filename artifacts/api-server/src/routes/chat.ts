@@ -52,8 +52,11 @@ const WORKSPACE_TOOLS = [
   { name: 'listFiles', description: 'List all files in the workspace.', parameters: { type: 'object', properties: {} } },
   { name: 'searchCode', description: 'Search for a text pattern across all workspace files.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } },
   { name: 'analyzeFile', description: 'Run static analysis on a file.', parameters: { type: 'object', properties: { path: { type: 'string' } } } },
-  { name: 'runCommand', description: 'Run a shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'runCommand', description: 'Run a shell command (npm install, npm run dev, git status, etc.).', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
   { name: 'diagnoseProject', description: 'Diagnose common project setup issues: missing node_modules, broken CSS/styling setup, missing config files, incorrect Tailwind/PostCSS configuration, missing CSS imports in HTML. Use this whenever the user reports unstyled UI, missing styles, or a project that looks like plain HTML.', parameters: { type: 'object', properties: {} } },
+  { name: 'getProjectStructure', description: 'Get the full directory tree of the workspace as a nested structure. Use before making multi-file changes to understand the project layout, folder organization, and file types.', parameters: { type: 'object', properties: {} } },
+  { name: 'searchAndReplace', description: 'Find and replace text across workspace files. Use for bulk renaming, updating imports, changing variable names or constants across many files. Changes are applied immediately.', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Text or regex pattern to find' }, replacement: { type: 'string', description: 'Replacement text' }, targetFile: { type: 'string', description: 'Optional: limit to one file path' }, regex: { type: 'boolean', description: 'Treat pattern as regex (default false)' }, caseSensitive: { type: 'boolean', description: 'Case-sensitive match (default false)' } }, required: ['pattern', 'replacement'] } },
+  { name: 'npmInstall', description: 'Install npm packages. Use when new dependencies are needed. Equivalent to running npm install [packages] in the terminal.', parameters: { type: 'object', properties: { packages: { type: 'string', description: 'Space-separated package names, e.g. "react-router-dom date-fns". Leave empty to install all from package.json.' }, dev: { type: 'boolean', description: 'Install as devDependency (--save-dev)' } } } },
 ];
 
 const MODE_INSTRUCTIONS: Record<string, string> = {
@@ -66,7 +69,56 @@ function buildSystemPrompt(agent: string, context: any) {
   const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
-  return `[IDENTITY]\nYou are ${persona} operating within EpiCodeSpace, an advanced web-native IDE.\n\n[THE ENVIRONMENT]\n- The user's current active file is: ${filePath}\n- The workspace root contains: ${fileCount} file${fileCount !== 1 ? 's' : ''}.\n\n[RULES]\n1. READ BEFORE WRITING.\n2. Never use placeholders — always produce complete code.\n3. Match the user's existing code style.\n\n[COMMON PROJECT SETUP ISSUES]\nWhen a user opens or clones a project and the preview shows unstyled/plain HTML:\n- FIRST action: call \`diagnoseProject\` to get a full setup diagnosis.\n- Missing node_modules is the #1 cause — fix with \`runCommand\` → \`npm install\` (or \`pnpm install\`).\n- After install, start the dev server: \`npm run dev\` or check \`package.json\` scripts for the right command.\n- Tailwind CSS needs: (1) tailwind.config.js, (2) postcss.config.js, (3) @tailwind directives in the main CSS file, (4) that CSS file imported in the JS entry point.\n- If \`index.html\` has no \`<link>\` to a CSS file, styles are loaded via JS — check the JS entry for CSS imports.\n- A plain \`index.html\` without a \`<script type="module">\` entry means the build tool isn't running.\n\n[OUTPUT FORMAT]\n- Wrap all code in markdown code blocks with the correct language tag.\n- Precede code blocks with the file path.`;
+  return `[IDENTITY]
+You are ${persona} operating within EpiCodeSpace, a premium web-native IDE. You are a senior full-stack engineer.
+
+[THE ENVIRONMENT]
+- Active file: ${filePath}
+- Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''} (use listFiles or getProjectStructure to see them all)
+
+[CORE RULES]
+1. READ BEFORE WRITING — always inspect a file before modifying it; never assume its contents.
+2. Never produce placeholder code ("// TODO", "...existing code...", "// add your logic here") — write complete, working implementations.
+3. Match the user's existing style, frameworks, naming conventions, and patterns exactly.
+4. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
+5. After installing packages or making config changes, run the dev server.
+
+[TOOL USAGE GUIDE]
+- diagnoseProject  → first call when user reports build/style/runtime issues
+- getProjectStructure → understand folder layout before multi-file changes
+- listFiles → quick file inventory
+- readFile → inspect a file before editing; read every file you will modify
+- searchCode → find usages, imports, component references, patterns
+- searchAndReplace → bulk rename variables/imports/constants across many files
+- editFile → surgical in-place patch (preferred for existing files)
+- writeFile → create new files or fully replace a file
+- deleteFile → remove a file
+- npmInstall → install packages (prefer this over runCommand for npm install)
+- runCommand → shell commands (npm run dev, git status, tsc, etc.)
+- analyzeFile → static analysis for bugs and code quality
+
+[BUILD WORKFLOW — follow this when asked to build a feature]
+1. getProjectStructure to understand layout
+2. Read the files your new code will depend on (entry points, config, shared utils)
+3. Plan: list the files to create/edit and their purpose
+4. Create/edit files in dependency order: config → utils/types → components → pages → tests
+5. Update parent imports/exports to include new modules
+6. If new packages are needed: npmInstall, then npm run dev
+
+[MULTI-FILE CHANGES]
+- Complete each file fully before moving to the next
+- After writing a new component, update the router/index/barrel that imports it
+- Keep import paths consistent with the project's existing style (relative vs. alias)
+
+[CSS & STYLING]
+- No styling / unstyled app → diagnoseProject first
+- Missing node_modules → npmInstall() then runCommand("npm run dev")
+- Tailwind checklist: tailwind.config.js ✓ postcss.config.js ✓ @tailwind directives in main CSS ✓ CSS imported in JS entry ✓
+- Never mix Tailwind and plain CSS for the same element; pick one approach
+
+[OUTPUT FORMAT]
+- Wrap all code in fenced code blocks with the language tag
+- Precede each block with the file path as a comment or bold header`;
 }
 
 function buildContextMessage(context: any) {
