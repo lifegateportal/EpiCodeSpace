@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   X, Plus, Trash2, CheckCircle2, AlertCircle,
-  Loader2, Eye, EyeOff, RefreshCw, CloudUpload, CloudDownload, Cloud,
+  Loader2, Eye, EyeOff, RefreshCw, CloudUpload, CloudDownload, Cloud, HardDrive,
 } from 'lucide-react';
 import {
   loadConnections, saveConnections, makeConnection, PLATFORM_META,
@@ -9,6 +9,9 @@ import {
 import {
   verifyGistToken, pushToGist, pullFromGist, GIST_TOKEN_KEY, GIST_ID_KEY,
 } from '../lib/gistSync.js';
+import {
+  checkR2Status, listR2Saves, saveToR2, loadFromR2, deleteR2Save,
+} from '../lib/r2Sync.js';
 
 const AUTH_TYPES = [
   { id: 'none',   label: 'None'         },
@@ -306,6 +309,188 @@ function ConnectionCard({ conn, onDisconnect, onReplace }) {
   );
 }
 
+// ─── R2 Sync Panel ────────────────────────────────────────────────────────────
+function R2SyncPanel({ fileSystem, projectName, onPullSuccess }) {
+  const [open,      setOpen]      = useState(false);
+  const [r2Status,  setR2Status]  = useState(null); // null | 'checking' | { ok, bucket } | { ok: false, error }
+  const [saves,     setSaves]     = useState([]);
+  const [loadingSaves, setLoadingSaves] = useState(false);
+  const [status,    setStatus]    = useState(null); // null | 'saving' | 'loading' | { ok, msg }
+  const [deleting,  setDeleting]  = useState(null); // key being deleted
+
+  const isOp = status === 'saving' || status === 'loading' || !!deleting;
+
+  // Auto-check status when panel opens
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setR2Status('checking');
+      const r = await checkR2Status();
+      if (cancelled) return;
+      setR2Status(r);
+      if (r.ok) fetchSaves();
+    })();
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchSaves = useCallback(async () => {
+    setLoadingSaves(true);
+    const r = await listR2Saves();
+    setLoadingSaves(false);
+    if (r.ok) setSaves(r.saves || []);
+  }, []);
+
+  const handleSave = useCallback(async (snapshot = false) => {
+    setStatus('saving');
+    const r = await saveToR2(fileSystem || {}, projectName || '', { snapshot });
+    if (r.ok) {
+      setStatus({ ok: true, msg: `Saved → ${r.key}` });
+      fetchSaves();
+    } else {
+      setStatus({ ok: false, msg: r.error });
+    }
+  }, [fileSystem, projectName, fetchSaves]);
+
+  const handleLoad = useCallback(async (key) => {
+    setStatus('loading');
+    const r = await loadFromR2(key);
+    if (r.ok) {
+      setStatus({ ok: true, msg: `Restored ${Object.keys(r.files || {}).length} files` });
+      onPullSuccess?.(r);
+    } else {
+      setStatus({ ok: false, msg: r.error });
+    }
+  }, [onPullSuccess]);
+
+  const handleDelete = useCallback(async (key) => {
+    setDeleting(key);
+    await deleteR2Save(key);
+    setDeleting(null);
+    fetchSaves();
+  }, [fetchSaves]);
+
+  const r2Ready = r2Status && typeof r2Status === 'object' && r2Status.ok;
+
+  return (
+    <div className="border border-fuchsia-500/20 rounded-xl overflow-hidden mb-2">
+      {/* Header */}
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-[#0d0520] hover:bg-[#130a28] transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <HardDrive size={13} className="text-orange-400" />
+          <span className="text-xs font-medium text-white">R2 Storage</span>
+          {r2Ready && <span className="text-[9px] bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full">ON</span>}
+          {r2Status && typeof r2Status === 'object' && !r2Status.ok && <span className="text-[9px] bg-red-600/30 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded-full">NOT SET UP</span>}
+        </div>
+        <span className="text-[10px] text-purple-500">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="bg-[#0a0418] px-4 py-3 space-y-3">
+
+          {/* Status check feedback */}
+          {r2Status === 'checking' && (
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400">
+              <Loader2 size={11} className="animate-spin" /> Checking R2 connection…
+            </div>
+          )}
+          {r2Status && typeof r2Status === 'object' && !r2Status.ok && (
+            <div className="space-y-2">
+              <div className="flex items-start gap-1.5 text-[11px] text-red-400">
+                <AlertCircle size={11} className="mt-0.5 shrink-0" />
+                <span>{r2Status.error}</span>
+              </div>
+              <p className="text-[10px] text-purple-400/60 leading-relaxed">
+                Add these to your Replit Secrets tab:<br />
+                <code className="bg-black/30 px-1 rounded">R2_ACCOUNT_ID</code>{' '}
+                <code className="bg-black/30 px-1 rounded">R2_ACCESS_KEY_ID</code>{' '}
+                <code className="bg-black/30 px-1 rounded">R2_SECRET_ACCESS_KEY</code>{' '}
+                <code className="bg-black/30 px-1 rounded">R2_BUCKET_NAME</code>
+              </p>
+            </div>
+          )}
+          {r2Ready && (
+            <p className="text-[10px] text-purple-400/70 leading-relaxed">
+              Bucket: <code className="bg-black/30 px-1 rounded text-orange-300">{r2Status.bucket}</code>.
+              Save your workspace to Cloudflare R2 and restore it on any device.
+            </p>
+          )}
+
+          {/* Operation status */}
+          {status && typeof status === 'object' && (
+            <div className={`flex items-center gap-1.5 text-[11px] ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+              {status.ok ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+              <span className="truncate">{status.msg}</span>
+            </div>
+          )}
+          {(status === 'saving' || status === 'loading') && (
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400">
+              <Loader2 size={11} className="animate-spin" />
+              {status === 'saving' ? 'Saving to R2…' : 'Loading from R2…'}
+            </div>
+          )}
+
+          {/* Actions */}
+          {r2Ready && (
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={() => handleSave(false)} disabled={isOp}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-orange-400/50 text-orange-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+                <CloudUpload size={11} /> Save Now
+              </button>
+              <button onClick={() => handleSave(true)} disabled={isOp}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-orange-400/50 text-orange-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+                <CloudUpload size={11} /> Snapshot
+              </button>
+              <button onClick={fetchSaves} disabled={loadingSaves || isOp}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 hover:border-fuchsia-400/50 text-fuchsia-300 hover:text-white rounded-lg transition-colors disabled:opacity-40">
+                <RefreshCw size={11} className={loadingSaves ? 'animate-spin' : ''} /> Refresh
+              </button>
+            </div>
+          )}
+
+          {/* Saves list */}
+          {r2Ready && (
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {loadingSaves && saves.length === 0 && (
+                <p className="text-[10px] text-purple-500/50 text-center py-2">Loading saves…</p>
+              )}
+              {!loadingSaves && saves.length === 0 && (
+                <p className="text-[10px] text-purple-500/50 text-center py-2">No saves yet. Press "Save Now" to create one.</p>
+              )}
+              {saves.map(s => (
+                <div key={s.key} className="flex items-center gap-2 bg-[#15092a] border border-fuchsia-500/10 rounded-lg px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] text-white font-mono truncate">{s.key}</p>
+                    <p className="text-[9px] text-purple-500/60">
+                      {s.lastModified ? new Date(s.lastModified).toLocaleString() : ''}{' '}
+                      {s.size ? `· ${(s.size / 1024).toFixed(1)} KB` : ''}
+                    </p>
+                  </div>
+                  <button onClick={() => handleLoad(s.key)} disabled={isOp}
+                    className="text-[10px] text-orange-400 hover:text-white disabled:opacity-40 transition-colors px-1.5 py-1">
+                    <CloudDownload size={11} />
+                  </button>
+                  <button onClick={() => handleDelete(s.key)} disabled={!!deleting || isOp}
+                    className="text-[10px] text-red-500/60 hover:text-red-400 disabled:opacity-40 transition-colors px-1.5 py-1">
+                    {deleting === s.key ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[10px] text-purple-500/40">
+            "Save Now" overwrites the latest save. "Snapshot" creates a timestamped backup.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Gist Sync Panel ──────────────────────────────────────────────────────────
 function GistSyncPanel({ fileSystem, projectName, onPullSuccess }) {
   const [token,    setToken]    = useState(() => { try { return localStorage.getItem(GIST_TOKEN_KEY) || ''; } catch { return ''; } });
@@ -475,7 +660,9 @@ export default function ConnectionsManager({ connections, onChange, onClose, onG
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
-          {/* Gist Sync section always visible at top */}
+          {/* R2 Storage sync */}
+          <R2SyncPanel fileSystem={fileSystem} projectName={projectName} onPullSuccess={onGistPull} />
+          {/* Gist Sync */}
           <GistSyncPanel fileSystem={fileSystem} projectName={projectName} onPullSuccess={onGistPull} />
 
           {connections.length === 0 && !showAdd && (
