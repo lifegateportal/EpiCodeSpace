@@ -2007,10 +2007,21 @@ ${finalCode}
   // ── Patch utility: exact-match swap with ambiguity detection ───────────
   const applyPatch = (content, oldText, newText) => {
     if (!oldText) return { ok: false, error: 'oldText must not be empty' };
-    const occurrences = content.split(oldText).length - 1;
-    if (occurrences === 0) return { ok: false, error: 'oldText not found in file — the block may have already changed or the text is hallucinated. Read the file first, then retry with an exact verbatim match.' };
-    if (occurrences > 1) return { ok: false, error: `oldText is ambiguous — found ${occurrences} occurrences. Expand the snippet to make it unique.` };
-    return { ok: true, content: content.replace(oldText, newText ?? '') };
+    // 1. Exact match
+    const exact = content.split(oldText).length - 1;
+    if (exact === 1) return { ok: true, content: content.replace(oldText, newText ?? '') };
+    if (exact > 1) return { ok: false, error: `oldText is ambiguous — found ${exact} occurrences. Add more surrounding lines to make it unique.` };
+    // 2. Fuzzy: normalize \r\n and trim trailing whitespace per line
+    const norm = (s) => s.replace(/\r\n/g, '\n').split('\n').map(l => l.trimEnd()).join('\n');
+    const nc = norm(content);
+    const no = norm(oldText);
+    const fuzzy = nc.split(no).length - 1;
+    if (fuzzy === 1) return { ok: true, content: nc.replace(no, norm(newText ?? '')) };
+    if (fuzzy > 1) return { ok: false, error: `oldText is ambiguous (${fuzzy} fuzzy matches). Add more context lines.` };
+    return {
+      ok: false,
+      error: `oldText not found. Whitespace/quote differences are likely.\n→ USE patchLines INSTEAD: call patchLines(path, startLine, endLine, newContent) — it always works.\n→ OR use writeFile with the complete fixed file content.\nDo NOT call readFile again — you already have the content.`,
+    };
   };
 
   // ── Execute tool calls against virtual filesystem ────────────────────────
@@ -2041,6 +2052,20 @@ ${finalCode}
         const patch = applyPatch(f.content ?? '', args.oldText ?? '', args.newText ?? '');
         if (!patch.ok) return patch;
         return { ok: true, action: 'edit', path: args.path, content: patch.content, lines: patch.content.split('\n').length };
+      }
+      case 'patchLines': {
+        const { path: pPath, startLine, endLine, newContent: pNewContent } = args;
+        if (!pPath) return { ok: false, error: 'path is required' };
+        const pf = currentFS[pPath];
+        if (!pf) return { ok: false, error: `File not found: ${pPath}` };
+        const pLines = (pf.content ?? '').split('\n');
+        const total = pLines.length;
+        const s = Math.max(1, Math.min(parseInt(startLine) || 1, total));
+        const e = Math.max(s, Math.min(parseInt(endLine) || s, total));
+        const insertLines = (pNewContent ?? '').split('\n');
+        const result = [...pLines.slice(0, s - 1), ...insertLines, ...pLines.slice(e)];
+        const patched = result.join('\n');
+        return { ok: true, action: 'edit', path: pPath, content: patched, lines: result.length, note: `Replaced lines ${s}–${e} (${e - s + 1} original → ${insertLines.length} new)` };
       }
       case 'deleteFile': {
         if (!currentFS[args.path]) return { ok: false, error: `File not found: ${args.path}` };
@@ -2400,14 +2425,13 @@ ${finalCode}
         newFS[tc.arguments.path] = { name: tc.arguments.path.split('/').pop(), language: r.language, content: r.content ?? '' };
         changed = true;
         changeItems.push({ path: tc.arguments.path, action: before ? 'edit' : 'create', before, after });
-      } else if (tc.name === 'editFile' && typeof r.content === 'string') {
-        const before = currentFS[tc.arguments.path]
-          ? { ...currentFS[tc.arguments.path] }
-          : null;
+      } else if ((tc.name === 'editFile' || tc.name === 'patchLines') && typeof r.content === 'string') {
+        const fPath = tc.name === 'patchLines' ? r.path : tc.arguments.path;
+        const before = currentFS[fPath] ? { ...currentFS[fPath] } : null;
         const after = before ? { ...before, content: r.content } : null;
-        newFS[tc.arguments.path] = { ...newFS[tc.arguments.path], content: r.content };
+        newFS[fPath] = { ...newFS[fPath], content: r.content };
         changed = true;
-        if (before && after) changeItems.push({ path: tc.arguments.path, action: 'edit', before, after });
+        if (before && after) changeItems.push({ path: fPath, action: 'edit', before, after });
       } else if (tc.name === 'deleteFile') {
         const before = currentFS[tc.arguments.path]
           ? { ...currentFS[tc.arguments.path] }

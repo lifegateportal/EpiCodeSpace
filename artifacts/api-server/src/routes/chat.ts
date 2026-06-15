@@ -47,7 +47,8 @@ const AGENT_PERSONAS: Record<string, string> = {
 const WORKSPACE_TOOLS = [
   { name: 'readFile', description: 'Read the full contents of a file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
   { name: 'writeFile', description: 'Create or fully overwrite a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
-  { name: 'editFile', description: 'Surgically patch an existing file by replacing an exact block of text.', parameters: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' } }, required: ['path', 'oldText', 'newText'] } },
+  { name: 'editFile', description: 'Patch a file by replacing an exact block of text. Fuzzy-matches whitespace. If it fails, use patchLines instead.', parameters: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string', description: 'Exact text to find and replace (copy verbatim from readFile output)' }, newText: { type: 'string', description: 'Replacement text' } }, required: ['path', 'oldText', 'newText'] } },
+  { name: 'patchLines', description: 'Replace a range of lines in a file by line number. PREFERRED over editFile when you know which lines to change — always works, no text-matching needed. Use the line numbers from readFile output.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number', description: '1-indexed first line to replace (inclusive)' }, endLine: { type: 'number', description: '1-indexed last line to replace (inclusive)' }, newContent: { type: 'string', description: 'New content to insert in place of startLine–endLine' } }, required: ['path', 'startLine', 'endLine', 'newContent'] } },
   { name: 'deleteFile', description: 'Delete a file from the workspace.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
   { name: 'listFiles', description: 'List all files in the workspace.', parameters: { type: 'object', properties: {} } },
   { name: 'searchCode', description: 'Search for a text pattern across all workspace files.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } },
@@ -88,36 +89,53 @@ You are ${persona} operating within EpiCodeSpace, a premium web-native IDE. You 
 4. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
 5. After installing packages or making config changes, run the dev server.
 
-[DEBUGGING WORKFLOW — always follow this when fixing errors]
-1. getTerminalOutput → read actual runtime errors (this is your eyes into the runtime)
-2. explainError(errorText) → parse the error and get structured cause + fix
-3. readFile(path at error line) → see the broken code
-4. analyzeFile(path) → find all static issues
-5. autoFix(path) → apply automatic patches (var→const, ==→===, remove debugger)
-6. editFile(path) → manually fix remaining complex bugs
-7. If import/module errors: npmInstall, then runCommand("npm run dev")
+[CRITICAL — READ THIS FIRST]
+The active file content is already provided below with line numbers. DO NOT call readFile for the active file. Make changes immediately using patchLines, editFile, or writeFile.
 
-[TOOL SELECTION GUIDE]
-| Situation | Use |
+AFTER EVERY readFile, your next tool call MUST be a write operation (patchLines / editFile / writeFile / autoFix). Do NOT call readFile twice in a row. Do NOT describe what you will do — just do it.
+
+[EDITING TOOLS — in order of preference]
+1. patchLines(path, startLine, endLine, newContent) — BEST: replace by line number, always works, no text-matching
+2. editFile(path, oldText, newText) — good for small patches; uses fuzzy whitespace matching
+3. writeFile(path, content) — use when replacing most of a file or creating new files
+4. autoFix(path) — use first for any file with quality issues (var/==/debugger)
+
+WHEN editFile FAILS with "oldText not found":
+→ Immediately call patchLines with the correct line numbers — DO NOT call readFile again
+
+[DEBUGGING WORKFLOW]
+1. Check context below for terminal output (auto-injected when debugging)
+2. explainError(errorText) if there's a stack trace
+3. analyzeFile(path) to find static issues
+4. autoFix(path) for automatic patches
+5. patchLines / editFile for remaining bugs
+6. If module missing: npmInstall → runCommand("npm run dev")
+
+[EXECUTION RULES — no exceptions]
+- In AGENT mode: every response MUST include at least one tool call that writes/fixes something. Never produce text-only "here's what I would do" responses.
+- Do not say "I'll now fix..." — just call the tool.
+- Do not re-read files you already have. The active file is in context with line numbers.
+- When you find a bug: fix it immediately with patchLines or editFile. Do not list it and wait.
+- Complete all changes in one pass. Do not stop after the first file.
+
+[TOOL SELECTION]
+| Need | Tool |
 |---|---|
-| User reports error / "not working" | getTerminalOutput → explainError → readFile → fix |
-| Need to understand the project | getProjectStructure → readFile(entry points) |
-| Build a new feature | getProjectStructure → read deps → createComponent or writeFile → update imports |
-| Bulk rename / update imports | searchAndReplace |
-| Fix style issues | diagnoseProject |
-| Install packages | npmInstall (preferred over runCommand for npm) |
-| Check git changes | getGitStatus → getTerminalOutput |
-| Any file edit | readFile first, then editFile (surgical) or writeFile (full replace) |
-| Quick analysis | analyzeFile → autoFix → then editFile for remaining issues |
+| Fix specific lines | patchLines |
+| Fix small block | editFile |
+| Rewrite whole file | writeFile |
+| Fix var/==/debugger | autoFix |
+| Bulk rename | searchAndReplace |
+| Read terminal errors | getTerminalOutput |
+| Install package | npmInstall |
+| New component | createComponent |
 
 [CORE RULES]
-1. READ BEFORE WRITING — always readFile before modifying; never assume file contents.
-2. Complete code only — never write placeholder comments ("// TODO", "...existing code", "add your logic here"). Every block must be fully implemented.
-3. Match the user's existing style, frameworks, naming conventions exactly.
-4. Prefer editFile (surgical patch) over writeFile for existing files.
-5. After file changes, update all import statements that reference the changed file.
-6. After installing packages or changing config, run the dev server.
-7. When the workspace context includes "Recent terminal output" — READ IT FIRST. It contains the actual error the user is seeing.
+1. Active file already in context — do NOT readFile it again. Edit immediately.
+2. Complete code only — no placeholders, no "TODO", no "...existing code...".
+3. Match existing code style, frameworks, naming.
+4. After editing a file, update all imports that reference it.
+5. After installing packages, run the dev server.
 
 [BUILD WORKFLOW]
 1. getProjectStructure (understand layout)
@@ -158,8 +176,13 @@ function buildContextMessage(context: any) {
   }
   if (context.activeFile) parts.push(`Currently editing: ${context.activeFile}`);
   if (context.activeContent) {
-    const t = context.activeContent.length > 8000 ? context.activeContent.slice(0, 8000) + '\n...(truncated)' : context.activeContent;
-    parts.push(`File contents:\n\`\`\`\n${t}\n\`\`\``);
+    const raw = context.activeContent;
+    const LIMIT = 8000;
+    const truncated = raw.length > LIMIT;
+    const slice = truncated ? raw.slice(0, LIMIT) : raw;
+    const numbered = slice.split('\n').map((l: string, i: number) => `${String(i + 1).padStart(4, ' ')} │ ${l}`).join('\n');
+    const suffix = truncated ? '\n...(file truncated — use readFile for the rest)' : '';
+    parts.push(`File contents (line numbers shown — use patchLines to edit by line range):\n\`\`\`\n${numbered}${suffix}\n\`\`\`\n⚠ This file is already in your context. Do NOT call readFile for it — use patchLines, editFile, or writeFile to make changes immediately.`);
   }
   if (context.files?.length) parts.push(`Workspace files: ${context.files.map((f: any) => `${f.path} (${f.language}, ${f.lines} lines)`).join(', ')}`);
   if (context.terminalOutput) {
