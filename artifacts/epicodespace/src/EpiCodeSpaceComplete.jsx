@@ -2080,6 +2080,113 @@ ${finalCode}
           note: `Command dispatched to terminal: \`${cmd}\`. Output will appear in the terminal panel. If you need to verify the result (e.g. build errors, test output, git status), ask the user to share the terminal output or issue a follow-up readFile.`,
         };
       }
+      case 'diagnoseProject': {
+        const files = Object.keys(currentFS);
+        const issues = [];
+        const info = [];
+
+        // ── package.json ──────────────────────────────────────────────────
+        const pkgFile = currentFS['package.json'];
+        if (!pkgFile) {
+          issues.push({ severity: 'error', category: 'setup', msg: 'No package.json found — this may not be a Node.js project root' });
+        } else {
+          let pkg = {};
+          try { pkg = JSON.parse(pkgFile.content || '{}'); } catch { /* malformed */ }
+          const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+          info.push(`package.json: ${pkg.name || 'unnamed'} v${pkg.version || '?'}`);
+          if (pkg.scripts?.dev)   info.push(`dev script: "${pkg.scripts.dev}"`);
+          if (pkg.scripts?.start) info.push(`start script: "${pkg.scripts.start}"`);
+
+          // CSS frameworks present
+          const cssFrameworks = ['tailwindcss', 'bootstrap', '@mui/material', 'antd', '@chakra-ui/react', 'styled-components', '@emotion/react', 'daisyui'];
+          const usedFrameworks = cssFrameworks.filter(f => allDeps[f]);
+          if (usedFrameworks.length) info.push(`CSS/UI frameworks in deps: ${usedFrameworks.join(', ')}`);
+
+          // Tailwind-specific checks
+          if (allDeps['tailwindcss']) {
+            const hasTwConfig  = files.some(f => /^tailwind\.config\.(js|ts|cjs|mjs)$/.test(f));
+            const hasPostCSSCfg = files.some(f => /^postcss\.config\.(js|ts|cjs|mjs)$/.test(f));
+            if (!hasTwConfig)   issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss in deps but no tailwind.config.js — create one (npx tailwindcss init -p)' });
+            if (!hasPostCSSCfg) issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss requires postcss.config.js — create one with the tailwindcss plugin' });
+            // Check for @tailwind directives in any CSS file
+            const hasTwDirective = files.some(f => f.endsWith('.css') && (currentFS[f]?.content || '').includes('@tailwind'));
+            if (!hasTwDirective) issues.push({ severity: 'error', category: 'css', msg: 'No CSS file contains @tailwind directives — add @tailwind base/components/utilities to your main CSS file' });
+          }
+        }
+
+        // ── node_modules ──────────────────────────────────────────────────
+        const hasNodeModules = files.some(f => f.startsWith('node_modules/'));
+        if (!hasNodeModules) {
+          issues.push({ severity: 'critical', category: 'setup', msg: 'node_modules not found — dependencies are not installed. Run `npm install` (or `pnpm install`) in the terminal.' });
+        } else {
+          info.push('node_modules present');
+        }
+
+        // ── index.html ────────────────────────────────────────────────────
+        const htmlFile = currentFS['index.html'];
+        if (htmlFile) {
+          const html = htmlFile.content || '';
+          const hasModuleScript = /<script[^>]+type=["']module["']/.test(html);
+          const hasCSSLink       = /<link[^>]+\.css/.test(html);
+          if (!hasModuleScript && !hasCSSLink) {
+            issues.push({ severity: 'warning', category: 'html', msg: 'index.html has no <script type="module"> or <link> CSS — styles may not load at all' });
+          } else if (!hasCSSLink && hasModuleScript) {
+            info.push('index.html uses JS module entry (CSS likely imported in JS)');
+          }
+        } else {
+          issues.push({ severity: 'warning', category: 'setup', msg: 'No index.html found — project entry point may be elsewhere' });
+        }
+
+        // ── CSS files ─────────────────────────────────────────────────────
+        const cssFiles = files.filter(f => f.endsWith('.css'));
+        if (cssFiles.length === 0) {
+          issues.push({ severity: 'warning', category: 'css', msg: 'No .css files found in workspace' });
+        } else {
+          info.push(`CSS files: ${cssFiles.join(', ')}`);
+          // Check that the main CSS file is imported in a JS/TS entry
+          const mainCssImported = cssFiles.some(cssPath => {
+            const base = cssPath.replace(/^.*\//, '');
+            return files.some(f => (f.endsWith('.js') || f.endsWith('.jsx') || f.endsWith('.ts') || f.endsWith('.tsx'))
+              && (currentFS[f]?.content || '').includes(base));
+          });
+          if (!mainCssImported && cssFiles.length > 0) {
+            issues.push({ severity: 'warning', category: 'css', msg: `CSS file(s) found but none appear to be imported in a JS/TS file — styles won't load unless imported` });
+          }
+        }
+
+        // ── Vite / build tool ─────────────────────────────────────────────
+        const hasViteConfig = files.some(f => /^vite\.config\.(js|ts|mjs|cjs)$/.test(f));
+        if (hasViteConfig) info.push('vite.config found');
+
+        // ── Summary ───────────────────────────────────────────────────────
+        const criticalCount = issues.filter(i => i.severity === 'critical').length;
+        const errorCount    = issues.filter(i => i.severity === 'error').length;
+        const warnCount     = issues.filter(i => i.severity === 'warning').length;
+
+        let recommendation = 'Project setup looks good';
+        if (criticalCount > 0) {
+          recommendation = 'CRITICAL: Run `npm install` in the terminal to install dependencies, then start the dev server with `npm run dev`.';
+        } else if (errorCount > 0) {
+          recommendation = 'Fix the CSS configuration errors above, then restart the dev server.';
+        } else if (warnCount > 0) {
+          recommendation = 'Review the warnings above — they may explain missing styles.';
+        }
+
+        return {
+          ok: true,
+          totalFiles: files.length,
+          issues,
+          info,
+          issueCount: issues.length,
+          criticalCount,
+          errorCount,
+          warnCount,
+          summary: issues.length === 0
+            ? 'No setup issues detected'
+            : `${criticalCount} critical, ${errorCount} error, ${warnCount} warning`,
+          recommendation,
+        };
+      }
       default:
         return { ok: false, error: `Unknown tool: ${name}` };
     }

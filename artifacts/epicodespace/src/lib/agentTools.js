@@ -158,6 +158,60 @@ export function createAgentTools(fileSystem, activeFile) {
         })),
       }),
     },
+    diagnoseProject: {
+      name: 'diagnoseProject',
+      description: 'Diagnose common project setup issues: missing node_modules, broken CSS/styling, missing Tailwind config, missing CSS imports',
+      execute: () => {
+        const files = Object.keys(fileSystem);
+        const issues = [];
+        const info = [];
+
+        const pkgFile = fileSystem['package.json'];
+        if (!pkgFile) {
+          issues.push({ severity: 'error', category: 'setup', msg: 'No package.json found' });
+        } else {
+          let pkg = {};
+          try { pkg = JSON.parse(pkgFile.content || '{}'); } catch { /* ignore */ }
+          const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+          info.push(`package.json: ${pkg.name || 'unnamed'}`);
+          if (pkg.scripts?.dev)   info.push(`dev script: "${pkg.scripts.dev}"`);
+          if (pkg.scripts?.start) info.push(`start script: "${pkg.scripts.start}"`);
+
+          const cssFrameworks = ['tailwindcss', 'bootstrap', '@mui/material', 'antd', '@chakra-ui/react', 'styled-components', '@emotion/react', 'daisyui'];
+          const usedFrameworks = cssFrameworks.filter(f => allDeps[f]);
+          if (usedFrameworks.length) info.push(`CSS/UI frameworks: ${usedFrameworks.join(', ')}`);
+
+          if (allDeps['tailwindcss']) {
+            const hasTwConfig   = files.some(f => /^tailwind\.config\.(js|ts|cjs|mjs)$/.test(f));
+            const hasPostCSSCfg = files.some(f => /^postcss\.config\.(js|ts|cjs|mjs)$/.test(f));
+            if (!hasTwConfig)    issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss in deps but no tailwind.config.js' });
+            if (!hasPostCSSCfg)  issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss requires postcss.config.js' });
+            const hasTwDirective = files.some(f => f.endsWith('.css') && (fileSystem[f]?.content || '').includes('@tailwind'));
+            if (!hasTwDirective) issues.push({ severity: 'error', category: 'css', msg: 'No CSS file has @tailwind directives' });
+          }
+        }
+
+        const hasNodeModules = files.some(f => f.startsWith('node_modules/'));
+        if (!hasNodeModules) {
+          issues.push({ severity: 'critical', category: 'setup', msg: 'node_modules not found — run `npm install` in the terminal' });
+        }
+
+        const cssFiles = files.filter(f => f.endsWith('.css'));
+        if (cssFiles.length === 0) {
+          issues.push({ severity: 'warning', category: 'css', msg: 'No .css files found in workspace' });
+        }
+
+        const criticalCount = issues.filter(i => i.severity === 'critical').length;
+        const errorCount    = issues.filter(i => i.severity === 'error').length;
+        const warnCount     = issues.filter(i => i.severity === 'warning').length;
+
+        let recommendation = 'Project setup looks good';
+        if (criticalCount > 0) recommendation = 'Run `npm install` in the terminal, then `npm run dev` to start the dev server.';
+        else if (errorCount > 0) recommendation = 'Fix the CSS configuration errors above, then restart the dev server.';
+
+        return { ok: true, totalFiles: files.length, issues, info, issueCount: issues.length, criticalCount, errorCount, warnCount, summary: issues.length === 0 ? 'No issues' : `${criticalCount} critical, ${errorCount} error, ${warnCount} warning`, recommendation };
+      },
+    },
   };
 }
 
@@ -188,10 +242,37 @@ export function buildAgentResponse(agentId, query, tools, fileSystem, activeFile
     search: /find|search|where|locate|grep|which file/i.test(q),
     docs: /document|docstring|jsdoc|comment|readme/i.test(q),
     architecture: /architect|design|pattern|structure|organize|plan/i.test(q),
+    noStyling: /no\s*styl|unstyled|missing\s*(css|style)|style.*not.*load|no\s*css|looks?\s*plain|no\s*design|plain\s*html|not\s*styled|styles?\s*(are\s*)?(missing|broken|gone|not\s*working)|install|node.?module/i.test(q),
   };
 
   const toolCalls = [];
   const steps = [];
+
+  if (intents.noStyling) {
+    const diagnosis = tools.diagnoseProject.execute();
+    toolCalls.push({ tool: 'diagnoseProject', args: {}, result: diagnosis });
+    steps.push(`🔬 **diagnoseProject**() → ${diagnosis.summary}`);
+
+    const severityIcon = { critical: '🔴', error: '🟠', warning: '🟡' };
+    const issueList = diagnosis.issues.length > 0
+      ? diagnosis.issues.map(i => `  ${severityIcon[i.severity] || 'ℹ️'} **[${i.severity.toUpperCase()}]** ${i.msg}`).join('\n')
+      : '  ✅ No setup issues found';
+    const infoList = diagnosis.info.length > 0
+      ? '\n\n**Project info:**\n' + diagnosis.info.map(i => `  • ${i}`).join('\n')
+      : '';
+
+    const actionBlock = diagnosis.criticalCount > 0
+      ? '\n\n**Fix:**\n1. Open the **Terminal** panel\n2. Run: `npm install`\n3. Then run: `npm run dev` (or check `package.json` for the correct start script)\n4. Reload the preview'
+      : diagnosis.errorCount > 0
+      ? '\n\n**Fix the errors above**, then restart your dev server.'
+      : '\n\nProject setup looks correct. Try reloading the preview or restarting the dev server.';
+
+    return {
+      steps,
+      toolCalls,
+      response: `**Project Setup Diagnosis** (${diagnosis.totalFiles} files scanned)\n**Status:** ${diagnosis.summary}\n\n**Issues:**\n${issueList}${infoList}${actionBlock}`,
+    };
+  }
 
   if (intents.search) {
     const words = q

@@ -53,6 +53,7 @@ const WORKSPACE_TOOLS = [
   { name: 'searchCode', description: 'Search for a text pattern across all workspace files.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } },
   { name: 'analyzeFile', description: 'Run static analysis on a file.', parameters: { type: 'object', properties: { path: { type: 'string' } } } },
   { name: 'runCommand', description: 'Run a shell command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'diagnoseProject', description: 'Diagnose common project setup issues: missing node_modules, broken CSS/styling setup, missing config files, incorrect Tailwind/PostCSS configuration, missing CSS imports in HTML. Use this whenever the user reports unstyled UI, missing styles, or a project that looks like plain HTML.', parameters: { type: 'object', properties: {} } },
 ];
 
 const MODE_INSTRUCTIONS: Record<string, string> = {
@@ -65,7 +66,7 @@ function buildSystemPrompt(agent: string, context: any) {
   const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
-  return `[IDENTITY]\nYou are ${persona} operating within EpiCodeSpace, an advanced web-native IDE.\n\n[THE ENVIRONMENT]\n- The user's current active file is: ${filePath}\n- The workspace root contains: ${fileCount} file${fileCount !== 1 ? 's' : ''}.\n\n[RULES]\n1. READ BEFORE WRITING.\n2. Never use placeholders — always produce complete code.\n3. Match the user's existing code style.\n\n[OUTPUT FORMAT]\n- Wrap all code in markdown code blocks with the correct language tag.\n- Precede code blocks with the file path.`;
+  return `[IDENTITY]\nYou are ${persona} operating within EpiCodeSpace, an advanced web-native IDE.\n\n[THE ENVIRONMENT]\n- The user's current active file is: ${filePath}\n- The workspace root contains: ${fileCount} file${fileCount !== 1 ? 's' : ''}.\n\n[RULES]\n1. READ BEFORE WRITING.\n2. Never use placeholders — always produce complete code.\n3. Match the user's existing code style.\n\n[COMMON PROJECT SETUP ISSUES]\nWhen a user opens or clones a project and the preview shows unstyled/plain HTML:\n- FIRST action: call \`diagnoseProject\` to get a full setup diagnosis.\n- Missing node_modules is the #1 cause — fix with \`runCommand\` → \`npm install\` (or \`pnpm install\`).\n- After install, start the dev server: \`npm run dev\` or check \`package.json\` scripts for the right command.\n- Tailwind CSS needs: (1) tailwind.config.js, (2) postcss.config.js, (3) @tailwind directives in the main CSS file, (4) that CSS file imported in the JS entry point.\n- If \`index.html\` has no \`<link>\` to a CSS file, styles are loaded via JS — check the JS entry for CSS imports.\n- A plain \`index.html\` without a \`<script type="module">\` entry means the build tool isn't running.\n\n[OUTPUT FORMAT]\n- Wrap all code in markdown code blocks with the correct language tag.\n- Precede code blocks with the file path.`;
 }
 
 function buildContextMessage(context: any) {
