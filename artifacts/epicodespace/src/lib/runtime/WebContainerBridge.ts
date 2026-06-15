@@ -140,16 +140,21 @@ class Bridge {
         return rawContainer;
       } catch (err) {
         // If WebContainer.boot() succeeded but something later (e.g. mount)
-        // failed, the SDK still holds a live instance. Tear it down so the
-        // next boot() call is not rejected with "Unable to create more instances".
+        // failed, the SDK still holds a live instance. Tear it down — and
+        // crucially, AWAIT it via teardownPromise so any subsequent boot()
+        // call blocks until the SDK has fully released its one-instance slot.
         if (rawContainer) {
-          try { rawContainer.teardown(); } catch { /* ignore */ }
+          this.container = null;
+          const cleanupDone = (async () => {
+            try { await rawContainer!.teardown(); } catch { /* ignore */ }
+            this.setState('idle');
+          })();
+          this.teardownPromise = cleanupDone;
+          try { await cleanupDone; } finally { this.teardownPromise = null; }
+        } else {
+          this.container = null;
+          this.setState('idle');
         }
-        // Reset to idle (not 'dead') so the Boot button re-enables and the
-        // user can retry. 'dead' used to strand the UI after a transient
-        // network / SAB failure with no way to recover besides reload.
-        this.container = null;
-        this.setState('idle');
         const msg = (err instanceof Error) ? err.message : String(err);
         const stack = (err instanceof Error) ? err.stack : undefined;
         logger.error('runtime', `boot failed: ${msg}`, { message: msg, stack, raw: String(err) });
