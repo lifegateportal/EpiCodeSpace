@@ -355,6 +355,7 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
   }, []);
 
   const isolated = typeof window !== 'undefined' && window.crossOriginIsolated;
+  const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
   return (
     <div className="flex flex-col h-full bg-[#0b1020] text-slate-200">
@@ -363,11 +364,6 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
           Terminal · {bootStateLabel(bootState)}
         </span>
         <span className="flex-1" />
-        {!isolated && (
-          <span className="text-[10px] text-amber-400" title="COOP/COEP headers missing">
-            not cross-origin-isolated
-          </span>
-        )}
         <button
           onClick={handleCopy}
           disabled={!hasSelection}
@@ -389,6 +385,7 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
             onClick={handleBoot}
             disabled={!isolated || bootState === 'booting'}
             className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed"
+            title={!isolated ? 'Open the app in a new browser tab to enable the terminal' : 'Boot the WebContainer'}
           >
             {bootState === 'booting' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
             Boot container
@@ -421,6 +418,31 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
           </>
         )}
       </div>
+
+      {/* Not isolated banner */}
+      {!isolated && (
+        <div className="px-4 py-3 bg-amber-950/50 border-b border-amber-800/50 text-xs text-amber-200 space-y-2">
+          <p className="font-semibold text-amber-300">⚠ Terminal requires a new browser tab</p>
+          <p className="text-amber-200/80 leading-relaxed">
+            The in-browser terminal (WebContainers) needs cross-origin isolation, which only works when the app is open as a <strong>top-level browser tab</strong> — not inside the Replit preview iframe.
+          </p>
+          <div className="flex items-center gap-2 pt-0.5">
+            <a
+              href={currentUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded font-medium transition-colors"
+            >
+              Open in new tab →
+            </a>
+            <span className="text-amber-400/60">then click the RUNTIME tab and Boot container</span>
+          </div>
+          <p className="text-amber-400/50 text-[10px]">
+            Also ensure your Replit app URL is registered at webcontainers.io under your API key's allowed origins.
+          </p>
+        </div>
+      )}
+
       {bootError && (
         <div className="px-3 py-2 text-xs text-rose-300 bg-rose-950/40 border-b border-rose-900">
           {bootError}

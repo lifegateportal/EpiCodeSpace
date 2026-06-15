@@ -6,6 +6,15 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Cross-origin isolation headers — required for WebContainers (SharedArrayBuffer).
+// Must be on every response so the browser allows `window.crossOriginIsolated = true`.
+app.use((_req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  next();
+});
+
 app.use(
   pinoHttp({
     logger,
