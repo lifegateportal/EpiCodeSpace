@@ -462,7 +462,9 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
   }, [files]);
 
   const isolated = typeof window !== 'undefined' && window.crossOriginIsolated;
-  const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+  // Prefer the baked-in production URL so the link bypasses the Replit dev
+  // proxy, which strips COOP/COEP and keeps crossOriginIsolated false.
+  const appUrl = import.meta.env.VITE_APP_URL || (typeof window !== 'undefined' ? window.location.href : '');
 
   return (
     <div className="flex flex-col h-full bg-[#0b1020] text-slate-200">
@@ -551,12 +553,12 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
           </p>
           <div className="flex items-center gap-2 pt-0.5">
             <a
-              href={currentUrl}
+              href={appUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded font-medium transition-colors"
             >
-              Open in new tab →
+              Open published app →
             </a>
             <span className="text-amber-400/60">then click the RUNTIME tab and Boot container</span>
           </div>

@@ -34,3 +34,8 @@ externalPort = 3001
 [[ports]]
 localPort = 21256
 externalPort = 3000
+
+[userenv]
+
+[userenv.production]
+VITE_APP_URL = "https://epi-code-space.replit.app"
