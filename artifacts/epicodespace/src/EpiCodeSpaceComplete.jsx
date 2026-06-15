@@ -2714,13 +2714,13 @@ ${finalCode}
   }, [activeFile]);
 
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
-  const handleAgentSubmit = useCallback((e) => {
+  const handleAgentSubmit = useCallback((e, overrideMessage) => {
     e.preventDefault();
-    if ((!chatInput.trim() && !chatImage) || isTyping) return;
+    const userMessage = (overrideMessage ?? chatInput).trim();
+    if ((!userMessage && !chatImage) || isTyping) return;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
-    const userMessage = chatInput.trim();
     // Expand slash commands for API (display keeps original)
     const expandedMessage = expandSlashCommand(userMessage, activeFile);
     const apiUserContent = toModelUserContent(expandedMessage, chatImage, activeAgent);
@@ -2728,7 +2728,7 @@ ${finalCode}
     const userMsg = { id: makeMessageId('user'), role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
     setMessages(prev => [...prev, userMsg]);
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
-    setChatInput('');
+    if (!overrideMessage) setChatInput('');
     setChatImage(null);
     setIsTyping(true);
 
@@ -2996,8 +2996,8 @@ ${finalCode}
           return;
         }
 
-        if (!isDeepSeekAgent) {
-          // Max rounds reached (non-DeepSeek agents only)
+        // Max rounds reached — always show a Continue / Done prompt
+        {
           const msgId = makeMessageId('assistant');
           const summary = summarizeFileChanges(allFileChanges);
           if (summary.files.length > 0) {
@@ -3006,13 +3006,14 @@ ${finalCode}
           const finalMsg = {
             id: msgId,
             role: 'assistant',
-            content: `Completed ${allToolCalls.length} operations (max rounds reached).`,
+            content: `I've completed ${allToolCalls.length} operation${allToolCalls.length !== 1 ? 's' : ''} and reached the round limit. There may be more work remaining.`,
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
             toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
             changedFiles: summary.files,
             changedPlus: summary.totalPlus,
             changedMinus: summary.totalMinus,
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
+            canContinue: true,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
@@ -4662,6 +4663,29 @@ ${finalCode}
                       </div>
                     );
                   })()}
+                  {/* Continue / Done prompt when agent hit round limit */}
+                  {msg.role === 'assistant' && msg.canContinue && (
+                    <div className="flex items-center gap-2 mt-2 p-2.5 rounded-lg bg-fuchsia-500/8 border border-fuchsia-500/25">
+                      <span className="text-[11px] text-purple-300/70 flex-1">Continue where I left off?</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, canContinue: false } : m));
+                          handleAgentSubmit({ preventDefault: () => {} }, 'Continue from where you left off. Pick up all remaining tasks and complete them fully.');
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-fuchsia-600/80 hover:bg-fuchsia-500 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors shadow"
+                      >
+                        ▶ Continue
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, canContinue: false } : m))}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 px-3 py-1.5 text-[11px] text-purple-300 transition-colors"
+                      >
+                        ✓ Done
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
               {isTyping && (
