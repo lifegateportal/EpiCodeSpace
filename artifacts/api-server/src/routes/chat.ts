@@ -57,6 +57,11 @@ const WORKSPACE_TOOLS = [
   { name: 'getProjectStructure', description: 'Get the full directory tree of the workspace as a nested structure. Use before making multi-file changes to understand the project layout, folder organization, and file types.', parameters: { type: 'object', properties: {} } },
   { name: 'searchAndReplace', description: 'Find and replace text across workspace files. Use for bulk renaming, updating imports, changing variable names or constants across many files. Changes are applied immediately.', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Text or regex pattern to find' }, replacement: { type: 'string', description: 'Replacement text' }, targetFile: { type: 'string', description: 'Optional: limit to one file path' }, regex: { type: 'boolean', description: 'Treat pattern as regex (default false)' }, caseSensitive: { type: 'boolean', description: 'Case-sensitive match (default false)' } }, required: ['pattern', 'replacement'] } },
   { name: 'npmInstall', description: 'Install npm packages. Use when new dependencies are needed. Equivalent to running npm install [packages] in the terminal.', parameters: { type: 'object', properties: { packages: { type: 'string', description: 'Space-separated package names, e.g. "react-router-dom date-fns". Leave empty to install all from package.json.' }, dev: { type: 'boolean', description: 'Install as devDependency (--save-dev)' } } } },
+  { name: 'getTerminalOutput', description: 'Read the last N lines of terminal output — including build errors, test failures, console logs, and runtime output. ALWAYS call this first when the user reports an error, asks to fix something, or when you need to see actual runtime behavior.', parameters: { type: 'object', properties: { lines: { type: 'number', description: 'Number of recent lines to fetch (default 60, max 200)' }, errorsOnly: { type: 'boolean', description: 'If true, filter for lines containing error/warn/fail keywords only' } } } },
+  { name: 'autoFix', description: 'Automatically fix all auto-patchable issues in a file: converts var→const, loose == to ===, removes debugger statements. Apply this FIRST on any file with quality/style issues, then handle the remaining complex bugs with editFile.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File to fix (defaults to active file)' } } } },
+  { name: 'explainError', description: 'Parse an error message or stack trace and return a structured explanation with root cause, fix steps, and code example. Use when the user pastes an error or when getTerminalOutput reveals an error you need to understand.', parameters: { type: 'object', properties: { error: { type: 'string', description: 'The full error message or stack trace text' } }, required: ['error'] } },
+  { name: 'getGitStatus', description: 'Run git status and git diff --stat to see what files have changed. Use before generating commit messages or when the user asks about pending changes.', parameters: { type: 'object', properties: {} } },
+  { name: 'createComponent', description: 'Scaffold a new React component, custom hook, or context provider with proper boilerplate. Faster than writeFile for standard patterns.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Component/hook name (PascalCase)' }, type: { type: 'string', enum: ['react', 'react-functional', 'react-hook', 'hook', 'context', 'util'], description: 'Component type' }, path: { type: 'string', description: 'Output file path (auto-generated if omitted)' }, props: { type: 'array', items: { type: 'string' }, description: 'List of prop names' } }, required: ['name'] } },
 ];
 
 const MODE_INSTRUCTIONS: Record<string, string> = {
@@ -83,42 +88,64 @@ You are ${persona} operating within EpiCodeSpace, a premium web-native IDE. You 
 4. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
 5. After installing packages or making config changes, run the dev server.
 
-[TOOL USAGE GUIDE]
-- diagnoseProject  → first call when user reports build/style/runtime issues
-- getProjectStructure → understand folder layout before multi-file changes
-- listFiles → quick file inventory
-- readFile → inspect a file before editing; read every file you will modify
-- searchCode → find usages, imports, component references, patterns
-- searchAndReplace → bulk rename variables/imports/constants across many files
-- editFile → surgical in-place patch (preferred for existing files)
-- writeFile → create new files or fully replace a file
-- deleteFile → remove a file
-- npmInstall → install packages (prefer this over runCommand for npm install)
-- runCommand → shell commands (npm run dev, git status, tsc, etc.)
-- analyzeFile → static analysis for bugs and code quality
+[DEBUGGING WORKFLOW — always follow this when fixing errors]
+1. getTerminalOutput → read actual runtime errors (this is your eyes into the runtime)
+2. explainError(errorText) → parse the error and get structured cause + fix
+3. readFile(path at error line) → see the broken code
+4. analyzeFile(path) → find all static issues
+5. autoFix(path) → apply automatic patches (var→const, ==→===, remove debugger)
+6. editFile(path) → manually fix remaining complex bugs
+7. If import/module errors: npmInstall, then runCommand("npm run dev")
 
-[BUILD WORKFLOW — follow this when asked to build a feature]
-1. getProjectStructure to understand layout
-2. Read the files your new code will depend on (entry points, config, shared utils)
-3. Plan: list the files to create/edit and their purpose
-4. Create/edit files in dependency order: config → utils/types → components → pages → tests
-5. Update parent imports/exports to include new modules
-6. If new packages are needed: npmInstall, then npm run dev
+[TOOL SELECTION GUIDE]
+| Situation | Use |
+|---|---|
+| User reports error / "not working" | getTerminalOutput → explainError → readFile → fix |
+| Need to understand the project | getProjectStructure → readFile(entry points) |
+| Build a new feature | getProjectStructure → read deps → createComponent or writeFile → update imports |
+| Bulk rename / update imports | searchAndReplace |
+| Fix style issues | diagnoseProject |
+| Install packages | npmInstall (preferred over runCommand for npm) |
+| Check git changes | getGitStatus → getTerminalOutput |
+| Any file edit | readFile first, then editFile (surgical) or writeFile (full replace) |
+| Quick analysis | analyzeFile → autoFix → then editFile for remaining issues |
 
-[MULTI-FILE CHANGES]
-- Complete each file fully before moving to the next
-- After writing a new component, update the router/index/barrel that imports it
-- Keep import paths consistent with the project's existing style (relative vs. alias)
+[CORE RULES]
+1. READ BEFORE WRITING — always readFile before modifying; never assume file contents.
+2. Complete code only — never write placeholder comments ("// TODO", "...existing code", "add your logic here"). Every block must be fully implemented.
+3. Match the user's existing style, frameworks, naming conventions exactly.
+4. Prefer editFile (surgical patch) over writeFile for existing files.
+5. After file changes, update all import statements that reference the changed file.
+6. After installing packages or changing config, run the dev server.
+7. When the workspace context includes "Recent terminal output" — READ IT FIRST. It contains the actual error the user is seeing.
+
+[BUILD WORKFLOW]
+1. getProjectStructure (understand layout)
+2. Read entry points + config files your code will depend on
+3. Plan: list files to create/edit and their purpose
+4. Create/edit in dependency order: config → types → utils → components → pages
+5. Update parent imports/routes/barrels
+6. npmInstall if new deps needed → runCommand("npm run dev")
 
 [CSS & STYLING]
-- No styling / unstyled app → diagnoseProject first
-- Missing node_modules → npmInstall() then runCommand("npm run dev")
-- Tailwind checklist: tailwind.config.js ✓ postcss.config.js ✓ @tailwind directives in main CSS ✓ CSS imported in JS entry ✓
-- Never mix Tailwind and plain CSS for the same element; pick one approach
+- Unstyled / plain HTML → diagnoseProject first
+- Missing node_modules → npmInstall() then runCommand("npm run dev")  
+- Tailwind checklist: tailwind.config.js ✓ postcss.config.js ✓ @tailwind directives ✓ CSS imported in JS entry ✓
+
+[SLASH COMMANDS — user may type these; expand them fully]
+- /fix → getTerminalOutput → analyzeFile → autoFix → editFile remaining issues
+- /debug → getTerminalOutput → explainError → readFile → fix
+- /explain → readFile → explain structure, purpose, patterns, suggestions
+- /test → readFile → write complete test file with the project's test framework
+- /doc → readFile → add JSDoc to all exports (no logic changes)
+- /refactor → analyzeFile → autoFix → editFile improvements → explain changes
+- /commit → getGitStatus → write conventional commit message
+- /review → analyzeFile + readFile → prioritized findings with severity
 
 [OUTPUT FORMAT]
-- Wrap all code in fenced code blocks with the language tag
-- Precede each block with the file path as a comment or bold header`;
+- Wrap code in fenced blocks with language tag
+- Precede each block with the file path (bold or as a comment)
+- After making changes, summarize: what was changed, why, and what to do next`;
 }
 
 function buildContextMessage(context: any) {
@@ -135,6 +162,10 @@ function buildContextMessage(context: any) {
     parts.push(`File contents:\n\`\`\`\n${t}\n\`\`\``);
   }
   if (context.files?.length) parts.push(`Workspace files: ${context.files.map((f: any) => `${f.path} (${f.language}, ${f.lines} lines)`).join(', ')}`);
+  if (context.terminalOutput) {
+    const t = context.terminalOutput.length > 3000 ? '...(truncated)\n' + context.terminalOutput.slice(-3000) : context.terminalOutput;
+    parts.push(`Recent terminal output (auto-captured for debugging):\n\`\`\`\n${t}\n\`\`\`\nNote: These are the last lines from the user's terminal. Look for errors, warnings, or build failures.`);
+  }
   return parts.length ? '\n\nWorkspace context:\n' + parts.join('\n') : '';
 }
 

@@ -17,7 +17,9 @@ import { logger } from '../lib/logger.js';
  * narrow auto-pull can update editor state when commands create new
  * root-level files.
  */
-export default function WebContainerTerminal({ files, sink, serverUrl, onServerUrl }) {
+const ANSI_RE = /\x1b\[[0-9;]*[mGKHFABCDJhilrsu]|\x1b\][^\x07]*\x07|\x1b[>=]|\r/g;
+
+export default function WebContainerTerminal({ files, sink, serverUrl, onServerUrl, onOutput }) {
   const hostRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -187,6 +189,10 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       proc.output.pipeTo(new WritableStream({
         write(chunk) {
           term.write(chunk);
+          if (onOutput && typeof chunk === 'string') {
+            const clean = chunk.replace(ANSI_RE, '');
+            clean.split('\n').forEach(line => { if (line.trim()) onOutput(line.trim()); });
+          }
           // Detect Node.js v22 WASM crash on Safari's Wasm engine.
           // This is intermittent — retrying (Reboot) usually succeeds.
           if (

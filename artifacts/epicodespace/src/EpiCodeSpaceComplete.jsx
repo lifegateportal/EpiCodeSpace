@@ -943,6 +943,7 @@ function EpiCodeSpaceApp() {
   const handleSaveRef = useRef(null);
   const handleNewFileRef = useRef(null);
   const handleTerminalCommandRef = useRef(null);
+  const terminalOutputRef = useRef([]); // ring buffer — last 300 lines of terminal output
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
   const autoDevStartedRef = useRef(false);
@@ -2144,6 +2145,129 @@ ${finalCode}
           : 'npm install';
         return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched: ${cmd}` };
       }
+      case 'getTerminalOutput': {
+        const maxLines = Math.min(args.lines || 60, 200);
+        const buf = terminalOutputRef.current;
+        const recent = buf.slice(-maxLines);
+        if (args.errorsOnly) {
+          const errors = recent.filter(l => /error|warn|fail|exception|cannot|unexpected|undefined is not|null is not|SyntaxError|TypeError|ReferenceError/i.test(l));
+          return { ok: true, lines: errors.length, output: errors.join('\n'), note: `Filtered ${maxLines} lines for errors/warnings` };
+        }
+        return { ok: true, lines: recent.length, output: recent.join('\n'), note: `Last ${recent.length} terminal lines` };
+      }
+      case 'autoFix': {
+        const targetPath = args.path || activeFile;
+        const f = currentFS[targetPath];
+        if (!f) return { ok: false, error: `File not found: ${targetPath}` };
+        const tools = createAgentTools(currentFS, targetPath);
+        const analysis = tools.analyzeFile.execute(targetPath);
+        if (!analysis.ok || analysis.issues.length === 0) {
+          return { ok: true, path: targetPath, fixed: 0, message: 'No auto-fixable issues found.' };
+        }
+        let lines = (f.content || '').split('\n');
+        const applied = [];
+        lines = lines.map((line, idx) => {
+          let l = line;
+          const lineIssues = analysis.issues.filter(iss => iss.line === idx + 1);
+          for (const iss of lineIssues) {
+            if (iss.msg.includes('var declaration')) {
+              const before = l;
+              l = l.replace(/\bvar\b/g, 'const');
+              if (l !== before) applied.push({ line: idx + 1, fix: 'var → const' });
+            }
+            if (iss.msg.includes('Loose equality')) {
+              const before = l;
+              l = l.replace(/([^!<>=])={2}(?!=)/g, '$1===');
+              if (l !== before) applied.push({ line: idx + 1, fix: '== → ===' });
+            }
+            if (iss.msg.includes('debugger statement')) {
+              applied.push({ line: idx + 1, fix: 'removed debugger' });
+              return '';
+            }
+          }
+          return l;
+        });
+        const newContent = lines.join('\n');
+        const unfixed = analysis.issues.filter(iss => !applied.some(a => a.line === iss.line));
+        return {
+          ok: true, action: 'edit', path: targetPath, content: newContent,
+          fixed: applied.length, applied,
+          remaining: unfixed.length, remainingIssues: unfixed.slice(0, 10),
+          note: `Auto-fixed ${applied.length} issue(s). ${unfixed.length} issue(s) need manual attention.`,
+        };
+      }
+      case 'explainError': {
+        const errorText = (args.error || '').trim();
+        if (!errorText) return { ok: false, error: 'error text is required' };
+        const typeMatch = errorText.match(/(TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError|Error):\s*(.+)/);
+        const lineMatch = errorText.match(/:(\d+):(\d+)/);
+        const moduleMatch = errorText.match(/Cannot find module ['"](.+?)['"]/);
+        const errorType = typeMatch?.[1] || 'Error';
+        const errorMessage = (typeMatch?.[2] || errorText).slice(0, 120);
+        const line = lineMatch?.[1] ? parseInt(lineMatch[1]) : null;
+        let cause = '', fix = '', example = '';
+        if (moduleMatch) {
+          const mod = moduleMatch[1];
+          cause = `Module "${mod}" is not installed or the import path is wrong.`;
+          fix = mod.startsWith('.') || mod.startsWith('/')
+            ? `Check the relative path is correct — file may have moved or been renamed.`
+            : `Run: npm install ${mod}\nThen check it's listed in package.json dependencies.`;
+          example = `// Wrong\nimport x from '../wrong-path'\n// Correct — check the actual file location\nimport x from './correct-path'`;
+        } else if (/null|undefined/.test(errorMessage) && errorType === 'TypeError') {
+          cause = 'You tried to read a property or call a method on null or undefined.';
+          fix = '1. Add a guard before accessing: if (!obj) return;\n2. Use optional chaining: obj?.property\n3. Check the variable is initialized before use';
+          example = `// Crashes if obj is null\nconst x = obj.value;\n// Safe\nconst x = obj?.value ?? defaultValue;`;
+        } else if (errorType === 'ReferenceError') {
+          const varName = errorMessage.replace(/is not defined.*/, '').trim();
+          cause = `"${varName}" is used before it's declared, or it's not imported.`;
+          fix = `1. Add the import at the top of the file\n2. Check for typos in the name\n3. Make sure it's declared in the correct scope`;
+        } else if (errorType === 'SyntaxError') {
+          cause = 'The code has a syntax error — usually a missing bracket, brace, comma, or unclosed string.';
+          fix = line ? `Check around line ${line} for:\n• Missing ) ] }\n• Missing comma in object/array literal\n• Unclosed string or template literal` : 'Check the indicated line for missing brackets, commas, or quotes.';
+        } else if (/\bCORS\b|Access-Control/i.test(errorMessage)) {
+          cause = 'A CORS policy is blocking the request — the server doesn\'t allow requests from this origin.';
+          fix = '1. On your server, add the CORS header: Access-Control-Allow-Origin: *\n2. Or use a proxy to forward the request server-side\n3. Check the API endpoint URL is correct';
+        } else if (/fetch|network/i.test(errorMessage)) {
+          cause = 'A network request failed — the server may be down, the URL is wrong, or there\'s a CORS issue.';
+          fix = '1. Check the request URL is correct\n2. Verify the server is running\n3. Open DevTools → Network tab to inspect the failed request';
+        }
+        return {
+          ok: true, errorType, errorMessage,
+          line, cause: cause || errorMessage,
+          fix: fix || 'Inspect the stack trace and check the indicated file/line.',
+          example: example || null,
+          nextStep: line ? `Use readFile to read the file around line ${line}, then editFile to apply the fix.` : 'Use analyzeFile on the relevant file, then editFile to fix.',
+        };
+      }
+      case 'getGitStatus': {
+        return {
+          ok: true, action: 'runCommand',
+          command: 'git status && echo "---DIFF---" && git diff --stat HEAD 2>/dev/null || echo "Not a git repo"',
+          note: 'Git status dispatched to terminal. Check the terminal panel for output, or call getTerminalOutput after a moment.',
+        };
+      }
+      case 'createComponent': {
+        const { name, type = 'react', path: compPath, props: compProps = [] } = args;
+        if (!name) return { ok: false, error: 'name is required' };
+        const pascal = name.charAt(0).toUpperCase() + name.slice(1).replace(/[-_](\w)/g, (_, c) => c.toUpperCase());
+        const isTs = compPath?.endsWith('.tsx') || compPath?.endsWith('.ts');
+        const ext = isTs ? '.tsx' : '.jsx';
+        const outputPath = compPath || `src/components/${pascal}${ext}`;
+        const propsType = isTs && compProps.length ? `interface ${pascal}Props {\n  ${compProps.map(p => `${p}: unknown;`).join('\n  ')}\n}\n\n` : '';
+        const propsParam = compProps.length ? (isTs ? `{ ${compProps.join(', ')} }: ${pascal}Props` : `{ ${compProps.join(', ')} }`) : 'props';
+        let content = '';
+        if (type === 'react' || type === 'react-functional') {
+          content = `import React from 'react';\n\n${propsType}export default function ${pascal}(${propsParam}) {\n  return (\n    <div>\n      <h2>${pascal}</h2>\n    </div>\n  );\n}\n`;
+        } else if (type === 'react-hook' || type === 'hook') {
+          content = `import { useState, useEffect } from 'react';\n\nexport function use${pascal}() {\n  const [state, setState] = useState(null);\n\n  useEffect(() => {\n    // initialize\n  }, []);\n\n  return { state, setState };\n}\n`;
+        } else if (type === 'context') {
+          content = `import { createContext, useContext, useState } from 'react';\n\nconst ${pascal}Context = createContext(null);\n\nexport function ${pascal}Provider({ children }) {\n  const [state, setState] = useState(null);\n  return (\n    <${pascal}Context.Provider value={{ state, setState }}>\n      {children}\n    </${pascal}Context.Provider>\n  );\n}\n\nexport function use${pascal}() {\n  const ctx = useContext(${pascal}Context);\n  if (!ctx) throw new Error('use${pascal} must be inside ${pascal}Provider');\n  return ctx;\n}\n`;
+        } else {
+          content = `export function ${pascal}() {\n  // Implementation\n}\n\nexport default ${pascal};\n`;
+        }
+        const lang = outputPath.endsWith('.tsx') || outputPath.endsWith('.ts') ? 'typescript' : 'javascript';
+        return { ok: true, action: 'write', path: outputPath, language: lang, content, lines: content.split('\n').length };
+      }
       case 'diagnoseProject': {
         const files = Object.keys(currentFS);
         const issues = [];
@@ -2295,6 +2419,19 @@ ${finalCode}
         cmdsToRun.push(tc.arguments.command);
       } else if (tc.name === 'npmInstall' && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
+      } else if (tc.name === 'getGitStatus' && r.action === 'runCommand') {
+        cmdsToRun.push(r.command);
+      } else if (tc.name === 'autoFix' && r.action === 'edit' && typeof r.content === 'string') {
+        const before = currentFS[r.path] ? { ...currentFS[r.path] } : null;
+        const after = before ? { ...before, content: r.content } : null;
+        newFS[r.path] = { ...newFS[r.path], content: r.content };
+        changed = true;
+        if (before && after) changeItems.push({ path: r.path, action: 'edit', before, after });
+      } else if (tc.name === 'createComponent' && r.action === 'write' && typeof r.content === 'string') {
+        const before = currentFS[r.path] ? { ...currentFS[r.path] } : null;
+        newFS[r.path] = { content: r.content, language: r.language || 'javascript', name: r.path.split('/').pop() };
+        changed = true;
+        changeItems.push({ path: r.path, action: before ? 'edit' : 'write', before: before || null, after: newFS[r.path] });
       } else if (tc.name === 'searchAndReplace' && r.changes?.length) {
         for (const change of r.changes) {
           if (change.ok && change.action === 'edit' && typeof change.content === 'string') {
@@ -2526,6 +2663,32 @@ ${finalCode}
     }
   }, [getLatest, writeBinaryFile]);
 
+  // ── Slash command expansion ────────────────────────────────────────────
+  const SLASH_COMMANDS = {
+    '/fix':     `Fix all bugs and errors in the active file. Call getTerminalOutput first to check for runtime errors, then analyzeFile, then autoFix to apply automatic patches, then address any remaining issues with editFile.`,
+    '/debug':   `Debug the active file. Call getTerminalOutput to see recent terminal output/errors, then analyzeFile, then fix every issue found.`,
+    '/explain': `Explain the active file thoroughly: what it does, how it's structured, what each major section does, and any notable patterns or potential improvements.`,
+    '/test':    `Write comprehensive unit tests for the active file. Use the project's existing test framework (check package.json). Create the test file alongside the source file.`,
+    '/doc':     `Add JSDoc/TSDoc comments to all exported functions and components in the active file. Do not change any logic — only add documentation.`,
+    '/refactor':`Refactor the active file: improve readability, reduce complexity, fix code smells, modernize syntax. Explain each change before making it.`,
+    '/commit':  `Generate a git commit message for the current changes. Call getGitStatus to see what changed, then write a conventional commit message (type: description).`,
+    '/new':     `Scaffold a new component or module for this project.`,
+    '/deps':    `Check for missing or outdated dependencies. Call diagnoseProject, then list any packages that need to be installed.`,
+    '/review':  `Do a thorough code review of the active file. Check for bugs, security issues, performance problems, and code style. Provide a prioritized list of findings.`,
+  };
+
+  const expandSlashCommand = useCallback((msg, file) => {
+    const trimmed = msg.trim();
+    for (const [cmd, expansion] of Object.entries(SLASH_COMMANDS)) {
+      if (trimmed === cmd || trimmed.startsWith(cmd + ' ')) {
+        const extra = trimmed.slice(cmd.length).trim();
+        const base = expansion.replace('the active file', file ? `\`${file}\`` : 'the active file');
+        return extra ? `${base}\n\nAdditional context: ${extra}` : base;
+      }
+    }
+    return msg;
+  }, [activeFile]);
+
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
   const handleAgentSubmit = useCallback((e) => {
     e.preventDefault();
@@ -2534,7 +2697,9 @@ ${finalCode}
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
     const userMessage = chatInput.trim();
-    const apiUserContent = toModelUserContent(userMessage, chatImage, activeAgent);
+    // Expand slash commands for API (display keeps original)
+    const expandedMessage = expandSlashCommand(userMessage, activeFile);
+    const apiUserContent = toModelUserContent(expandedMessage, chatImage, activeAgent);
     const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
     const userMsg = { id: makeMessageId('user'), role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
     setMessages(prev => [...prev, userMsg]);
@@ -2557,6 +2722,12 @@ ${finalCode}
           lines: typeof f.content === 'string' ? f.content.split('\n').length : 0,
         })),
     };
+    // Auto-inject terminal output when the user asks to fix/debug something
+    const isFixDebugRequest = /\b(fix|debug|error|bug|broken|crash|not work|fail|exception|undefined|cannot|issue)\b/i.test(userMessage);
+    if (isFixDebugRequest && terminalOutputRef.current.length > 0) {
+      const recentOutput = terminalOutputRef.current.slice(-40).join('\n');
+      context.terminalOutput = recentOutput;
+    }
 
     const pinnedEntry = pinnedFilePath ? fileSystem[pinnedFilePath] : null;
     if (pinnedEntry && typeof pinnedEntry.content === 'string' && pinnedEntry.content.trim()) {
@@ -2945,6 +3116,12 @@ ${finalCode}
   }, [activeFile, fileSystem]);
 
   // ── Terminal command handler ──────────────────────────────────────────────
+  const onTerminalOutput = useCallback((line) => {
+    const buf = terminalOutputRef.current;
+    buf.push(line);
+    if (buf.length > 300) terminalOutputRef.current = buf.slice(-300);
+  }, []);
+
   const handleTerminalCommand = useCallback((cmd) => {
     const prompt = 'ubuntu@epicode:~/workspace (main) $ ';
     const args = cmd.trim().split(/\s+/);
@@ -3712,10 +3889,16 @@ ${finalCode}
                   ) : allProblems.map((p, i) => (
                     <div key={i} onClick={() => handleFileClick(p.file)} className="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-[#25104a] cursor-pointer group">
                       <AlertCircle size={12} className={`mt-0.5 shrink-0 ${p.severity === 'error' ? 'text-red-400' : p.severity === 'warning' ? 'text-yellow-400' : 'text-cyan-400'}`}/>
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <span className="text-purple-200">{p.msg}</span>
                         <span className="text-purple-500/60 ml-2">{p.file}:{p.line}</span>
                       </div>
+                      <button
+                        type="button"
+                        className="opacity-0 group-hover:opacity-100 shrink-0 text-[10px] text-fuchsia-300 hover:text-fuchsia-100 bg-fuchsia-500/15 hover:bg-fuchsia-500/30 border border-fuchsia-500/30 px-1.5 py-0.5 rounded transition-all"
+                        onClick={(ev) => { ev.stopPropagation(); handleFileClick(p.file); setChatInput(`Fix this ${p.severity} in \`${p.file}\` (line ${p.line}): "${p.msg}"`); }}
+                        title="Fix with AI"
+                      >Fix</button>
                     </div>
                   ))}
                 </div>
@@ -3743,6 +3926,7 @@ ${finalCode}
                     files={fileSystem}
                     sink={{ writeFile, getLatest: () => fileSystem }}
                     onServerUrl={(url) => setPreviewUrl(url)}
+                    onOutput={onTerminalOutput}
                   />
                 </Suspense>
               </div>
@@ -4548,6 +4732,28 @@ ${finalCode}
                     <button type="button" className="underline hover:text-amber-100 transition-colors" onClick={handleNewConversation}>starting a new context</button> soon.
                     You can still continue sending messages.
                   </span>
+                </div>
+              )}
+              {/* Quick-action chips */}
+              {!isTyping && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {[
+                    { label: '🔴 Fix errors', cmd: '/fix' },
+                    { label: '🐛 Debug', cmd: '/debug' },
+                    { label: '💡 Explain', cmd: '/explain' },
+                    { label: '🧪 Write tests', cmd: '/test' },
+                    { label: '📝 Document', cmd: '/doc' },
+                    { label: '🔄 Refactor', cmd: '/refactor' },
+                    { label: '🔀 Commit msg', cmd: '/commit' },
+                    { label: '👁 Review', cmd: '/review' },
+                  ].map(({ label, cmd }) => (
+                    <button
+                      key={cmd}
+                      type="button"
+                      onClick={() => { setChatInput(cmd); }}
+                      className="text-[10px] px-2 py-0.5 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/20 text-purple-300/70 hover:bg-fuchsia-500/25 hover:text-fuchsia-200 hover:border-fuchsia-400/40 transition-all"
+                    >{label}</button>
+                  ))}
                 </div>
               )}
               <form onSubmit={handleAgentSubmit} className="flex flex-col gap-2">

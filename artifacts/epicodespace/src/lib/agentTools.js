@@ -158,6 +158,69 @@ export function createAgentTools(fileSystem, activeFile) {
         })),
       }),
     },
+    getTerminalOutput: {
+      name: 'getTerminalOutput',
+      description: 'Read recent terminal output',
+      execute: () => ({ ok: true, lines: 0, output: '', note: 'Terminal output is only available in the live runtime.' }),
+    },
+    autoFix: {
+      name: 'autoFix',
+      description: 'Auto-fix common code issues',
+      execute: (path) => {
+        const f = fileSystem[path || activeFile];
+        if (!f) return { ok: false, error: 'File not found' };
+        const tools2 = createAgentTools(fileSystem, path || activeFile);
+        const analysis = tools2.analyzeFile.execute(path || activeFile);
+        if (!analysis.ok || analysis.issues.length === 0) return { ok: true, fixed: 0, message: 'No auto-fixable issues found.' };
+        let lines = (f.content || '').split('\n');
+        const applied = [];
+        lines = lines.map((line, idx) => {
+          let l = line;
+          analysis.issues.filter(iss => iss.line === idx + 1).forEach(iss => {
+            if (iss.msg.includes('var declaration')) { l = l.replace(/\bvar\b/g, 'const'); applied.push({ line: idx + 1, fix: 'var → const' }); }
+            if (iss.msg.includes('Loose equality')) { l = l.replace(/([^!<>=])={2}(?!=)/g, '$1==='); applied.push({ line: idx + 1, fix: '== → ===' }); }
+            if (iss.msg.includes('debugger')) { applied.push({ line: idx + 1, fix: 'removed debugger' }); l = null; }
+          });
+          return l;
+        }).filter(l => l !== null);
+        return { ok: true, fixed: applied.length, applied, message: `Fixed ${applied.length} issue(s).` };
+      },
+    },
+    explainError: {
+      name: 'explainError',
+      description: 'Explain an error message',
+      execute: (errorText) => {
+        if (!errorText) return { ok: false, error: 'error text required' };
+        const typeMatch = errorText.match(/(TypeError|ReferenceError|SyntaxError|RangeError|Error):\s*(.+)/);
+        const lineMatch = errorText.match(/:(\d+):\d+/);
+        const errorType = typeMatch?.[1] || 'Error';
+        const errorMessage = (typeMatch?.[2] || errorText).slice(0, 100);
+        let cause = 'Unknown error — check the stack trace.', fix = 'Inspect the indicated file and line.';
+        if (/Cannot find module/.test(errorText)) { cause = 'Missing import/module.'; fix = 'Run npm install or fix the import path.'; }
+        else if (/null|undefined/.test(errorMessage) && errorType === 'TypeError') { cause = 'Property accessed on null/undefined.'; fix = 'Add a null check or use optional chaining (?.)'; }
+        else if (errorType === 'ReferenceError') { cause = 'Variable not declared/imported.'; fix = 'Check imports and variable scope.'; }
+        else if (errorType === 'SyntaxError') { cause = 'Syntax error.'; fix = `Check around line ${lineMatch?.[1] || '?'} for missing brackets/commas.`; }
+        return { ok: true, errorType, errorMessage, line: lineMatch?.[1] ? parseInt(lineMatch[1]) : null, cause, fix };
+      },
+    },
+    getGitStatus: {
+      name: 'getGitStatus',
+      description: 'Get git status',
+      execute: () => {
+        const files = Object.keys(fileSystem);
+        return { ok: true, branch: 'main', modifiedFiles: files.slice(0, 5), totalFiles: files.length, note: 'Simulated — run git status in the terminal for real output.' };
+      },
+    },
+    createComponent: {
+      name: 'createComponent',
+      description: 'Scaffold a new component',
+      execute: (name, type = 'react') => {
+        if (!name) return { ok: false, error: 'name required' };
+        const pascal = name.charAt(0).toUpperCase() + name.slice(1);
+        const content = `import React from 'react';\n\nexport default function ${pascal}(props) {\n  return (\n    <div>\n      <h2>${pascal}</h2>\n    </div>\n  );\n}\n`;
+        return { ok: true, action: 'write', path: `src/components/${pascal}.jsx`, content, lines: content.split('\n').length };
+      },
+    },
     diagnoseProject: {
       name: 'diagnoseProject',
       description: 'Diagnose common project setup issues: missing node_modules, broken CSS/styling, missing Tailwind config, missing CSS imports',
