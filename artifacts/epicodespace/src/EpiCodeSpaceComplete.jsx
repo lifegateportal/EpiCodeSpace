@@ -943,6 +943,7 @@ function EpiCodeSpaceApp() {
   const handleSaveRef = useRef(null);
   const handleNewFileRef = useRef(null);
   const handleTerminalCommandRef = useRef(null);
+  const wcTermRef = useRef(null); // ref to WebContainerTerminal imperative handle
   const terminalOutputRef = useRef([]); // ring buffer — last 300 lines of terminal output
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
@@ -2950,10 +2951,28 @@ ${finalCode}
               });
             }
             // Run terminal commands requested by agent
+            // Smart routing: npm/node/npx/yarn/pnpm → WebContainers runtime; all others → simulated terminal
             if (cmdsToRun.length > 0) {
-              setTerminalState('open');
-              setActiveTerminalTab('terminal');
-              cmdsToRun.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
+              const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno)\s/i.test(cmd.trim());
+              const runtimeCmds = cmdsToRun.filter(isRuntimeCmd);
+              const terminalCmds = cmdsToRun.filter(cmd => !isRuntimeCmd(cmd));
+
+              if (runtimeCmds.length > 0) {
+                setTerminalState('open');
+                setActiveTerminalTab('runtime');
+                runtimeCmds.forEach(cmd => {
+                  const sent = wcTermRef.current?.sendCommand(cmd);
+                  // Fallback: if runtime not booted yet, show command in simulated terminal with a note
+                  if (sent === false) {
+                    handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${cmd}`);
+                  }
+                });
+              }
+              if (terminalCmds.length > 0) {
+                setTerminalState('open');
+                if (runtimeCmds.length === 0) setActiveTerminalTab('terminal');
+                terminalCmds.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
+              }
             }
 
             pendingToolCalls = data.tool_calls;
@@ -3948,6 +3967,7 @@ ${finalCode}
               >
                 <Suspense fallback={<div className="p-3 text-xs text-purple-400/60">Loading runtime…</div>}>
                   <WebContainerTerminal
+                    ref={wcTermRef}
                     files={fileSystem}
                     sink={{ writeFile, getLatest: () => fileSystem }}
                     onServerUrl={(url) => setPreviewUrl(url)}

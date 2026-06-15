@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -19,7 +19,7 @@ import { logger } from '../lib/logger.js';
  */
 const ANSI_RE = /\x1b\[[0-9;]*[mGKHFABCDJhilrsu]|\x1b\][^\x07]*\x07|\x1b[>=]|\r/g;
 
-export default function WebContainerTerminal({ files, sink, serverUrl, onServerUrl, onOutput }) {
+const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, sink, serverUrl, onServerUrl, onOutput }, ref) {
   const hostRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -377,6 +377,25 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     } catch (err) { logger.warn('terminal', 'kill failed', err); }
   }, []);
 
+  // ── Imperative API for programmatic command injection ─────────────────
+  useImperativeHandle(ref, () => ({
+    /** Send a command to the live jsh shell (appends \n). Returns true if dispatched. */
+    sendCommand(cmd) {
+      const writer = writerRef.current;
+      if (writer) {
+        writer.write(cmd + '\n').catch(() => {});
+        return true;
+      }
+      // Shell not started yet — show a hint in the terminal
+      termRef.current?.writeln(`\x1b[33m⚠ Runtime not ready — click "Boot container" first, then the agent will retry.\x1b[0m`);
+      termRef.current?.writeln(`\x1b[90m# Pending command: ${cmd}\x1b[0m`);
+      return false;
+    },
+    isReady() {
+      return !!writerRef.current;
+    },
+  }), []);
+
   const handleCopy = useCallback(async () => {
     const term = termRef.current;
     const text = term?.getSelection?.() || '';
@@ -579,7 +598,9 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       />
     </div>
   );
-}
+});
+
+export default WebContainerTerminal;
 
 function bootStateLabel(s) {
   switch (s) {
