@@ -226,7 +226,12 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
       }
     } catch (err) {
       logger.error('terminal', 'shell loop failed', err);
-      term.writeln(`\r\n\x1b[31m✖ ${err?.message || err}\x1b[0m`);
+      const msg = err?.message || String(err);
+      term.writeln(`\r\n\x1b[31m✖ ${msg}\x1b[0m`);
+      if (/abort/i.test(msg)) {
+        term.writeln('\x1b[90m# The shell was aborted — usually memory pressure (common on iPadOS with heavy\x1b[0m');
+        term.writeln('\x1b[90m# Node.js processes like Next.js). Click "New Shell ↺" to restart without rebooting.\x1b[0m');
+      }
       setProcessRunning(false);
     }
   }, [sink]);
@@ -411,6 +416,15 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
             >
               <UploadCloud className="w-3 h-3" /> Sync Files
             </button>
+            {!processRunning && (
+              <button
+                onClick={startShell}
+                title="Start a new shell without rebooting the container (useful after a shell crash)"
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-cyan-700 hover:bg-cyan-600 animate-pulse"
+              >
+                <RefreshCw className="w-3 h-3" /> New Shell
+              </button>
+            )}
             <button
               onClick={handleKill}
               disabled={!processRunning}
