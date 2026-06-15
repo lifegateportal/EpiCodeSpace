@@ -3,8 +3,106 @@ import {
   ChevronDown, ChevronRight, Folder, FolderOpen, File as FileIcon,
   FilePlus, FolderPlus, FileEdit, Trash2, Copy, Scissors, ClipboardPaste,
   Search, X, RefreshCw, Save, ImagePlus, FolderOpen as FolderOpenIcon,
+  Github, Loader2,
 } from 'lucide-react';
 import { useToast } from './Toaster.jsx';
+
+/* ── Git Clone Modal ─────────────────────────────────────────────────────── */
+function GitCloneModal({ onClose, onClone }) {
+  const [url, setUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!url.trim()) return;
+    setLoading(true);
+    setStatus('Starting…');
+    try {
+      await onClone(url.trim(), token.trim() || null, (msg) => setStatus(msg));
+      onClose();
+    } catch (err) {
+      setStatus(`❌ ${err.message}`);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-[#12062a] border border-fuchsia-500/30 rounded-xl shadow-2xl w-full max-w-md mx-4 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Github size={18} className="text-fuchsia-400" />
+          <h2 className="text-sm font-semibold text-purple-100">Clone from GitHub</h2>
+          <button onClick={onClose} className="ml-auto text-purple-500/60 hover:text-purple-200"><X size={15}/></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-[11px] text-purple-400 mb-1">Repository URL</label>
+            <input
+              ref={inputRef}
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo"
+              className="w-full bg-[#0a0412] border border-fuchsia-500/30 rounded-lg px-3 py-2 text-xs text-purple-100 outline-none focus:border-fuchsia-400/60 placeholder:text-purple-600/50"
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] text-purple-400 mb-1">
+              GitHub Token <span className="text-purple-600/60">(optional — required for private repos)</span>
+            </label>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="ghp_…"
+                className="w-full bg-[#0a0412] border border-fuchsia-500/30 rounded-lg px-3 py-2 text-xs text-purple-100 outline-none focus:border-fuchsia-400/60 placeholder:text-purple-600/50 pr-16"
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={() => setShowToken(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-purple-500/60 hover:text-purple-300"
+              >
+                {showToken ? 'hide' : 'show'}
+              </button>
+            </div>
+          </div>
+
+          {status && (
+            <div className="text-[11px] text-purple-300 bg-fuchsia-500/5 border border-fuchsia-500/20 rounded-lg px-3 py-2 leading-relaxed">
+              {loading && <Loader2 size={11} className="inline mr-1.5 animate-spin" />}
+              {status}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} disabled={loading} className="px-3 py-1.5 text-xs text-purple-400 hover:text-purple-200 transition-colors">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !url.trim()}
+              className="px-4 py-1.5 text-xs bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              {loading ? <Loader2 size={12} className="animate-spin" /> : <Github size={12} />}
+              {loading ? 'Cloning…' : 'Clone'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 /* ── Tree builder: converts flat {path: file} map into a nested tree ───────── */
 function buildTree(fileSystem, emptyFolders) {
@@ -92,9 +190,11 @@ export default function FileExplorer({
   onProjectRename,  // (name: string) => void
   onImport,
   onExport,
+  onGitClone,       // async (url, token, onProgress) => void
   onNewProjectTemplate, // (template: string) => void
   className = '',
 }) {
+  const [showGitModal, setShowGitModal] = useState(false);
   /* ── Persisted state ─────────────────────────────────────────────────── */
   const [expanded, setExpanded] = useState(() => {
     try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}'); } catch { return {}; }
@@ -480,6 +580,7 @@ export default function FileExplorer({
           <button onClick={() => startCreate('', 'file')} aria-label="New file at root" title="New File" className="p-1 hover:text-fuchsia-300 transition-colors"><FilePlus size={13}/></button>
           <button onClick={() => startCreate('', 'folder')} aria-label="New folder at root" title="New Folder" className="p-1 hover:text-fuchsia-300 transition-colors"><FolderPlus size={13}/></button>
           <button onClick={() => setExpanded({})} aria-label="Collapse all folders" title="Collapse All" className="p-1 hover:text-fuchsia-300 transition-colors"><RefreshCw size={13}/></button>
+          <button onClick={() => setShowGitModal(true)} aria-label="Clone from GitHub" title="Clone from GitHub" className="p-1 hover:text-fuchsia-300 transition-colors"><Github size={13}/></button>
           <button onClick={onImport} aria-label="Import project" title="Import Project" className="p-1 hover:text-fuchsia-300 transition-colors"><FolderOpenIcon size={13}/></button>
           <button onClick={onExport} aria-label="Export project" title="Export Project" className="p-1 hover:text-fuchsia-300 transition-colors"><Save size={13}/></button>
         </div>
@@ -549,6 +650,7 @@ export default function FileExplorer({
               <button onClick={() => onNewProjectTemplate?.('node')} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors">🟢 Node.js Project</button>
               <button onClick={() => onNewProjectTemplate?.('html')} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors">🌐 HTML/CSS/JS Project</button>
               <button onClick={onImport} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition-colors flex items-center gap-2 justify-center"><FolderOpenIcon size={12}/> Import Project</button>
+              <button onClick={() => setShowGitModal(true)} className="w-full text-[11px] text-purple-300 hover:text-purple-100 bg-fuchsia-500/5 hover:bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-lg px-3 py-2 transition-colors flex items-center gap-2 justify-center"><Github size={12}/> Clone from GitHub</button>
             </div>
           </div>
         ) : (
@@ -561,6 +663,17 @@ export default function FileExplorer({
           </>
         )}
       </div>
+
+      {/* Git Clone Modal */}
+      {showGitModal && (
+        <GitCloneModal
+          onClose={() => setShowGitModal(false)}
+          onClone={async (url, token, onProgress) => {
+            if (!onGitClone) throw new Error('Git clone not available.');
+            await onGitClone(url, token, onProgress);
+          }}
+        />
+      )}
 
       {/* Context menu */}
       {ctxMenu && (

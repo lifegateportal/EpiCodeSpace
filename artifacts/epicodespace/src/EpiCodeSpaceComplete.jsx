@@ -38,6 +38,7 @@ import { FsClient } from './lib/fs/FsClient.ts';
 import { bridge } from './lib/runtime/WebContainerBridge.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 import { isGistSyncEnabled, pushToGist, pullFromGist, GIST_TOKEN_KEY, GIST_ID_KEY } from './lib/gistSync.js';
+import { cloneRepo } from './lib/gitClone.js';
 
 /* ─── OPFS Toggle (advanced storage) ─────────────────────────────────────────
  * Tapping the toggle is a direct user gesture, which is what Safari requires
@@ -1882,6 +1883,17 @@ ${finalCode}
     toast?.success?.(canUseStreamCompression() ? 'Compressed backup exported.' : 'Backup exported.');
   }, [fileSystem, projectName, toast]);
 
+  const handleGitClone = useCallback(async (url, token, onProgress) => {
+    const { files, repoName } = await cloneRepo(url, { token, onProgress });
+    if (Object.keys(files).length === 0) throw new Error('No files found in repository.');
+    replaceAll(files);
+    setProjectName(repoName);
+    const first = Object.keys(files)[0] || null;
+    setOpenTabs(first ? [first] : []);
+    setActiveFile(first);
+    toast?.success?.(`Cloned ${Object.keys(files).length} files from ${repoName}.`);
+  }, [replaceAll, toast]);
+
   const handleImportProject = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -3261,6 +3273,7 @@ ${finalCode}
                   onProjectRename={setProjectName}
                   onImport={handleImportProject}
                   onExport={handleExportProject}
+                  onGitClone={handleGitClone}
                   onNewProjectTemplate={(template) => setNewProjectDialog({ template })}
                 />
               </PanelErrorBoundary>
