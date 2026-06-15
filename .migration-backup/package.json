@@ -1,0 +1,58 @@
+{
+  "name": "epicodespace",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "generate": "node generate.js",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .js,.jsx,.ts,.tsx --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint src --ext .js,.jsx,.ts,.tsx --fix",
+    "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css}\" \"api/**/*.js\"",
+    "format:check": "prettier --check \"src/**/*.{js,jsx,ts,tsx,css}\" \"api/**/*.js\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@webcontainer/api": "^1.6.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "comlink": "^4.4.2",
+    "dompurify": "^3.2.4",
+    "highlight.js": "^11.10.0",
+    "lucide-react": "^0.367.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.17.5"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^15.0.0",
+    "@testing-library/user-event": "^14.5.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.5",
+    "autoprefixer": "^10.4.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "jsdom": "^24.0.0",
+    "postcss": "^8.4.0",
+    "prettier": "^3.2.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.4.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.5"
+  },
+  "overrides": {
+    "dompurify": "^3.2.4"
+  }
+}
