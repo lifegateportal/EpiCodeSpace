@@ -26,7 +26,7 @@ if (!basePath) {
 
 const crossOriginIsolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Embedder-Policy': 'credentialless',
   'Cross-Origin-Resource-Policy': 'same-origin',
 };
 

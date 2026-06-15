@@ -19,12 +19,16 @@ run = "pnpm --filter @workspace/epicodespace run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/epicodespace", "run", "build" ]
-publicDir = "artifacts/epicodespace/dist/public"
-serve = "static"
 
-[[services.production.rewrites]]
-from = "/*"
-to = "/index.html"
+[services.production.run]
+args = ["node", "artifacts/epicodespace/serve.mjs"]
+
+[services.production.run.env]
+PORT = "21256"
+NODE_ENV = "production"
+
+[services.production.health.startup]
+path = "/"
 
 [services.env]
 PORT = "21256"
