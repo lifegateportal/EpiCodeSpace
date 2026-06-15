@@ -28,7 +28,7 @@ const MIME = {
 // These headers enable window.crossOriginIsolated = true, required for WebContainers.
 const ISOLATION_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'credentialless',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
 function isFile(p) {
