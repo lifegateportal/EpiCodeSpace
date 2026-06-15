@@ -913,6 +913,10 @@ function EpiCodeSpaceApp() {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [wcServerUrl, setWcServerUrl] = useState('');
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
+  // Lazy-load gate: the user must explicitly tap "Load Preview" before the
+  // WebContainer preview iframe loads. Auto-loading it immediately after
+  // server-ready causes a WASM memory spike that aborts the shell on Safari.
+  const [previewLoaded, setPreviewLoaded] = useState(false);
   const [showStorageMonitor, setShowStorageMonitor] = useState(false);
   const [showDeployModal,          setShowDeployModal]          = useState(false);
   const [showConnectionsManager,   setShowConnectionsManager]   = useState(false);
@@ -1037,9 +1041,15 @@ function EpiCodeSpaceApp() {
     }
   }), []);
 
-  // Auto-switch to Preview tab the moment a dev server comes up.
+  // When a new server URL arrives: switch to Preview tab but do NOT auto-load
+  // the iframe. Loading it immediately causes a memory spike that aborts the
+  // shell on Safari (the WebContainer service worker spins up handling the
+  // first SSR request right as Next.js/Vite is still initialising).
+  // The user taps "Load Preview" when they're ready — by then the server has
+  // settled and the load doesn't trigger an OOM abort.
   useEffect(() => {
     if (!wcServerUrl) return;
+    setPreviewLoaded(false);          // reset gate for new URL
     setTerminalState('open');
     setActiveTerminalTab('preview');
   }, [wcServerUrl]);
@@ -3654,7 +3664,33 @@ ${finalCode}
                   </div>
 
                   {/* Preview content */}
-                  {showLive ? (
+                  {showLive && !previewLoaded ? (
+                    /* Lazy-load gate — don't load the iframe until the user taps.
+                       Immediate loading spikes WebContainer WASM memory on Safari
+                       and aborts the shell process right after server-ready. */
+                    <div className="flex-1 flex flex-col items-center justify-center gap-5 bg-[#080614] p-6">
+                      <MonitorPlay size={52} className="text-fuchsia-400/30" />
+                      <div className="text-center space-y-1">
+                        <div className="text-sm font-semibold text-purple-200">Dev server is running</div>
+                        <div className="text-[11px] text-purple-400/60 max-w-xs leading-relaxed">
+                          Wait a moment for Next.js to fully settle, then tap Load Preview.
+                          Loading too early can abort the shell on Safari.
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setPreviewLoaded(true)}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-sm font-medium rounded-lg transition-colors shadow-lg shadow-fuchsia-900/40"
+                      >
+                        <Play size={14} /> Load Preview
+                      </button>
+                      <div className="text-[10px] text-purple-500/40 text-center max-w-xs">
+                        If the preview shows blank after loading, go back to Runtime tab,
+                        tap <strong className="text-purple-400/60">New Shell ↺</strong>, then run
+                        <code className="mx-1 text-fuchsia-400/60">npm run dev</code> again
+                        — SWC is cached so the second start is fast and stable.
+                      </div>
+                    </div>
+                  ) : showLive && previewLoaded ? (
                     <iframe
                       key={`${previewKey}:${wcServerUrl}`}
                       src={wcServerUrl}
