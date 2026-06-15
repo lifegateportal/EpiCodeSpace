@@ -1,36 +1,51 @@
-# [Project name]
+# EpiCodeSpace
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A web-native AI-powered IDE that runs entirely in the browser, featuring a Monaco code editor, file explorer, terminal (via WebContainers), multi-provider AI chat (OpenAI, Claude, Gemini, DeepSeek), and OPFS-backed persistent storage.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/epicodespace run dev` — run the frontend (port assigned by workflow)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (proxies AI chat requests)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required env vars:
+  - `OPENAI_API_KEY` — for GPT-4o / o3 agents
+  - `ANTHROPIC_API_KEY` — for Claude agents
+  - `GOOGLE_AI_API_KEY` — for Gemini agents
+  - `DEEPSEEK_API_KEY` — for DeepSeek agents
+  - `VITE_WEBCONTAINER_APIKEY` — (optional) for WebContainers on non-localhost origins
+  - `VITE_ACCESS_PASSWORD_HASH` — (optional) SHA-256 hex hash to enable lock screen
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Frontend: React 19 + Vite 7, Tailwind CSS v3
+- Editor: Monaco Editor + LSP bridge
+- Terminal: xterm.js + WebContainers (@webcontainer/api)
+- Storage: OPFS (Origin Private File System) via Comlink web worker
+- AI: Multi-provider chat proxy (OpenAI, Anthropic, Gemini, DeepSeek)
+- API: Express 5 at `/api/chat`
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/epicodespace/src/EpiCodeSpaceComplete.jsx` — main app component (monolith)
+- `artifacts/epicodespace/src/components/` — extracted sub-components
+- `artifacts/epicodespace/src/lib/` — utilities (storage, agentRegistry, modelRouter, fs, lsp, runtime)
+- `artifacts/epicodespace/src/hooks/` — custom React hooks
+- `artifacts/api-server/src/routes/chat.ts` — AI chat proxy (replaces Vercel serverless function)
+- `artifacts/epicodespace/public/` — static assets (icons, manifest, service worker)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Converted from Vercel serverless function (`api/chat.js`) to Express route (`/api/chat`) — same logic, same provider support
+- Vite config adds COOP/COEP headers required by WebContainers (SharedArrayBuffer)
+- Tailwind v3 is used (the original project), not the v4 scaffold default
+- `index.html` entry point is `src/index.jsx` (the original), not `main.tsx`
+- `optimizeDeps.exclude: ['@webcontainer/api']` prevents Vite from double-bundling WebContainers
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+EpiCodeSpace is a browser-based IDE where users can edit files, run a terminal, and chat with multiple AI coding assistants (EpiCode Agent, Claude, Gemini, DeepSeek). Files are persisted in OPFS for durability.
 
 ## User preferences
 
@@ -38,7 +53,10 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- COOP/COEP headers must be set on every response for WebContainers to work
+- `VITE_WEBCONTAINER_APIKEY` is required for WebContainers on non-localhost origins (Replit preview URLs)
+- The app uses Tailwind v3 — do not migrate to v4 without testing all custom utilities
+- `@webcontainer/api` must be in `optimizeDeps.exclude` or Vite will fail to pre-bundle it
 
 ## Pointers
 

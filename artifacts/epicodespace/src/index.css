@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background: #0a0412;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+
+/* Safe area insets for notched iPads / phones */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+/* Hide scrollbars but keep scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Prevent text selection on drag handles */
+.drag-handle { touch-action: none; user-select: none; -webkit-user-select: none; }
+
+/* Mobile backdrop */
+.sidebar-backdrop {
+  position: fixed; inset: 0; z-index: 9;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* Smooth transitions for panels */
+@media (prefers-reduced-motion: no-preference) {
+  .panel-transition { transition: width 0.15s ease, height 0.15s ease, opacity 0.15s ease; }
+}
+
+/* iPad-specific: prevent double-tap zoom on buttons */
+button, [role="button"] { touch-action: manipulation; }
+
+/* Textarea on iOS: prevent zoom on focus (iOS zooms in when font < 16px) */
+@supports (-webkit-touch-callout: none) {
+  textarea, input[type="text"], input[type="search"] {
+    font-size: max(16px, 1em) !important;
+  }
+}
+
+/* Terminal input: kill all focus chrome */
+.terminal-input:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+  ring: none !important;
+}
+
+/* Xterm.js container */
+.xterm { padding: 0; }
+.xterm .xterm-viewport { overflow-y: hidden !important; }

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "EpiCodeSpace"
+version = "1.0.0"
+id = "artifacts/epicodespace"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21256
+
+[services.development]
+run = "pnpm --filter @workspace/epicodespace run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/epicodespace", "run", "build" ]
+publicDir = "artifacts/epicodespace/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21256"
+BASE_PATH = "/"
