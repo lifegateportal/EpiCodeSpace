@@ -109,13 +109,15 @@ export async function cloneRepo(rawUrl, { token, onProgress } = {}) {
   let done = 0;
 
   async function fetchOne(item) {
-    const data = await ghFetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${item.path}?ref=${defaultBranch}`,
-      token
-    );
-    const content = typeof data.content === 'string'
-      ? atob(data.content.replace(/\n/g, ''))
-      : '';
+    // Use raw.githubusercontent.com for file content — it has no per-hour API
+    // rate limit for public repos, so a 300-file clone won't exhaust the quota.
+    // Only the two tree/repo-info calls above need the authenticated API.
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${defaultBranch}/${item.path}`;
+    const rawHeaders = {};
+    if (token) rawHeaders.Authorization = `Bearer ${token}`;
+    const res = await fetch(rawUrl, { headers: rawHeaders });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${item.path}`);
+    const content = await res.text();
     files[item.path] = {
       name: item.path.split('/').pop(),
       language: langFromPath(item.path),

@@ -8,9 +8,11 @@ import {
 import { useToast } from './Toaster.jsx';
 
 /* ── Git Clone Modal ─────────────────────────────────────────────────────── */
+const GH_TOKEN_KEY = 'epicodespace_clone_github_token';
+
 function GitCloneModal({ onClose, onClone }) {
   const [url, setUrl] = useState('');
-  const [token, setToken] = useState('');
+  const [token, setToken] = useState(() => { try { return localStorage.getItem(GH_TOKEN_KEY) || ''; } catch { return ''; } });
   const [showToken, setShowToken] = useState(false);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
@@ -23,8 +25,10 @@ function GitCloneModal({ onClose, onClone }) {
     if (!url.trim()) return;
     setLoading(true);
     setStatus('Starting…');
+    const trimmedToken = token.trim();
+    if (trimmedToken) { try { localStorage.setItem(GH_TOKEN_KEY, trimmedToken); } catch { /* ignore */ } }
     try {
-      await onClone(url.trim(), token.trim() || null, (msg) => setStatus(msg));
+      await onClone(url.trim(), trimmedToken || null, (msg) => setStatus(msg));
       onClose();
     } catch (err) {
       setStatus(`❌ ${err.message}`);
@@ -56,8 +60,13 @@ function GitCloneModal({ onClose, onClone }) {
           </div>
 
           <div>
-            <label className="block text-[11px] text-purple-400 mb-1">
-              GitHub Token <span className="text-purple-600/60">(optional — required for private repos)</span>
+            <label className="block text-[11px] text-purple-400 mb-1 flex items-center gap-1.5">
+              GitHub Token
+              {token ? (
+                <span className="text-[9px] bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full">saved</span>
+              ) : (
+                <span className="text-purple-600/60">(optional — required for private repos)</span>
+              )}
             </label>
             <div className="relative">
               <input
