@@ -105,26 +105,37 @@ export async function cloneRepo(rawUrl, { token, onProgress } = {}) {
 
   const BATCH = 8;
   const files = {};
+  const failed = [];
   let done = 0;
+
+  async function fetchOne(item) {
+    const data = await ghFetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${item.path}?ref=${defaultBranch}`,
+      token
+    );
+    const content = typeof data.content === 'string'
+      ? atob(data.content.replace(/\n/g, ''))
+      : '';
+    files[item.path] = {
+      name: item.path.split('/').pop(),
+      language: langFromPath(item.path),
+      content,
+    };
+  }
 
   for (let i = 0; i < subset.length; i += BATCH) {
     const chunk = subset.slice(i, i + BATCH);
     await Promise.all(chunk.map(async item => {
       try {
-        const data = await ghFetch(
-          `https://api.github.com/repos/${owner}/${repo}/contents/${item.path}?ref=${defaultBranch}`,
-          token
-        );
-        const content = typeof data.content === 'string'
-          ? atob(data.content.replace(/\n/g, ''))
-          : '';
-        files[item.path] = {
-          name: item.path.split('/').pop(),
-          language: langFromPath(item.path),
-          content,
-        };
+        await fetchOne(item);
       } catch {
-        // skip files that fail (e.g. submodules, encoding issues)
+        // First attempt failed — retry once after a short delay.
+        await new Promise(r => setTimeout(r, 600));
+        try {
+          await fetchOne(item);
+        } catch (err2) {
+          failed.push(item.path);
+        }
       }
       done++;
       if (done % 20 === 0 || done === subset.length) {
@@ -133,5 +144,9 @@ export async function cloneRepo(rawUrl, { token, onProgress } = {}) {
     }));
   }
 
-  return { files, repoName, branch: defaultBranch, owner, repo };
+  if (failed.length > 0) {
+    onProgress?.(`⚠️ ${failed.length} file(s) could not be fetched (rate limit or network): ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? '…' : ''}`);
+  }
+
+  return { files, repoName, branch: defaultBranch, owner, repo, failed };
 }

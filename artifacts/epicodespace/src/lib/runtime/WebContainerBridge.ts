@@ -162,6 +162,22 @@ class Bridge {
     await this.teardown();
     return this.boot(opts);
   }
+
+  /**
+   * Hot-sync: mount updated files into a RUNNING container without reboot.
+   * Safe to call any time the container is ready. Use this when the OPFS
+   * file set changes (e.g. after a git clone) and you want the container to
+   * see the new files without killing the running shell.
+   */
+  async syncFiles(files: BootOptions['files']): Promise<void> {
+    const c = this.container;
+    if (!c || this._state !== 'ready') {
+      throw new Error('Container not ready — boot first, then sync.');
+    }
+    const tree = buildTreeFromFlat(files);
+    await c.mount(tree);
+    logger.info('runtime', 'syncFiles complete', { fileCount: Object.keys(files).length });
+  }
 }
 
 // Module-level singleton — one WebContainer per page, period.

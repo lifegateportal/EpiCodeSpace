@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { RefreshCw, Square, Power, Loader2, Copy, ClipboardPaste } from 'lucide-react';
+import { RefreshCw, Square, Power, Loader2, Copy, ClipboardPaste, UploadCloud } from 'lucide-react';
 import { bridge } from '../lib/runtime/WebContainerBridge.ts';
 import { autoPullRootNewFiles } from '../lib/runtime/syncInbound.ts';
 import { lspBridge } from '../lib/lsp/TsLspBridge.ts';
@@ -354,6 +354,17 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     term?.writeln('\x1b[90m# container stopped\x1b[0m');
   }, []);
 
+  const handleSyncFiles = useCallback(async () => {
+    const term = termRef.current;
+    term?.writeln('\x1b[36m▶ syncing files to container…\x1b[0m');
+    try {
+      await bridge.syncFiles(files);
+      term?.writeln(`\x1b[32m✔ synced ${Object.keys(files).length} files — run your commands now\x1b[0m`);
+    } catch (err) {
+      term?.writeln(`\x1b[31m✖ sync failed: ${err?.message || err}\x1b[0m`);
+    }
+  }, [files]);
+
   const isolated = typeof window !== 'undefined' && window.crossOriginIsolated;
   const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
@@ -393,6 +404,13 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
         )}
         {bootState === 'ready' && (
           <>
+            <button
+              onClick={handleSyncFiles}
+              title="Push current editor files into the running container (no reboot)"
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500"
+            >
+              <UploadCloud className="w-3 h-3" /> Sync Files
+            </button>
             <button
               onClick={handleKill}
               disabled={!processRunning}
