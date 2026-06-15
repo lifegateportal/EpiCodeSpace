@@ -1037,6 +1037,13 @@ function EpiCodeSpaceApp() {
     }
   }), []);
 
+  // Auto-switch to Preview tab the moment a dev server comes up.
+  useEffect(() => {
+    if (!wcServerUrl) return;
+    setTerminalState('open');
+    setActiveTerminalTab('preview');
+  }, [wcServerUrl]);
+
   // Auto-start runtime server when user opens Preview and no live URL exists.
   useEffect(() => {
     if (activeTerminalTab !== 'preview') return;

@@ -116,7 +116,11 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
   useEffect(() => bridge.onState(setBootState), []);
   useEffect(() => bridge.onServerReady(({ url }) => {
     onServerUrl?.(url);
-    termRef.current?.writeln(`\x1b[36m▶ server-ready: ${url}\x1b[0m`);
+    // Tell the user to use the in-app Preview tab — opening the WebContainer
+    // URL in a new browser tab shows a blank page because the container's
+    // network proxy is tied to this browsing context.
+    termRef.current?.writeln(`\x1b[36m▶ server-ready — switching to PREVIEW tab\x1b[0m`);
+    termRef.current?.writeln(`\x1b[90m# (Do not open the URL in a new tab — use the embedded Preview instead)\x1b[0m`);
   }), [onServerUrl]);
 
   // Mirror LSP install/startup progress into the terminal so the user
