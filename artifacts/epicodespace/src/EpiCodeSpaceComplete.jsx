@@ -2506,7 +2506,7 @@ ${finalCode}
       let lastToolCallSig = null;
       const MAX_ROUNDS = 8;
       const isDeepSeekAgent = activeAgent === 'deepseek';
-      const roundLimit = isDeepSeekAgent ? Number.POSITIVE_INFINITY : MAX_ROUNDS;
+      const roundLimit = MAX_ROUNDS;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
 
       try {
@@ -2616,8 +2616,9 @@ ${finalCode}
               allSteps.push(`💭 ${data.content.slice(0, 200)}`);
             }
 
-            // Execute each tool call locally
-            toolResults = data.tool_calls.map(tc => {
+            // Execute each tool call locally (sequential so lastToolCallSig stays accurate)
+            toolResults = [];
+            for (const tc of data.tool_calls) {
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const result = isConsecutiveDuplicate
@@ -2626,7 +2627,7 @@ ${finalCode}
                     duplicate: true,
                     systemMessage: 'You just read this file, please proceed with the data provided',
                   }
-                : executeToolCall(tc.name, tc.arguments, currentFS);
+                : await executeToolCall(tc.name, tc.arguments, currentFS);
 
               if (!isConsecutiveDuplicate) {
                 lastToolCallSig = signature;
@@ -2641,16 +2642,18 @@ ${finalCode}
                 : tc.name === 'searchCode' ? `"${tc.arguments.pattern}"`
                 : tc.name === 'analyzeFile' ? `"${tc.arguments.path || activeFile}"`
                 : '';
-              const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : '📋';
+              const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : tc.name === 'runCommand' ? '💻' : '📋';
               const resultSummary = isConsecutiveDuplicate
                 ? '⚠️ duplicate blocked'
                 : tc.name === 'analyzeFile' && result.ok
                   ? `${result.issueCount} issue(s) [${result.summary}]`
+                  : tc.name === 'diagnoseProject' && result.ok
+                    ? `${result.summary}`
                   : result.ok ? '✅' : '❌ ' + result.error;
               allSteps.push(`${icon} **${tc.name}**(${argSummary}) → ${resultSummary}`);
               allToolCalls.push({ tool: tc.name, args: tc.arguments });
-              return { id: tc.id, name: tc.name, result };
-            });
+              toolResults.push({ id: tc.id, name: tc.name, result });
+            }
 
             // Apply filesystem mutations
             const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
