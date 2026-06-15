@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { RefreshCw, Square, Power, Loader2, Copy, ClipboardPaste, UploadCloud } from 'lucide-react';
+import { RefreshCw, Square, Power, Loader2, Copy, ClipboardPaste, UploadCloud, AlertTriangle } from 'lucide-react';
 import { bridge } from '../lib/runtime/WebContainerBridge.ts';
 import { autoPullRootNewFiles } from '../lib/runtime/syncInbound.ts';
 import { lspBridge } from '../lib/lsp/TsLspBridge.ts';
@@ -241,6 +241,67 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
     }
   }, [sink]);
 
+  // ── Safari background-kill detector ──────────────────────────────────
+  // iPadOS aggressively suspends WASM processes when you switch to another
+  // app or tab. We detect the return and auto-restart jsh so the user
+  // doesn't have to manually tap "New Shell" every time.
+  const startShellRef = useRef(startShell);
+  useEffect(() => { startShellRef.current = startShell; }, [startShell]);
+
+  useEffect(() => {
+    let wakeLock = null;
+
+    const onHide = async () => {
+      // Warn immediately when the tab goes to background.
+      if (processRef.current) {
+        termRef.current?.writeln(
+          '\r\n\x1b[33m⚠ Tab backgrounded — Safari may kill the WebContainer.\x1b[0m'
+        );
+        termRef.current?.writeln(
+          '\x1b[90m# Return quickly. If the shell dies, EpiCodeSpace will restart it.\x1b[0m'
+        );
+      }
+      // Request screen wake lock to slow down Safari's aggression (iOS 16.4+).
+      try {
+        wakeLock = await navigator.wakeLock?.request('screen');
+      } catch { /* not available or denied */ }
+    };
+
+    const onShow = async () => {
+      // Release wake lock now that we're foregrounded again.
+      try { await wakeLock?.release(); } catch {} finally { wakeLock = null; }
+
+      const state = bridge.state;
+      if (state === 'ready' && !processRef.current) {
+        // Container alive but jsh was killed — restart the shell automatically.
+        termRef.current?.writeln(
+          '\r\n\x1b[33m⚠ Returned from background — shell was killed by Safari.\x1b[0m'
+        );
+        termRef.current?.writeln('\x1b[36m▶ Restarting shell…\x1b[0m');
+        try { await startShellRef.current(); } catch (err) {
+          termRef.current?.writeln(`\x1b[31m✖ auto-restart failed: ${err?.message || err}\x1b[0m`);
+        }
+      } else if (state === 'idle' || state === 'dead') {
+        termRef.current?.writeln(
+          '\r\n\x1b[33m⚠ Returned from background — WebContainer was killed by Safari.\x1b[0m'
+        );
+        termRef.current?.writeln(
+          '\x1b[90m# Tap "Reboot ↺" to restart.\x1b[0m'
+        );
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) { onHide(); } else { onShow(); }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      try { wakeLock?.release(); } catch {}
+    };
+  }, []); // no deps — uses refs to read current values
+
   // ── Boot handler ──────────────────────────────────────────────────────
   const handleBoot = useCallback(async () => {
     setBootError(null);
@@ -477,6 +538,18 @@ export default function WebContainerTerminal({ files, sink, serverUrl, onServerU
           <p className="text-amber-400/50 text-[10px]">
             Also ensure your Replit app URL is registered at webcontainers.io under your API key's allowed origins.
           </p>
+        </div>
+      )}
+
+      {/* Safari background-kill warning — shown when a process is running */}
+      {isolated && processRunning && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-yellow-950/40 border-b border-yellow-800/40 text-[10px] text-yellow-300/80">
+          <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0 text-yellow-500/70" />
+          <span>
+            <strong className="text-yellow-300">Keep this tab open.</strong>
+            {' '}Safari kills WebContainer WASM when you switch away.
+            If the shell dies, EpiCodeSpace will auto-restart it when you return.
+          </span>
         </div>
       )}
 
