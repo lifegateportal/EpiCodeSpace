@@ -800,7 +800,8 @@ function EpiCodeSpaceApp() {
     deleteFile: hookDeleteFile,
     onMutation,
   } = useFileSystem();
-  const [projectName, setProjectName] = useState(() => loadJSON('epicodespace_project_v1', 'My Project'));
+  const [projectName,    setProjectName]    = useState(() => loadJSON('epicodespace_project_v1', 'My Project'));
+  const [projectRepoUrl, setProjectRepoUrl] = useState(() => loadJSON('epicodespace_project_repo_v1', ''));
   const firstFile = Object.keys(fileSystem)[0] || null;
   const [activeFile, setActiveFile] = useState(firstFile);
   const [openTabs, setOpenTabs] = useState(firstFile ? [firstFile] : []);
@@ -1252,7 +1253,7 @@ function EpiCodeSpaceApp() {
     clearTimeout(gistSyncTimerRef.current);
     gistSyncTimerRef.current = setTimeout(async () => {
       setGistSyncStatus('syncing');
-      const result = await pushToGist(fileSystem, projectName);
+      const result = await pushToGist(fileSystem, projectName, projectRepoUrl);
       setGistSyncStatus(result.ok ? 'ok' : 'error');
       if (!result.ok) console.warn('[GistSync] push failed:', result.error);
     }, 3000); // 3 s debounce — only push when user pauses
@@ -1758,6 +1759,7 @@ ${finalCode}
 
   // ── Project management ────────────────────────────────────────────────────
   useEffect(() => { storeJSON('epicodespace_project_v1', projectName); }, [projectName]);
+  useEffect(() => { storeJSON('epicodespace_project_repo_v1', projectRepoUrl); }, [projectRepoUrl]);
 
   const buildWorkspaceSnapshot = useCallback(() => {
     const latest = getLatest();
@@ -1768,12 +1770,13 @@ ${finalCode}
     return {
       files: latest,
       projectName,
+      repoUrl: projectRepoUrl,
       openTabs: validTabs,
       activeFile: nextActive,
       previewRenderMode,
       previewSourcePath,
     };
-  }, [getLatest, openTabs, activeFile, projectName, previewRenderMode, previewSourcePath]);
+  }, [getLatest, openTabs, activeFile, projectName, projectRepoUrl, previewRenderMode, previewSourcePath]);
 
   const handleSaveSnapshot = useCallback((opts = {}) => {
     const { manual = true } = opts;
@@ -1801,6 +1804,7 @@ ${finalCode}
     const snap = loaded.snapshot;
     replaceAll(snap.files || {});
     setProjectName(snap.projectName || 'My Project');
+    if (snap.repoUrl !== undefined) setProjectRepoUrl(snap.repoUrl || '');
     setOpenTabs(Array.isArray(snap.openTabs) ? snap.openTabs : []);
     setActiveFile(snap.activeFile || null);
     setPreviewRenderMode(snap.previewRenderMode === 'live' ? 'live' : 'static');
@@ -1905,6 +1909,7 @@ ${finalCode}
     if (Object.keys(files).length === 0) throw new Error('No files found in repository.');
     replaceAll(files);
     setProjectName(repoName);
+    setProjectRepoUrl(url.trim());
     const first = Object.keys(files)[0] || null;
     setOpenTabs(first ? [first] : []);
     setActiveFile(first);
@@ -3281,6 +3286,7 @@ ${finalCode}
                   fileSystem={fileSystem}
                   activeFile={activeFile}
                   projectName={projectName}
+                  projectRepoUrl={projectRepoUrl}
                   onFileClick={handleFileClick}
                   onCreateFile={handleCreateFileAt}
                   onDeleteFile={handleDeleteFile}
@@ -3288,6 +3294,7 @@ ${finalCode}
                   onMoveFile={handleMoveFile}
                   onDropFiles={handleExplorerDropFiles}
                   onProjectRename={setProjectName}
+                  onProjectRepoUrl={setProjectRepoUrl}
                   onImport={handleImportProject}
                   onExport={handleExportProject}
                   onGitClone={handleGitClone}
@@ -4650,10 +4657,12 @@ ${finalCode}
           onClose={() => setShowConnectionsManager(false)}
           fileSystem={fileSystem}
           projectName={projectName}
+          projectRepoUrl={projectRepoUrl}
           onGistPull={(result) => {
             if (result?.files) {
               replaceAll(result.files);
               if (result.projectName) setProjectName(result.projectName);
+              if (result.repoUrl !== undefined) setProjectRepoUrl(result.repoUrl || '');
               setShowConnectionsManager(false);
             }
           }}

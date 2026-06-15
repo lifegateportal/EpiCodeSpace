@@ -27,11 +27,11 @@ export async function listR2Saves() {
  * snapshot=false  → overwrites `{slug}/latest.json`
  * snapshot=true   → creates  `{slug}/{iso-timestamp}.json`
  */
-export async function saveToR2(fileSystem, projectName, { snapshot = false } = {}) {
+export async function saveToR2(fileSystem, projectName, { snapshot = false, repoUrl = '' } = {}) {
   const ts   = new Date().toISOString().replace(/[:.]/g, '-');
   const slug = (projectName || 'workspace').replace(/[^a-zA-Z0-9._-]/g, '_');
   const key  = snapshot ? `${slug}/${ts}.json` : `${slug}/latest.json`;
-  const payload = { projectName, files: fileSystem, savedAt: new Date().toISOString() };
+  const payload = { projectName, repoUrl, files: fileSystem, savedAt: new Date().toISOString() };
   try {
     const data = await r2Fetch('/save', {
       method: 'POST',
@@ -53,6 +53,7 @@ export async function loadFromR2(key) {
     return {
       ok: true,
       projectName: data.payload.projectName || 'My Project',
+      repoUrl: data.payload.repoUrl || '',
       files: data.payload.files || {},
       savedAt: data.payload.savedAt,
     };

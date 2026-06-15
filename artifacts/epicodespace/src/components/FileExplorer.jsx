@@ -190,6 +190,7 @@ export default function FileExplorer({
   fileSystem,
   activeFile,
   projectName,
+  projectRepoUrl = '',
   onFileClick,
   onCreateFile,     // (path: string) => void
   onDeleteFile,     // (path: string) => void
@@ -197,6 +198,7 @@ export default function FileExplorer({
   onMoveFile,       // (oldPath, newPath) => void  (drag & drop)
   onDropFiles,      // (files: FileList|File[], folderPath: string) => void
   onProjectRename,  // (name: string) => void
+  onProjectRepoUrl, // (url: string) => void
   onImport,
   onExport,
   onGitClone,       // async (url, token, onProgress) => void
@@ -624,7 +626,7 @@ export default function FileExplorer({
       )}
 
       {/* Project label */}
-      <div className="px-2 py-1 flex items-center gap-1 text-xs font-semibold text-purple-200 mb-1 shrink-0">
+      <div className="px-2 py-1 flex items-center gap-1 text-xs font-semibold text-purple-200 shrink-0">
         <ChevronDown size={14} />
         <span
           className="tracking-wide uppercase truncate cursor-pointer"
@@ -633,6 +635,44 @@ export default function FileExplorer({
         >
           {projectName}
         </span>
+      </div>
+
+      {/* Repo URL row */}
+      <div className="px-3 pb-1.5 flex items-center gap-1.5 shrink-0 min-w-0">
+        <Github size={9} className="text-purple-500/50 shrink-0" />
+        {projectRepoUrl ? (
+          <>
+            <a
+              href={projectRepoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[9px] text-purple-400/60 hover:text-fuchsia-300 truncate font-mono transition-colors flex-1 min-w-0"
+              title={projectRepoUrl}
+            >
+              {projectRepoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, '')}
+            </a>
+            <button
+              onClick={() => {
+                const u = prompt('Repository URL:', projectRepoUrl);
+                if (u !== null) onProjectRepoUrl?.(u.trim());
+              }}
+              className="text-purple-500/40 hover:text-purple-300 transition-colors shrink-0"
+              title="Change repo URL"
+            >
+              <FileEdit size={9} />
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() => {
+              const u = prompt('Repository URL (e.g. https://github.com/owner/repo):');
+              if (u?.trim()) onProjectRepoUrl?.(u.trim());
+            }}
+            className="text-[9px] text-purple-500/40 hover:text-purple-300 transition-colors"
+          >
+            + set repo URL
+          </button>
+        )}
       </div>
 
       {/* Tree */}

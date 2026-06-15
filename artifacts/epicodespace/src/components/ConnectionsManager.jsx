@@ -310,7 +310,7 @@ function ConnectionCard({ conn, onDisconnect, onReplace }) {
 }
 
 // ─── R2 Sync Panel ────────────────────────────────────────────────────────────
-function R2SyncPanel({ fileSystem, projectName, onPullSuccess }) {
+function R2SyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuccess }) {
   const [open,      setOpen]      = useState(false);
   const [r2Status,  setR2Status]  = useState(null); // null | 'checking' | { ok, bucket } | { ok: false, error }
   const [saves,     setSaves]     = useState([]);
@@ -343,7 +343,7 @@ function R2SyncPanel({ fileSystem, projectName, onPullSuccess }) {
 
   const handleSave = useCallback(async (snapshot = false) => {
     setStatus('saving');
-    const r = await saveToR2(fileSystem || {}, projectName || '', { snapshot });
+    const r = await saveToR2(fileSystem || {}, projectName || '', { snapshot, repoUrl: projectRepoUrl });
     if (r.ok) {
       setStatus({ ok: true, msg: `Saved → ${r.key}` });
       fetchSaves();
@@ -622,7 +622,7 @@ function GistSyncPanel({ fileSystem, projectName, onPullSuccess }) {
 }
 
 // ─── Main component ────────────────────────────────────────────────────────────
-export default function ConnectionsManager({ connections, onChange, onClose, onGistPull, fileSystem, projectName }) {
+export default function ConnectionsManager({ connections, onChange, onClose, onGistPull, fileSystem, projectName, projectRepoUrl }) {
   const [showAdd, setShowAdd] = useState(connections.length === 0);
 
   const handleSave = useCallback((conn) => {
@@ -661,7 +661,7 @@ export default function ConnectionsManager({ connections, onChange, onClose, onG
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
           {/* R2 Storage sync */}
-          <R2SyncPanel fileSystem={fileSystem} projectName={projectName} onPullSuccess={onGistPull} />
+          <R2SyncPanel fileSystem={fileSystem} projectName={projectName} projectRepoUrl={projectRepoUrl} onPullSuccess={onGistPull} />
           {/* Gist Sync */}
           <GistSyncPanel fileSystem={fileSystem} projectName={projectName} onPullSuccess={onGistPull} />
 

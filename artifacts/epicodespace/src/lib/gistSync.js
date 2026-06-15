@@ -49,11 +49,11 @@ export function isGistSyncEnabled() {
  * @param {string} projectName
  * @returns {Promise<{ ok: boolean, gistId?: string, error?: string }>}
  */
-export async function pushToGist(fileSystem, projectName) {
+export async function pushToGist(fileSystem, projectName, repoUrl = '') {
   const token = getToken();
   if (!token) return { ok: false, error: 'No GitHub token configured.' };
 
-  const payload = JSON.stringify({ projectName, files: fileSystem }, null, 0);
+  const payload = JSON.stringify({ projectName, repoUrl, files: fileSystem }, null, 0);
   const body = {
     description: `EpiCodeSpace workspace — ${projectName || 'My Project'}`,
     public: false,
@@ -122,6 +122,7 @@ export async function pullFromGist() {
     return {
       ok: true,
       projectName: parsed.projectName || 'My Project',
+      repoUrl: parsed.repoUrl || '',
       files: parsed.files || {},
     };
   } catch (err) {
