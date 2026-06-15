@@ -45,6 +45,7 @@ class Bridge {
   private stateListeners = new Set<Listener<BootState>>();
   private serverListeners = new Set<Listener<ServerReady>>();
   private bootPromise: Promise<WebContainer> | null = null;
+  private teardownPromise: Promise<void> | null = null;
   private preTeardownHooks = new Set<() => Promise<void>>();
 
   get state(): BootState { return this._state; }
@@ -99,33 +100,51 @@ class Bridge {
       throw err;
     }
 
+    // Wait for any in-flight teardown to fully complete before calling
+    // WebContainer.boot() — the SDK enforces one live instance per page, so
+    // calling boot() while teardown() is still running yields
+    // "Unable to create more instances".
+    if (this.teardownPromise) {
+      try { await this.teardownPromise; } catch { /* ignore */ }
+    }
+
     this.setState('booting');
     this.bootPromise = (async () => {
+      // Track the raw WC instance separately so we can always tear it down on
+      // failure, even if the error happens between WebContainer.boot() and
+      // assigning this.container (e.g. during mount()).
+      let rawContainer: WebContainer | null = null;
       try {
         const bootOpts: Parameters<typeof WebContainer.boot>[0] = {
           coep: 'require-corp',
           workdirName: 'epicodespace',
         };
 
-        const c = await WebContainer.boot(bootOpts);
-        c.on('server-ready', (port, url) => {
+        rawContainer = await WebContainer.boot(bootOpts);
+        rawContainer.on('server-ready', (port, url) => {
           logger.info('runtime', 'server-ready', { port, url });
           for (const l of this.serverListeners) {
             try { l({ port, url }); } catch (err) { logger.error('runtime', 'server listener', err); }
           }
         });
-        c.on('error', (e) => {
+        rawContainer.on('error', (e) => {
           logger.error('runtime', 'webcontainer error', e);
         });
 
         const tree = buildTreeFromFlat(opts.files);
-        await c.mount(tree);
+        await rawContainer.mount(tree);
 
-        this.container = c;
+        this.container = rawContainer;
         this.setState('ready');
         logger.info('runtime', 'boot complete', { fileCount: Object.keys(opts.files).length });
-        return c;
+        return rawContainer;
       } catch (err) {
+        // If WebContainer.boot() succeeded but something later (e.g. mount)
+        // failed, the SDK still holds a live instance. Tear it down so the
+        // next boot() call is not rejected with "Unable to create more instances".
+        if (rawContainer) {
+          try { rawContainer.teardown(); } catch { /* ignore */ }
+        }
         // Reset to idle (not 'dead') so the Boot button re-enables and the
         // user can retry. 'dead' used to strand the UI after a transient
         // network / SAB failure with no way to recover besides reload.
@@ -145,15 +164,31 @@ class Bridge {
 
   /** Tear down container and free memory. Safe to call from any state. */
   async teardown(): Promise<void> {
-    // Drain outbound queues (e.g. OPFS→WC writes) before releasing the container.
-    for (const hook of this.preTeardownHooks) {
-      try { await hook(); } catch (err) { logger.warn('runtime', 'pre-teardown hook threw', err); }
+    // If a teardown is already running, join it — don't start a second one.
+    if (this.teardownPromise) {
+      return this.teardownPromise;
     }
-    const c = this.container;
-    this.container = null;
-    this.setState('idle');
-    if (c) {
-      try { c.teardown(); } catch (err) { logger.warn('runtime', 'teardown threw', err); }
+
+    const doTeardown = async () => {
+      // Drain outbound queues (e.g. OPFS→WC writes) before releasing the container.
+      for (const hook of this.preTeardownHooks) {
+        try { await hook(); } catch (err) { logger.warn('runtime', 'pre-teardown hook threw', err); }
+      }
+      const c = this.container;
+      this.container = null;
+      if (c) {
+        // Call c.teardown() BEFORE setState('idle') so boot() can never race
+        // with a still-live WC instance. The SDK enforces one instance per page.
+        try { await c.teardown(); } catch (err) { logger.warn('runtime', 'teardown threw', err); }
+      }
+      this.setState('idle');
+    };
+
+    this.teardownPromise = doTeardown();
+    try {
+      await this.teardownPromise;
+    } finally {
+      this.teardownPromise = null;
     }
   }
 

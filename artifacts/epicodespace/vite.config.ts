@@ -54,7 +54,10 @@ export default defineConfig({
         });
       },
     },
-    runtimeErrorOverlay(),
+    // runtimeErrorOverlay is intentionally omitted: EpiCodeSpace runs a nested
+    // WebContainer dev environment, so its own runtime errors (e.g. "Unable to
+    // create more instances") would trigger the overlay confusingly. The terminal
+    // UI already surfaces all boot errors inline.
     ...(process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined
       ? [
