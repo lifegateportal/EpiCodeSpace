@@ -422,7 +422,7 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
         // failed boot attempt. This state lives in JS memory and cannot be cleared
         // without a page reload — retrying boot on the same page always fails.
         // Strategy: clear persistent storage (OPFS/SW/IDB), then require a reload.
-        term?.writeln(`\x1b[33m▶ boot failed (ENOENT) — clearing WebContainers cache…\x1b[0m`);
+        term?.writeln(`\x1b[33m▶ boot failed (${msg}) — clearing WebContainers cache…\x1b[0m`);
         await clearWebContainerOPFS();
         term?.writeln('\x1b[33m✔ cache cleared — reload the page to finish recovery\x1b[0m');
         term?.writeln('\x1b[90m# WebContainers holds in-memory state from the failed boot that only a page reload can reset.\x1b[0m');
