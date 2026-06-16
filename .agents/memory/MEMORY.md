@@ -1,1 +1,2 @@
 - [npm registry in production](npm-registry-prod.md) — Replit's package-firewall.replit.local is dev-only; production containers must override registry to registry.npmjs.org via session HOME/.npmrc
+- [node-pty production crash](node-pty-production-crash.md) — static ESM import of native modules crashes Cloud Run health checks; use dynamic import with graceful fallback.

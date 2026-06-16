@@ -24,16 +24,55 @@
  * 3. Dev-server detection
  *    Pty output is scanned for "localhost:PORT".  Matched ports are translated
  *    to the Replit proxy URL and sent as a `serverUrl` message.
+ *
+ * 4. Graceful degradation
+ *    node-pty is loaded dynamically at runtime (not as a static ESM import).
+ *    If the native binary cannot load in the production container, the HTTP
+ *    server still starts, passes health checks, and serves AI chat normally.
+ *    Only the terminal WebSocket feature is degraded — clients receive a clear
+ *    error message instead of crashing the whole server.
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
-import * as pty from 'node-pty';
+import type * as PtyTypes from 'node-pty';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
+
+// ── Lazy node-pty loader ──────────────────────────────────────────────────────
+//
+// node-pty is a native module. A static `import` at the top of this file would
+// crash the entire process if the binary is incompatible with the production
+// container. Instead we load it once on first use and cache the result (or the
+// error). If it fails, the HTTP server continues to serve chat and health checks.
+
+type PtyModule = typeof PtyTypes;
+
+let _ptyModule: PtyModule | null = null;
+let _ptyError: string | null = null;
+let _ptyLoading: Promise<PtyModule | null> | null = null;
+
+function loadPty(): Promise<PtyModule | null> {
+  if (_ptyLoading) return _ptyLoading;
+  _ptyLoading = import('node-pty')
+    .then((mod) => {
+      _ptyModule = mod as unknown as PtyModule;
+      logger.info('node-pty loaded successfully');
+      return _ptyModule;
+    })
+    .catch((err: unknown) => {
+      _ptyError = (err instanceof Error) ? err.message : String(err);
+      logger.error({ err }, 'node-pty failed to load — terminal feature unavailable');
+      return null;
+    });
+  return _ptyLoading;
+}
+
+// Begin loading eagerly so it's ready before the first WebSocket connection.
+loadPty().catch(() => {});
 
 // ── Port URL helper ────────────────────────────────────────────────────────────
 
@@ -109,7 +148,8 @@ export function attachTerminalServer(server: http.Server): void {
 function handleConnection(ws: WebSocket): void {
   const sessionId  = randomUUID().slice(0, 8);
   const sessionDir = path.join(os.tmpdir(), `epicode-${sessionId}`);
-  let ptyProcess: pty.IPty | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let ptyProcess: any = null;
   const announcedPorts = new Set<number>();
 
   const send = (msg: object) => {
@@ -149,6 +189,16 @@ function handleConnection(ws: WebSocket): void {
     // ── sync: initial session bootstrap ──────────────────────────────────
     if (msg.type === 'sync') {
       try {
+        // Ensure node-pty is available before starting the session
+        const pty = await loadPty();
+        if (!pty) {
+          send({
+            type: 'error',
+            message: `Terminal unavailable: node-pty could not load in this environment. ${_ptyError ?? ''}`,
+          });
+          return;
+        }
+
         await fs.mkdir(sessionDir, { recursive: true });
 
         // Write synced editor files
@@ -196,12 +246,12 @@ function handleConnection(ws: WebSocket): void {
           } as Record<string, string>,
         });
 
-        ptyProcess.onData((data) => {
+        ptyProcess.onData((data: string) => {
           send({ type: 'output', data });
           scanForPorts(data);
         });
 
-        ptyProcess.onExit(({ exitCode }) => {
+        ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
           send({ type: 'exit', exitCode });
           ptyProcess = null;
         });
