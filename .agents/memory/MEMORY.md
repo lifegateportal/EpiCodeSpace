@@ -1,2 +1,1 @@
-- [WebContainer boot and mount rules](webcontainer-mount-rules.md) — never pass mountPoint to mount(); never call configureAPIKey(); deepseek-coder is deprecated
-- [node-pty on Replit](node-pty-replit.md) — requires Python3 (via installSystemDependencies) to compile; native binary lives at node_modules/.pnpm/node-pty@1.1.0/.../build/Release/pty.node
+- [npm registry in production](npm-registry-prod.md) — Replit's package-firewall.replit.local is dev-only; production containers must override registry to registry.npmjs.org via session HOME/.npmrc

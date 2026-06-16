@@ -1,0 +1,55 @@
+▶ connecting to server terminal…
+▶ syncing files to server…
+✔ server terminal ready
+runner@localhost:/tmp/epicode-34dd7fec$ ▶ syncing 64 files…
+✔ synced
+npm install
+[terminal] npm → pnpm install
+ WARN  Unsupported engine: wanted: {"node":">=20 <23"} (current: {"node":"v24.12.0","pnpm":"10.26.1"})
+ WARN  GET http://package-firewall.replit.local/npm/@vitejs%2Fplugin-react error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/autoprefixer error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/firebase-admin error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/postcss error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/vite error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/tailwindcss error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Fcore error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Fsortable error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Futilities error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/firebase error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/html5-qrcode error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/lucide-react error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-dom error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-router-dom error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-window error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@vitejs%2Fplugin-react error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/autoprefixer error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/firebase-admin error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/postcss error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/vite error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/tailwindcss error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Fcore error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Fsortable error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/@dnd-kit%2Futilities error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/firebase error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/html5-qrcode error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/lucide-react error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-dom error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-router-dom error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/react-window error (EAI_AGAIN). Will retry in 1 minute. 1 retries left.
+ ERR_PNPM_META_FETCH_FAIL  GET http://package-firewall.replit.local/npm/autoprefixer: request to http://package-firewall.replit.local/npm/autoprefixer failed, reason: getaddrinfo EAI_AGAIN package-firewall.replit.local
+
+This error happened while installing a direct dependency of /tmp/epicode-34dd7fec
+ WARN  GET http://package-firewall.replit.local/npm/recharts error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+ WARN  GET http://package-firewall.replit.local/npm/xlsx error (EAI_AGAIN). Will retry in 10 seconds. 2 retries left.
+runner@localhost:/tmp/epicode-34dd7fec$ npm run dev
+ WARN  Unsupported engine: wanted: {"node":">=20 <23"} (current: {"node":"v24.12.0","pnpm":"10.26.1"})
+
+> lifegate-ag-workspace@1.0.0 dev /tmp/epicode-34dd7fec
+> vite
+
+sh: line 1: vite: command not found
+ ELIFECYCLE  Command failed.
+ WARN   Local package.json exists, but node_modules missing, did you mean to install?
+runner@localhost:/tmp/epicode-34dd7fec$ 

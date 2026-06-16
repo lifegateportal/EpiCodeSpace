@@ -1,3 +1,31 @@
+/**
+ * terminalServer.ts — WebSocket-backed server-side bash terminal via node-pty.
+ *
+ * Design
+ * ──────
+ * 1. Registry fix (the critical one)
+ *    Replit injects `registry=http://package-firewall.replit.local` into npm's
+ *    global config.  That hostname does NOT resolve in deployed containers
+ *    (EAI_AGAIN).  We override it at the highest-precedence level: env vars
+ *    (`npm_config_*`).  These beat every .npmrc file, including the one Replit
+ *    writes globally.  Result: npm, pnpm, yarn all hit registry.npmjs.org.
+ *
+ * 2. Correct working directory
+ *    `bash --login` may cd to HOME (Replit's /home/runner/workspace) after
+ *    reading /etc/profile.  We launch the shell with a two-step wrapper:
+ *
+ *      bash --login -c "exec bash --rcfile <init-file> -i"
+ *
+ *    The outer login shell sets up PATH (Nix, node, npm, pnpm…).  The inner
+ *    interactive shell reads our init file, which sources the user's real
+ *    .bashrc (colors, git-prompt, completions) and then cd's into the synced
+ *    session directory.  The user sees their project files immediately.
+ *
+ * 3. Dev-server detection
+ *    Pty output is scanned for "localhost:PORT".  Matched ports are translated
+ *    to the Replit proxy URL and sent as a `serverUrl` message.
+ */
+
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
 import * as pty from 'node-pty';
@@ -5,71 +33,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { execFileSync } from 'child_process';
 import { logger } from './logger';
 
-// ── Resolve real binary paths once at startup ────────────────────────────────
-
-function which(bin: string): string {
-  try { return execFileSync('which', [bin], { encoding: 'utf8' }).trim(); } catch { return ''; }
-}
-
-const REAL_NPM  = which('npm')  || '/usr/bin/npm';
-const REAL_PNPM = which('pnpm') || '';
-
-/**
- * npm 11 + Node 24 crashes with "Exit handler never called!" in production
- * containers because npm's internal worker threads get SIGKILL'd before they
- * can call the exit handler (OOM / PID-limit / seccomp).
- *
- * Fix: write a tiny bash wrapper that silently redirects `npm install` /
- * `npm run` → `pnpm`, which doesn't use the same worker-thread IPC.
- * The user never has to change their commands.
- */
-async function writeNpmWrapper(fakeBinDir: string): Promise<void> {
-  const hasPnpm = Boolean(REAL_PNPM);
-
-  // npm wrapper
-  // Note: \${...} escapes prevent esbuild from treating bash ${@:2} etc.
-  // as TypeScript template expressions — only ${REAL_PNPM}/${REAL_NPM} are
-  // intentionally interpolated at build time.
-  const npmScript = hasPnpm
-    ? `#!/usr/bin/env bash
-# Transparent npm → pnpm redirect (npm 11+Node 24 crashes in containers).
-case "$1" in
-  install|i|ci|add|uninstall|remove|rm|update|up)
-    printf '\\033[36m[terminal] npm → pnpm %s\\033[0m\\n' "$*" >&2
-    exec ${REAL_PNPM} "\$@"
-    ;;
-  run)
-    exec ${REAL_PNPM} run "\${@:2}"
-    ;;
-  exec|x)
-    exec ${REAL_PNPM} exec "\${@:2}"
-    ;;
-  *)
-    exec ${REAL_NPM} "\$@"
-    ;;
-esac
-`
-    : `#!/usr/bin/env bash
-# pnpm not found — fall back to real npm with minimal flags.
-exec ${REAL_NPM} --foreground-scripts --jobs=1 --no-audit --no-fund "\$@"
-`;
-
-  const npxScript = hasPnpm
-    ? `#!/usr/bin/env bash
-exec ${REAL_PNPM} exec "\$@"
-`
-    : `#!/usr/bin/env bash
-exec npx "\$@"
-`;
-
-  await fs.writeFile(path.join(fakeBinDir, 'npm'),  npmScript,  { mode: 0o755 });
-  await fs.writeFile(path.join(fakeBinDir, 'npx'),  npxScript,  { mode: 0o755 });
-}
-
-// ── Replit port URL helper ───────────────────────────────────────────────────
+// ── Port URL helper ────────────────────────────────────────────────────────────
 
 function getPortUrl(port: number): string | null {
   const devDomain = process.env['REPLIT_DEV_DOMAIN'];
@@ -78,16 +44,67 @@ function getPortUrl(port: number): string | null {
   return `https://${port}-${devDomain}`;
 }
 
-const ANSI_RE     = /\x1b\[[0-9;]*[A-Za-z]/g;
-const LOCAL_URL_RE = /https?:\/\/localhost:(\d{2,5})/g;
+const ANSI_RE      = /\x1b\[[0-9;]*[A-Za-z]/g;
+const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/g;
 
-// ── WebSocket server ─────────────────────────────────────────────────────────
+// ── Session init file ─────────────────────────────────────────────────────────
+
+/**
+ * Write a bash init file for the interactive shell that:
+ *   - sources the user's real ~/.bashrc (prompt, colors, git-branch indicator)
+ *   - re-exports correct npm registry env vars (belt-and-suspenders)
+ *   - cd's into the session project directory
+ *
+ * We use a two-stage launch so that the login shell still sets up PATH
+ * (Nix, Node, pnpm, etc.) while our init file controls the cwd.
+ */
+async function writeSessionInit(sessionDir: string): Promise<string> {
+  const initFile = path.join(sessionDir, '.term-init');
+
+  // NOTE: no esbuild template issues here — this is written to a file, not
+  // embedded as a TS template literal.  The ${sessionDir} below is TypeScript.
+  const script = [
+    '#!/usr/bin/env bash',
+    '# ── EpiCodeSpace terminal init ─────────────────────────────────────',
+    '',
+    '# Source the user real .bashrc for git-prompt, colors, completions, etc.',
+    '[ -r "${HOME}/.bashrc" ] && . "${HOME}/.bashrc"',
+    '',
+    '# Override npm/pnpm/yarn registry — Replit private registry (package-firewall)',
+    '# is only reachable from the dev workspace, not deployed containers.',
+    'export npm_config_registry=https://registry.npmjs.org',
+    'export npm_config_update_notifier=false',
+    'export npm_config_fund=false',
+    'export npm_config_audit=false',
+    'export NO_UPDATE_NOTIFIER=1',
+    'export DISABLE_OPENCOLLECTIVE=1',
+    '',
+    '# Start in the session project directory',
+    `cd "${sessionDir}" 2>/dev/null`,
+    '',
+    '# Write a project-level .npmrc as belt-and-suspenders for tools that',
+    '# read it from the cwd and ignore env vars (some old pnpm versions do).',
+    `cat > "${sessionDir}/.npmrc" <<'__NPMRC__'`,
+    'registry=https://registry.npmjs.org',
+    'update-notifier=false',
+    'fund=false',
+    'audit=false',
+    '__NPMRC__',
+  ].join('\n');
+
+  await fs.writeFile(initFile, script, { mode: 0o644 });
+  return initFile;
+}
+
+// ── WebSocket server ──────────────────────────────────────────────────────────
 
 export function attachTerminalServer(server: http.Server): void {
   const wss = new WebSocketServer({ server, path: '/api/terminal' });
-  logger.info({ path: '/api/terminal', realNpm: REAL_NPM, realPnpm: REAL_PNPM }, 'terminal WebSocket server attached');
+  logger.info({ path: '/api/terminal' }, 'terminal WebSocket server attached');
   wss.on('connection', (ws) => handleConnection(ws));
 }
+
+// ── Per-connection handler ────────────────────────────────────────────────────
 
 function handleConnection(ws: WebSocket): void {
   const sessionId  = randomUUID().slice(0, 8);
@@ -119,7 +136,7 @@ function handleConnection(ws: WebSocket): void {
         const url = getPortUrl(port);
         if (url) {
           send({ type: 'serverUrl', port, url });
-          logger.info({ sessionId, port, url }, 'detected dev server port');
+          logger.info({ sessionId, port, url }, 'detected dev-server port');
         }
       }
     }
@@ -129,39 +146,53 @@ function handleConnection(ws: WebSocket): void {
     let msg: any;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
+    // ── sync: initial session bootstrap ──────────────────────────────────
     if (msg.type === 'sync') {
       try {
         await fs.mkdir(sessionDir, { recursive: true });
 
-        // Write editor files
+        // Write synced editor files
         const files: Record<string, string> = msg.files ?? {};
         await Promise.all(
           Object.entries(files).map(async ([filePath, content]) => {
-            const fullPath = path.join(sessionDir, filePath);
-            await fs.mkdir(path.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, String(content), 'utf8');
+            const full = path.join(sessionDir, filePath);
+            await fs.mkdir(path.dirname(full), { recursive: true });
+            await fs.writeFile(full, String(content), 'utf8');
           })
         );
 
-        // Write npm → pnpm wrapper binaries
-        const fakeBinDir = path.join(sessionDir, '.bin');
-        await fs.mkdir(fakeBinDir, { recursive: true });
-        await writeNpmWrapper(fakeBinDir);
+        // Write bash init file
+        const initFile = await writeSessionInit(sessionDir);
 
-        const sessionPath = `${fakeBinDir}:${process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin'}`;
-
-        ptyProcess = pty.spawn('bash', ['--login'], {
+        // Two-stage launch:
+        //   Stage 1 — bash --login: reads /etc/profile, sets up Nix PATH,
+        //             makes node/npm/pnpm/yarn/git/etc. available.
+        //   Stage 2 — exec bash --rcfile <initFile> -i: starts the interactive
+        //             shell from our init file which cds into the session dir.
+        ptyProcess = pty.spawn('bash', [
+          '--login',
+          '-c',
+          `exec bash --rcfile "${initFile}" -i`,
+        ], {
           name: 'xterm-256color',
           cols: Number(msg.cols) || 80,
           rows: Number(msg.rows) || 24,
           cwd: sessionDir,
           env: {
             ...process.env,
-            PATH: sessionPath,
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
-            // Per-session npm cache so concurrent sessions don't corrupt each other
+            // Env-var registry override — highest precedence, beats all .npmrc files.
+            // Set here so child processes spawned by npm scripts inherit it too.
+            npm_config_registry: 'https://registry.npmjs.org',
+            npm_config_update_notifier: 'false',
+            npm_config_fund: 'false',
+            npm_config_audit: 'false',
+            npm_config_loglevel: 'warn',
             npm_config_cache: `${sessionDir}/.npm-cache`,
+            NO_UPDATE_NOTIFIER: '1',
+            DISABLE_OPENCOLLECTIVE: '1',
+            SUPPRESS_JEST_WARNINGS: '1',
           } as Record<string, string>,
         });
 
@@ -176,26 +207,32 @@ function handleConnection(ws: WebSocket): void {
         });
 
         send({ type: 'ready', cwd: sessionDir });
-        logger.info({ sessionId, cwd: sessionDir, fileCount: Object.keys(files).length }, 'terminal session started');
+        logger.info(
+          { sessionId, cwd: sessionDir, fileCount: Object.keys(files).length },
+          'terminal session started',
+        );
       } catch (err: any) {
         const message = err?.message ?? String(err);
         send({ type: 'error', message });
         logger.error({ sessionId, err }, 'terminal spawn failed');
       }
 
+    // ── input: keystroke forwarding ───────────────────────────────────────
     } else if (msg.type === 'input') {
       ptyProcess?.write(msg.data);
 
+    // ── resize ────────────────────────────────────────────────────────────
     } else if (msg.type === 'resize') {
       const cols = Number(msg.cols);
       const rows = Number(msg.rows);
       if (cols > 0 && rows > 0) ptyProcess?.resize(cols, rows);
 
+    // ── writeFile: live editor-to-server sync ─────────────────────────────
     } else if (msg.type === 'writeFile') {
       try {
-        const fullPath = path.join(sessionDir, String(msg.path));
-        await fs.mkdir(path.dirname(fullPath), { recursive: true });
-        await fs.writeFile(fullPath, String(msg.content ?? ''), 'utf8');
+        const full = path.join(sessionDir, String(msg.path));
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, String(msg.content ?? ''), 'utf8');
       } catch { /* ignore */ }
     }
   });
