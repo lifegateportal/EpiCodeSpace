@@ -39,3 +39,6 @@ externalPort = 3000
 
 [userenv.production]
 VITE_APP_URL = "https://epi-code-space.replit.app"
+
+[nix]
+channel = "stable-25_05"

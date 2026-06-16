@@ -99,7 +99,7 @@ export default defineConfig({
       ],
     },
     proxy: {
-      '/api': { target: 'http://localhost:80', changeOrigin: true },
+      '/api': { target: 'http://localhost:80', changeOrigin: true, ws: true },
     },
   },
   preview: {

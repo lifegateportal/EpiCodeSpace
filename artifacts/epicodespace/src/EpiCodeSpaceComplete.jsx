@@ -17,7 +17,7 @@ import CodeBlock from './components/CodeBlock.jsx';
 // Amendment #4 — Performance: lazy-load heavy panels only when needed.
 const MarkdownContent = lazy(() => import('./components/MarkdownContent.jsx'));
 const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
-const WebContainerTerminal = lazy(() => import('./components/WebContainerTerminal.jsx'));
+const WebContainerTerminal = lazy(() => import('./components/ServerTerminal.jsx'));
 const LspStatusBadge = lazy(() => import('./components/LspStatusBadge.jsx'));
 import FileExplorer from './components/FileExplorer.jsx';
 import DeployModal from './components/DeployModal.jsx';
