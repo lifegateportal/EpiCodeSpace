@@ -308,22 +308,21 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
     };
   }, []); // no deps — uses refs to read current values
 
-  // ── OPFS cache recovery ────────────────────────────────────────────────
-  // WebContainers stores internal state in OPFS. When Safari kills the tab
-  // mid-boot (or a bad API key call leaves a partial state), subsequent
-  // WebContainer.boot() calls fail with ENOENT because the stale OPFS entries
-  // conflict with a fresh initialisation.
-  //
-  // Recovery: delete all root-level OPFS entries whose name does NOT appear
-  // in the user's current file tree. Our app stores user files directly in
-  // the OPFS root (e.g. "package.json", "src/", "public/"), so those are
-  // safe. Any entry with an unknown name is presumed to be WebContainers
-  // internal state and is removed.
+  // ── WebContainers storage recovery ────────────────────────────────────
+  // Clears all WebContainers-owned browser storage so a fresh boot can succeed.
+  // WebContainers persists state in three places that can become corrupt after
+  // a Safari mid-boot kill or a failed boot with a bad API key:
+  //   1. OPFS — virtual FS entries (already cleared on prior attempt)
+  //   2. Service Workers — network proxy SW stays registered after crashes;
+  //      a stale/corrupted SW causes every subsequent boot to ENOENT
+  //   3. IndexedDB — internal bookkeeping databases
   const clearWebContainerOPFS = useCallback(async () => {
     const term = termRef.current;
+    let cleared = 0;
+
+    // 1. OPFS — remove entries not matching user file names
     try {
       const root = await navigator.storage.getDirectory();
-      // Build the set of top-level names that belong to user files.
       const userNames = new Set(
         Object.keys(files).map(p => p.split('/')[0]).filter(Boolean)
       );
@@ -335,15 +334,54 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
         try { await root.removeEntry(name, { recursive: true }); } catch { /* ignore */ }
       }
       if (toDelete.length > 0) {
-        term?.writeln(`\x1b[33m  cleared WebContainer cache (${toDelete.length} entr${toDelete.length === 1 ? 'y' : 'ies'})\x1b[0m`);
-      } else {
-        term?.writeln('\x1b[33m  no WebContainer cache entries found\x1b[0m');
+        term?.writeln(`\x1b[33m  OPFS: removed ${toDelete.length} entr${toDelete.length === 1 ? 'y' : 'ies'}\x1b[0m`);
+        cleared += toDelete.length;
       }
-      return toDelete.length;
     } catch (e) {
-      term?.writeln(`\x1b[33m  OPFS cleanup failed: ${e?.message || e}\x1b[0m`);
-      return 0;
+      term?.writeln(`\x1b[33m  OPFS cleanup error: ${e?.message || e}\x1b[0m`);
     }
+
+    // 2. Service Workers — unregister all registrations for this origin.
+    //    WebContainers registers a SW to proxy npm/network requests.
+    //    A stale SW from a failed/killed boot causes ENOENT on re-boot.
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map(r => r.unregister().catch(() => {})));
+        if (registrations.length > 0) {
+          term?.writeln(`\x1b[33m  Service Workers: unregistered ${registrations.length}\x1b[0m`);
+          cleared += registrations.length;
+        }
+      }
+    } catch (e) {
+      term?.writeln(`\x1b[33m  SW cleanup error: ${e?.message || e}\x1b[0m`);
+    }
+
+    // 3. IndexedDB — delete databases that look like WebContainers internal DBs
+    //    (names not matching user file names, or starting with known WC prefixes).
+    try {
+      if (indexedDB?.databases) {
+        const dbs = await indexedDB.databases();
+        const userNames = new Set(
+          Object.keys(files).map(p => p.split('/')[0]).filter(Boolean)
+        );
+        for (const { name } of dbs) {
+          if (!name) continue;
+          // Keep databases that match user project top-level names; delete others.
+          const topLevel = name.split('/')[0].split(':')[0];
+          if (!userNames.has(topLevel)) {
+            try { indexedDB.deleteDatabase(name); cleared++; } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch (e) {
+      // indexedDB.databases() is not available in all browsers — ignore.
+    }
+
+    if (cleared === 0) {
+      term?.writeln('\x1b[33m  nothing to clear\x1b[0m');
+    }
+    return cleared;
   }, [files]);
 
   // ── Boot handler ──────────────────────────────────────────────────────
@@ -379,22 +417,34 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
       const msg = err?.message || String(err);
       const isEnoent = /ENOENT|no such file/i.test(msg);
       if (isEnoent) {
-        // Corrupted WebContainers OPFS state — clear it and retry once.
-        term?.writeln(`\x1b[33m▶ boot failed (${msg}) — clearing WebContainer cache and retrying…\x1b[0m`);
-        await clearWebContainerOPFS();
-        try {
-          await attemptBoot();
-          term?.writeln('\x1b[32m✔ container ready (after cache clear)\x1b[0m');
-          await startShell();
-          return;
-        } catch (retryErr) {
-          const retryMsg = retryErr?.message || String(retryErr);
-          setBootError(retryMsg);
-          term?.writeln(`\x1b[31m✖ boot failed after cache clear: ${retryMsg}\x1b[0m`);
-          term?.writeln('\x1b[90m# Try reloading the page if this persists.\x1b[0m');
-          logger.error('terminal', 'boot failed after cache clear', retryErr);
-          return;
+        // Corrupted WebContainers state — clear OPFS + Service Workers + IndexedDB.
+        // Service Workers in particular survive page reloads; a stale WC SW causes
+        // ENOENT on every boot until it is unregistered and the page is reloaded.
+        term?.writeln(`\x1b[33m▶ boot failed (ENOENT) — clearing WebContainers cache…\x1b[0m`);
+        const clearedCount = await clearWebContainerOPFS();
+        if (clearedCount > 0) {
+          // Service Workers were likely cleared — the old SW still controls this
+          // page until a reload. Tell the user to reload rather than retry here.
+          term?.writeln('\x1b[33m✔ cache cleared — please reload the page, then boot again\x1b[0m');
+          term?.writeln('\x1b[90m# Service Workers persist until reload. Reload → Boot container → should work.\x1b[0m');
+          setBootError('reload-required');
+        } else {
+          // Nothing to clear — try one more boot in case it was transient.
+          term?.writeln('\x1b[36m▶ nothing cleared — retrying boot once…\x1b[0m');
+          try {
+            await attemptBoot();
+            term?.writeln('\x1b[32m✔ container ready\x1b[0m');
+            await startShell();
+            return;
+          } catch (retryErr) {
+            const retryMsg = retryErr?.message || String(retryErr);
+            setBootError(retryMsg);
+            term?.writeln(`\x1b[31m✖ boot failed: ${retryMsg}\x1b[0m`);
+            term?.writeln('\x1b[90m# Reload the page and try again. If this persists, clear site data in Safari Settings.\x1b[0m');
+            logger.error('terminal', 'boot failed after retry', retryErr);
+          }
         }
+        return;
       }
       setBootError(msg);
       term?.writeln(`\x1b[31m✖ boot failed: ${msg}\x1b[0m`);
