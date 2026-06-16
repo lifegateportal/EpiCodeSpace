@@ -159,11 +159,13 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
     ws.onopen = () => {
       const flat = buildFilesMap();
+      const storedSessionId = sessionStorage.getItem('epicodespace.terminalSessionId');
       ws.send(JSON.stringify({
         type: 'sync',
         files: flat,
         cols: termRef.current?.cols ?? 80,
         rows: termRef.current?.rows ?? 24,
+        ...(storedSessionId ? { sessionId: storedSessionId } : {}),
       }));
     };
 
@@ -181,8 +183,13 @@ const ServerTerminal = forwardRef(function ServerTerminal(
           reconnectAttemptsRef.current = 0;
           setConnState('ready');
           setProcessRunning(true);
-          // Clear any "connecting..." line we wrote, then let the shell prompt appear
-          termRef.current?.write('\r\x1b[K'); // CR + erase line (clears the spinner line)
+          // Persist session ID so reconnects reuse the same shell
+          if (msg.sessionId) sessionStorage.setItem('epicodespace.terminalSessionId', msg.sessionId);
+          // Clear "connecting..." line
+          termRef.current?.write('\r\x1b[K');
+          if (msg.reconnected) {
+            termRef.current?.writeln('\x1b[32m# reconnected — session restored\x1b[0m');
+          }
           break;
 
         case 'exit':
@@ -285,6 +292,8 @@ const ServerTerminal = forwardRef(function ServerTerminal(
   }, []);
 
   const restart = useCallback(() => {
+    // Clear stored session so Restart always gives a fresh shell
+    sessionStorage.removeItem('epicodespace.terminalSessionId');
     reconnectAttemptsRef.current = 0;
     connect();
   }, [connect]);

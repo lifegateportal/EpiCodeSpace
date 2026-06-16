@@ -1,0 +1,107 @@
+runner@localhost:/tmp/epicode-5bc7ae56$ 
+# synced 64 files
+npm install
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'lifegate-ag-workspace@1.0.0',
+npm warn EBADENGINE   required: { node: '>=20 <23' },
+npm warn EBADENGINE   current: { node: 'v24.13.0', npm: '11.6.2' }
+npm warn EBADENGINE }
+
+added 152 packages in 9s
+runner@localhost:/tmp/epicode-5bc7ae56$ npm run dev
+
+> lifegate-ag-workspace@1.0.0 dev
+> vite
+
+sh: line 1: vite: command not found
+runner@localhost:/tmp/epicode-5bc7ae56$ ^C
+runner@localhost:/tmp/epicode-5bc7ae56$ 
+# synced 64 files
+
+# synced 64 files
+npm install
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'lifegate-ag-workspace@1.0.0',
+npm warn EBADENGINE   required: { node: '>=20 <23' },
+npm warn EBADENGINE   current: { node: 'v24.13.0', npm: '11.6.2' }
+npm warn EBADENGINE }
+
+up to date in 836ms
+runner@localhost:/tmp/epicode-5bc7ae56$ npm run dev
+
+> lifegate-ag-workspace@1.0.0 dev
+> vite
+
+sh: line 1: vite: command not found
+runner@localhost:/tmp/epicode-5bc7ae56$ 
+# synced 138 files
+npm install
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+npm warn deprecated jpeg-exif@1.1.4: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
+added 222 packages, removed 146 packages, and changed 4 packages in 15s
+runner@localhost:/tmp/epicode-5bc7ae56$ npm run dev
+
+> nexus-director@0.1.0 dev
+> rm -rf .next && NEXT_DISABLE_DEVTOOLS=1 next dev --port 5000 --hostname 0.0.0.0
+
+ ⚠ You are using a non-standard "NODE_ENV" value in your environment. This creates inconsistencies in the project and is strongly advised against. Read more: https://nextjs.org/docs/messages/non-standard-node-env
+ ⚠ Installing TypeScript as it was not found while loading "next.config.ts".
+
+Installing devDependencies (npm):
+- typescript@5.8.2
+
+
+added 81 packages in 2s
+
+ ⚠ Invalid next.config.ts options detected: 
+ ⚠     Unrecognized key(s) in object: 'serverRequestBodySizeLimit' at "experimental"
+ ⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+   ▲ Next.js 15.5.19
+   - Local:        http://localhost:5000
+
+  Port 5000 → https://dc708b71-6973-4ef8-aeb6-9de18736de61-5000-3dqmqvgxf3k8n.worf.replit.dev
+   - Network:      http://0.0.0.0:5000
+   - Experiments (use with caution):
+     · serverActions
+     · serverRequestBodySizeLimit: "50mb"
+
+ ✓ Starting...
+ ✓ Ready in 1954ms
+
+# disconnected — reconnecting in 2s…
+runner@localhost:/tmp/epicode-75e486ad$ 
+# synced 138 files
+npm install
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+npm warn deprecated jpeg-exif@1.1.4: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
+added 228 packages in 13s
+runner@localhost:/tmp/epicode-75e486ad$ npm run dev
+
+> nexus-director@0.1.0 dev
+> rm -rf .next && NEXT_DISABLE_DEVTOOLS=1 next dev --port 5000 --hostname 0.0.0.0
+
+ ⚠ You are using a non-standard "NODE_ENV" value in your environment. This creates inconsistencies in the project and is strongly advised against. Read more: https://nextjs.org/docs/messages/non-standard-node-env
+ ⚠ Installing TypeScript as it was not found while loading "next.config.ts".
+
+Installing devDependencies (npm):
+- typescript@5.8.2
+
+
+added 81 packages in 3s
+
+ ⚠ Invalid next.config.ts options detected: 
+ ⚠     Unrecognized key(s) in object: 'serverRequestBodySizeLimit' at "experimental"
+ ⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+   ▲ Next.js 15.5.19
+   - Local:        http://localhost:5000
+
+  Port 5000 → https://dc708b71-6973-4ef8-aeb6-9de18736de61-5000-3dqmqvgxf3k8n.worf.replit.dev
+   - Network:      http://0.0.0.0:5000
+   - Experiments (use with caution):
+     · serverActions
+     · serverRequestBodySizeLimit: "50mb"
+
+ ✓ Starting...
+ ✓ Ready in 2.1s
