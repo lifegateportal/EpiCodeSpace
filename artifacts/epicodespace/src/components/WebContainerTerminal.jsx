@@ -412,21 +412,36 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
     };
     try {
       await attemptBoot();
+      // Successful boot — clear the ENOENT-reload flag so a future failure
+      // will auto-reload again (it's only a loop-guard, not a permanent flag).
+      sessionStorage.removeItem('wc-enoent-reload');
       term?.writeln('\x1b[32m✔ container ready\x1b[0m');
       await startShell();
     } catch (err) {
       const msg = err?.message || String(err);
       const isEnoent = /ENOENT|no such file/i.test(msg);
       if (isEnoent) {
-        // ENOENT means WebContainers' internal module state is corrupted from the
-        // failed boot attempt. This state lives in JS memory and cannot be cleared
-        // without a page reload — retrying boot on the same page always fails.
-        // Strategy: clear persistent storage (OPFS/SW/IDB), then require a reload.
+        // ENOENT means WebContainers' module state (cachedServerPromise, etc.) is
+        // corrupted from the failed boot. That state is JS-memory-only and cannot
+        // be reset without a full page reload. Strategy:
+        //   1. Clear persistent storage (OPFS / SW / IDB).
+        //   2. Auto-reload. A sessionStorage flag prevents infinite reload loops —
+        //      if ENOENT persists after a reload we surface the manual button.
         term?.writeln(`\x1b[33m▶ boot failed (${msg}) — clearing WebContainers cache…\x1b[0m`);
         await clearWebContainerOPFS();
-        term?.writeln('\x1b[33m✔ cache cleared — reload the page to finish recovery\x1b[0m');
-        term?.writeln('\x1b[90m# WebContainers holds in-memory state from the failed boot that only a page reload can reset.\x1b[0m');
-        setReloadRequired(true);
+
+        const alreadyReloaded = sessionStorage.getItem('wc-enoent-reload') === '1';
+        if (alreadyReloaded) {
+          // We already reloaded once and still ENOENT — show manual button.
+          term?.writeln('\x1b[33m✔ cache cleared — tap "Reload Page" above to retry\x1b[0m');
+          term?.writeln(`\x1b[90m# error: ${msg}\x1b[0m`);
+          setReloadRequired(true);
+        } else {
+          sessionStorage.setItem('wc-enoent-reload', '1');
+          term?.writeln('\x1b[33m✔ cache cleared — reloading page…\x1b[0m');
+          // Short delay so the user can read the message before reload.
+          setTimeout(() => window.location.reload(), 1200);
+        }
         return;
       }
       setBootError(msg);
@@ -588,9 +603,9 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
           <>
             <button
               onClick={handleBoot}
-              disabled={!isolated || bootState === 'booting'}
+              disabled={!isolated || bootState === 'booting' || reloadRequired}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed"
-              title={!isolated ? 'Open the app in a new browser tab to enable the terminal' : 'Boot the WebContainer'}
+              title={reloadRequired ? 'Page reload required — tap Reload Page' : !isolated ? 'Open the app in a new browser tab to enable the terminal' : 'Boot the WebContainer'}
             >
               {bootState === 'booting' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
               Boot container
