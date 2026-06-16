@@ -204,7 +204,13 @@ const ServerTerminal = forwardRef(function ServerTerminal(
           break;
 
         case 'serverUrl': {
-          const { port, url } = msg;
+          const { port, proxyPath } = msg;
+          // In production the server sends proxyPath (routed through our API).
+          // In dev it sends a direct dev-domain URL.
+          const url = proxyPath
+            ? `${window.location.origin}${proxyPath}`
+            : msg.url;
+          if (!url) break;
           setDetectedUrl({ port, url });
           onServerUrl?.(url);
           termRef.current?.writeln(

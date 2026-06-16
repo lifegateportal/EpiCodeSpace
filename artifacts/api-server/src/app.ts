@@ -2,16 +2,21 @@ import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import { previewProxy } from "./lib/previewProxy";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
 
 // Cross-origin isolation headers — required for WebContainers (SharedArrayBuffer).
 // Must be on every response so the browser allows `window.crossOriginIsolated = true`.
+// Excluded for /api/preview/* because those responses are the user's own dev server
+// content, which must be able to load third-party scripts and assets freely.
 app.use((_req, res, next) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  if (!_req.path.startsWith('/api/preview')) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  }
   next();
 });
 
@@ -35,6 +40,12 @@ app.use(
   }),
 );
 app.use(cors());
+
+// Preview proxy — mounted BEFORE body-parsing middleware so that proxy
+// requests are streamed directly without Express consuming their bodies.
+// Handles /api/preview/<sessionId>/* → localhost:<detectedPort>/*
+app.use('/api/preview', previewProxy);
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 

@@ -5,28 +5,33 @@
  * ──────
  * 1. Registry fix
  *    Replit injects `registry=http://package-firewall.replit.local` into npm's
- *    global config.  That hostname does NOT resolve in deployed containers
- *    (EAI_AGAIN).  We override it at the highest-precedence level: env vars
- *    (`npm_config_*`).  These beat every .npmrc file.
+ *    global config.  That hostname does NOT resolve in deployed containers.
+ *    We override it at the highest-precedence level: env vars (`npm_config_*`).
  *
  * 2. NODE_ENV override
  *    The API server runs with NODE_ENV=production.  npm respects this and
  *    silently skips devDependencies, so tools like vite are never installed.
- *    We always set NODE_ENV=development inside the pty so the user's project
- *    gets its full dep tree.
+ *    We always set NODE_ENV=development inside the pty.
  *
  * 3. Correct working directory
  *    Two-stage bash launch so PATH is correct AND the shell starts in the
- *    project dir:
- *      bash --login -c "exec bash --rcfile <init-file> -i"
+ *    project dir:  bash --login -c "exec bash --rcfile <init-file> -i"
  *
  * 4. Session persistence
  *    Each pty session is kept alive for SESSION_KEEPALIVE_MS after its
- *    WebSocket disconnects.  The client stores the session ID in sessionStorage
- *    and sends it on reconnect.  If the session is still alive the new socket
- *    is transparently reattached — no re-install needed.
+ *    WebSocket disconnects.  The client sends the session ID on reconnect;
+ *    if the session is still alive the new socket is reattached — no
+ *    re-install needed.
  *
- * 5. Graceful degradation
+ * 5. Port proxy
+ *    When a dev server starts on localhost:PORT, we detect it from pty output.
+ *    In production (NODE_ENV=production at the SERVER level), the Replit dev-
+ *    domain URL won't work because Cloud Run ports aren't reachable via the
+ *    workspace proxy.  Instead we generate a proxyPath that routes through our
+ *    own API server at /api/preview/<sessionId>/ (see previewProxy.ts).
+ *    In development the existing dev-domain URL is used as before.
+ *
+ * 6. Graceful degradation
  *    node-pty is loaded dynamically at runtime.  If the native binary cannot
  *    load in the production container the HTTP server still starts and passes
  *    health checks; only the terminal WebSocket feature is degraded.
@@ -40,6 +45,15 @@ import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
+
+// ── Production detection ──────────────────────────────────────────────────────
+//
+// The SERVER process has NODE_ENV=production in the deployed container
+// (set via artifact.toml [services.production.run.env]).  We check this at
+// the server level — NOT the pty level, where we override to "development"
+// so npm installs devDependencies correctly.
+
+const IS_PRODUCTION = process.env['NODE_ENV'] === 'production';
 
 // ── Lazy node-pty loader ──────────────────────────────────────────────────────
 
@@ -68,10 +82,6 @@ function loadPty(): Promise<PtyModule | null> {
 loadPty().catch(() => {});
 
 // ── Session registry ──────────────────────────────────────────────────────────
-//
-// Sessions survive WebSocket disconnects for SESSION_KEEPALIVE_MS.  The client
-// sends its stored session ID on reconnect; if the session is still alive the
-// new socket is reattached without spawning a new shell.
 
 const SESSION_KEEPALIVE_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -81,11 +91,17 @@ interface SessionEntry {
   sessionDir: string;
   ws: WebSocket | null;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
+  detectedPort: number | null;
   onData: (data: string) => void;
   onExit: (ev: { exitCode: number }) => void;
 }
 
 const sessions = new Map<string, SessionEntry>();
+
+/** Used by previewProxy.ts to route traffic to the user's running dev server. */
+export function getSessionPort(sessionId: string): number | null {
+  return sessions.get(sessionId)?.detectedPort ?? null;
+}
 
 function destroySession(entry: SessionEntry): void {
   if (entry.cleanupTimer) {
@@ -113,9 +129,9 @@ function cancelDestroy(entry: SessionEntry): void {
   }
 }
 
-// ── Port URL helper ────────────────────────────────────────────────────────────
+// ── Port URL helpers ──────────────────────────────────────────────────────────
 
-function getPortUrl(port: number): string | null {
+function getDevDomainUrl(port: number): string | null {
   const devDomain = process.env['REPLIT_DEV_DOMAIN'];
   if (!devDomain) return null;
   if (devDomain.includes('-00-')) return `https://${devDomain.replace('-00-', `-${port}-`)}`;
@@ -178,20 +194,34 @@ function handleConnection(ws: WebSocket): void {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
 
+  const announcePort = (port: number) => {
+    if (announcedPorts.has(port)) return;
+    announcedPorts.add(port);
+
+    // Store on session so the preview proxy can route to it
+    if (session) session.detectedPort = port;
+
+    if (IS_PRODUCTION) {
+      // In Cloud Run, dev-domain URLs point at the workspace, not this container.
+      // Route traffic through our own API server instead.
+      const proxyPath = `/api/preview/${session?.id ?? ''}/`;
+      send({ type: 'serverUrl', port, proxyPath });
+      if (session) logger.info({ sessionId: session.id, port, proxyPath }, 'detected dev-server port (proxy mode)');
+    } else {
+      const url = getDevDomainUrl(port);
+      if (url) {
+        send({ type: 'serverUrl', port, url });
+        if (session) logger.info({ sessionId: session.id, port, url }, 'detected dev-server port');
+      }
+    }
+  };
+
   const scanForPorts = (raw: string) => {
     const clean = raw.replace(ANSI_RE, '');
     LOCAL_URL_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = LOCAL_URL_RE.exec(clean)) !== null) {
-      const port = Number(m[1]);
-      if (!announcedPorts.has(port)) {
-        announcedPorts.add(port);
-        const url = getPortUrl(port);
-        if (url) {
-          send({ type: 'serverUrl', port, url });
-          if (session) logger.info({ sessionId: session.id, port, url }, 'detected dev-server port');
-        }
-      }
+      announcePort(Number(m[1]));
     }
   };
 
@@ -209,23 +239,27 @@ function handleConnection(ws: WebSocket): void {
     // ── sync: bootstrap or reconnect ─────────────────────────────────────
     if (msg.type === 'sync') {
 
-      // ── Try to reconnect to an existing session ───────────────────────
+      // Try to reconnect to an existing session
       const reconnectId: string | undefined = msg.sessionId;
       if (reconnectId) {
         const existing = sessions.get(reconnectId);
         if (existing && existing.ptyProcess) {
-          // Reattach
           cancelDestroy(existing);
           existing.ws = ws;
           session = existing;
 
-          // Swap the per-session send callbacks so output goes to new socket
           existing.onData = (data: string) => {
             send({ type: 'output', data });
             scanForPorts(data);
           };
 
-          // Sync any updated files the editor has
+          // Re-announce the known port so the client shows the URL again
+          if (existing.detectedPort) {
+            announcedPorts.clear(); // allow re-announcement
+            announcePort(existing.detectedPort);
+          }
+
+          // Sync any updated files from the editor
           const files: Record<string, string> = msg.files ?? {};
           await Promise.all(
             Object.entries(files).map(async ([filePath, content]) => {
@@ -241,7 +275,7 @@ function handleConnection(ws: WebSocket): void {
         }
       }
 
-      // ── Create new session ────────────────────────────────────────────
+      // Create new session
       try {
         const pty = await loadPty();
         if (!pty) {
@@ -272,6 +306,7 @@ function handleConnection(ws: WebSocket): void {
           sessionDir,
           ws,
           cleanupTimer: null,
+          detectedPort: null,
           ptyProcess: null,
           onData: (data: string) => { send({ type: 'output', data }); scanForPorts(data); },
           onExit: ({ exitCode }: { exitCode: number }) => { send({ type: 'exit', exitCode }); },
@@ -327,17 +362,14 @@ function handleConnection(ws: WebSocket): void {
         logger.error({ err }, 'terminal spawn failed');
       }
 
-    // ── input ─────────────────────────────────────────────────────────────
     } else if (msg.type === 'input') {
       session?.ptyProcess?.write(msg.data);
 
-    // ── resize ────────────────────────────────────────────────────────────
     } else if (msg.type === 'resize') {
       const cols = Number(msg.cols);
       const rows = Number(msg.rows);
       if (cols > 0 && rows > 0) session?.ptyProcess?.resize(cols, rows);
 
-    // ── writeFile ─────────────────────────────────────────────────────────
     } else if (msg.type === 'writeFile') {
       if (!session) return;
       try {
