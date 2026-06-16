@@ -308,6 +308,44 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
     };
   }, []); // no deps — uses refs to read current values
 
+  // ── OPFS cache recovery ────────────────────────────────────────────────
+  // WebContainers stores internal state in OPFS. When Safari kills the tab
+  // mid-boot (or a bad API key call leaves a partial state), subsequent
+  // WebContainer.boot() calls fail with ENOENT because the stale OPFS entries
+  // conflict with a fresh initialisation.
+  //
+  // Recovery: delete all root-level OPFS entries whose name does NOT appear
+  // in the user's current file tree. Our app stores user files directly in
+  // the OPFS root (e.g. "package.json", "src/", "public/"), so those are
+  // safe. Any entry with an unknown name is presumed to be WebContainers
+  // internal state and is removed.
+  const clearWebContainerOPFS = useCallback(async () => {
+    const term = termRef.current;
+    try {
+      const root = await navigator.storage.getDirectory();
+      // Build the set of top-level names that belong to user files.
+      const userNames = new Set(
+        Object.keys(files).map(p => p.split('/')[0]).filter(Boolean)
+      );
+      const toDelete = [];
+      for await (const name of root.keys()) {
+        if (!userNames.has(name)) toDelete.push(name);
+      }
+      for (const name of toDelete) {
+        try { await root.removeEntry(name, { recursive: true }); } catch { /* ignore */ }
+      }
+      if (toDelete.length > 0) {
+        term?.writeln(`\x1b[33m  cleared WebContainer cache (${toDelete.length} entr${toDelete.length === 1 ? 'y' : 'ies'})\x1b[0m`);
+      } else {
+        term?.writeln('\x1b[33m  no WebContainer cache entries found\x1b[0m');
+      }
+      return toDelete.length;
+    } catch (e) {
+      term?.writeln(`\x1b[33m  OPFS cleanup failed: ${e?.message || e}\x1b[0m`);
+      return 0;
+    }
+  }, [files]);
+
   // ── Boot handler ──────────────────────────────────────────────────────
   const handleBoot = useCallback(async () => {
     setBootError(null);
@@ -319,23 +357,12 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
       term?.writeln(`\x1b[31m✖ ${msg}\x1b[0m`);
       return;
     }
-    try {
-      // 30-second watchdog — if boot() never resolves we surface the hang
-      // rather than leaving the UI stuck on "booting…" forever.
-      // Common causes of timeout:
-      //   1. Origin not registered at webcontainers.io (check DevTools → Console)
-      //   2. VITE_WEBCONTAINER_APIKEY env var not set or not picked up at build time
-      //   3. COOP/COEP headers missing (check DevTools → Application → Headers)
+    const attemptBoot = async () => {
       const bootPromise = bridge.boot({ files });
-      // The timeout id is captured so we can clear it immediately when boot
-      // resolves — without this, the 30s timer burns to completion on every
-      // successful boot, holding a closure reference for no reason.
       let watchdogId;
       const timeout = new Promise((_, reject) => {
         watchdogId = setTimeout(() => reject(new Error(
-          'boot timed out (30s). Check: 1) DevTools Console for WebContainer errors, ' +
-          '2) VITE_WEBCONTAINER_APIKEY is set in Vercel env vars and a fresh deploy was triggered, ' +
-          '3) your origin is registered at webcontainers.io'
+          'boot timed out (30s) — COOP/COEP headers may be missing or the container is stuck'
         )), 30000);
       });
       try {
@@ -343,15 +370,54 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
       } finally {
         clearTimeout(watchdogId);
       }
+    };
+    try {
+      await attemptBoot();
       term?.writeln('\x1b[32m✔ container ready\x1b[0m');
       await startShell();
     } catch (err) {
       const msg = err?.message || String(err);
+      const isEnoent = /ENOENT|no such file/i.test(msg);
+      if (isEnoent) {
+        // Corrupted WebContainers OPFS state — clear it and retry once.
+        term?.writeln(`\x1b[33m▶ boot failed (${msg}) — clearing WebContainer cache and retrying…\x1b[0m`);
+        await clearWebContainerOPFS();
+        try {
+          await attemptBoot();
+          term?.writeln('\x1b[32m✔ container ready (after cache clear)\x1b[0m');
+          await startShell();
+          return;
+        } catch (retryErr) {
+          const retryMsg = retryErr?.message || String(retryErr);
+          setBootError(retryMsg);
+          term?.writeln(`\x1b[31m✖ boot failed after cache clear: ${retryMsg}\x1b[0m`);
+          term?.writeln('\x1b[90m# Try reloading the page if this persists.\x1b[0m');
+          logger.error('terminal', 'boot failed after cache clear', retryErr);
+          return;
+        }
+      }
       setBootError(msg);
       term?.writeln(`\x1b[31m✖ boot failed: ${msg}\x1b[0m`);
       logger.error('terminal', 'boot failed', err);
     }
-  }, [files, startShell]);
+  }, [files, startShell, clearWebContainerOPFS]);
+
+  const handleClearAndReboot = useCallback(async () => {
+    const term = termRef.current;
+    term?.writeln('\x1b[33m▶ clearing WebContainer cache…\x1b[0m');
+    processRef.current = null;
+    writerRef.current = null;
+    setProcessRunning(false);
+    await clearWebContainerOPFS();
+    term?.writeln('\x1b[36m▶ rebooting…\x1b[0m');
+    try {
+      await bridge.reboot({ files });
+      term?.writeln('\x1b[32m✔ rebooted\x1b[0m');
+      await startShell();
+    } catch (err) {
+      term?.writeln(`\x1b[31m✖ reboot failed: ${err?.message || err}\x1b[0m`);
+    }
+  }, [files, startShell, clearWebContainerOPFS]);
 
   const handleReboot = useCallback(async () => {
     const term = termRef.current;
@@ -490,15 +556,27 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
           <ClipboardPaste className="w-3 h-3" /> Paste
         </button>
         {bootState !== 'ready' && (
-          <button
-            onClick={handleBoot}
-            disabled={!isolated || bootState === 'booting'}
-            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed"
-            title={!isolated ? 'Open the app in a new browser tab to enable the terminal' : 'Boot the WebContainer'}
-          >
-            {bootState === 'booting' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
-            Boot container
-          </button>
+          <>
+            <button
+              onClick={handleBoot}
+              disabled={!isolated || bootState === 'booting'}
+              className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:cursor-not-allowed"
+              title={!isolated ? 'Open the app in a new browser tab to enable the terminal' : 'Boot the WebContainer'}
+            >
+              {bootState === 'booting' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
+              Boot container
+            </button>
+            {bootError && /ENOENT|no such file/i.test(bootError) && (
+              <button
+                onClick={handleClearAndReboot}
+                disabled={!isolated || bootState === 'booting'}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-40"
+                title="Clear corrupted WebContainer cache and reboot"
+              >
+                <RefreshCw className="w-3 h-3" /> Clear Cache &amp; Reboot
+              </button>
+            )}
+          </>
         )}
         {bootState === 'ready' && (
           <>
