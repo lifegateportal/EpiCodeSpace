@@ -122,7 +122,22 @@ class Bridge {
           workdirName: 'epicodespace',
         };
 
-        rawContainer = await WebContainer.boot(bootOpts);
+        // ── Step 1: boot ──────────────────────────────────────────────────
+        logger.info('runtime', 'calling WebContainer.boot()', bootOpts);
+        try {
+          rawContainer = await WebContainer.boot(bootOpts);
+        } catch (bootErr) {
+          const m = bootErr instanceof Error ? bootErr.message : String(bootErr);
+          const s = bootErr instanceof Error ? bootErr.stack : undefined;
+          // eslint-disable-next-line no-console
+          console.error('[WCBridge] WebContainer.boot() threw', bootErr);
+          logger.error('runtime', `WebContainer.boot() threw: ${m}`, { stack: s });
+          const wrapped = new Error(`[step:boot] ${m}`);
+          wrapped.stack = s;
+          throw wrapped;
+        }
+        logger.info('runtime', 'WebContainer.boot() resolved OK');
+
         rawContainer.on('server-ready', (port, url) => {
           logger.info('runtime', 'server-ready', { port, url });
           for (const l of this.serverListeners) {
@@ -133,10 +148,22 @@ class Bridge {
           logger.error('runtime', 'webcontainer error', e);
         });
 
+        // ── Step 2: mount ─────────────────────────────────────────────────
         const tree = buildTreeFromFlat(opts.files);
-        // Mount into the workdir so the shell's cwd matches the project root.
-        // workdirName:'epicodespace' → /home/epicodespace — files must land there.
-        await rawContainer.mount(tree, { mountPoint: '/home/epicodespace' });
+        logger.info('runtime', 'calling mount()', { mountPoint: '/home/epicodespace', keys: Object.keys(tree) });
+        try {
+          await rawContainer.mount(tree, { mountPoint: '/home/epicodespace' });
+        } catch (mountErr) {
+          const m = mountErr instanceof Error ? mountErr.message : String(mountErr);
+          const s = mountErr instanceof Error ? mountErr.stack : undefined;
+          // eslint-disable-next-line no-console
+          console.error('[WCBridge] mount() threw', mountErr);
+          logger.error('runtime', `mount() threw: ${m}`, { stack: s });
+          const wrapped = new Error(`[step:mount] ${m}`);
+          wrapped.stack = s;
+          throw wrapped;
+        }
+        logger.info('runtime', 'mount() resolved OK');
 
         this.container = rawContainer;
         this.setState('ready');
