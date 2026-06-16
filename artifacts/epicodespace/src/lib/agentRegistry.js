@@ -31,9 +31,8 @@ const GEMINI_MODELS = [
 ];
 
 const DEEPSEEK_MODELS = [
-  { id: 'deepseek-chat',     name: 'DeepSeek V3',       tier: 'standard', description: 'General coding chat (supports tools)' },
-  { id: 'deepseek-reasoner', name: 'DeepSeek R1',       tier: 'premium',  description: 'Reasoning model (no tool calling)' },
-  { id: 'deepseek-coder',    name: 'DeepSeek Coder',    tier: 'fast',     description: 'Code-specialised' },
+  { id: 'deepseek-chat',     name: 'DeepSeek V3',  tier: 'standard', description: 'Latest DeepSeek model — fast, smart, supports tools' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1',  tier: 'premium',  description: 'Reasoning model — best for hard problems (no tool calling)' },
 ];
 
 /** @type {import('../types').AgentRegistry} */

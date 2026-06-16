@@ -3,8 +3,7 @@
  *
  * Rules for 'Auto' mode (NO premium Anthropic or standard GPT-4o):
  *   - Massive context / long text dumps  → Gemini Flash (large window, cheap)
- *   - Coding / boilerplate / loop tasks  → DeepSeek Coder
- *   - Default                            → DeepSeek V3 (general chat)
+ *   - Default                            → DeepSeek V3 (fast, smart, tool-calling)
  *
  * Fallback order when a routed model fails: gemini-2.5-flash → gpt-4o-mini
  */
@@ -13,7 +12,6 @@ export const AUTO_MODEL_ID = '__auto__';
 
 // Thresholds
 const HEAVY_CONTEXT_CHARS = 10_000;  // prompt longer than this → Gemini Flash
-const CODING_KEYWORDS = /\b(function|class|def |import |export |const |let |var |loop|boilerplate|refactor|scaffold|generate|write.*code|implement|typescript|javascript|python|snippet|debug|fix|bug|error|crash|broken|not working|exception|undefined|null|fails|failing)\b/i;
 
 export interface AutoRoute {
   agent: string;
@@ -26,9 +24,6 @@ export interface AutoRoute {
 export function resolveAutoRoute(prompt: string): AutoRoute {
   if (prompt.length > HEAVY_CONTEXT_CHARS) {
     return { agent: 'gemini', model: 'gemini-2.5-flash' };
-  }
-  if (CODING_KEYWORDS.test(prompt)) {
-    return { agent: 'deepseek', model: 'deepseek-coder' };
   }
   return { agent: 'deepseek', model: 'deepseek-chat' };
 }

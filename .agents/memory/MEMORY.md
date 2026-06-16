@@ -1,0 +1,1 @@
+- [WebContainer boot and mount rules](webcontainer-mount-rules.md) — never pass mountPoint to mount(); never call configureAPIKey(); deepseek-coder is deprecated

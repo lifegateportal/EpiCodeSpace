@@ -54,9 +54,11 @@ _Populate as you build — explicit user instructions worth remembering across s
 ## Gotchas
 
 - COOP/COEP headers must be set on every response for WebContainers to work
-- `VITE_WEBCONTAINER_APIKEY` is required for WebContainers on non-localhost origins (Replit preview URLs)
+- `VITE_WEBCONTAINER_APIKEY` is set in Replit secrets — do NOT call `configureAPIKey()` with it; the origin is not registered at webcontainers.io and calling it with an unregistered origin causes `WebContainer.boot()` to throw ENOENT
+- `WebContainer.mount()` must be called **without** a `mountPoint` option — passing `{ mountPoint: '/home/epicodespace' }` causes ENOENT on Safari/iPadOS because the directory doesn't exist yet at mount time. Files land at `/` root, and the shell starts at `/home/epicodespace` (set by `workdirName`)
 - The app uses Tailwind v3 — do not migrate to v4 without testing all custom utilities
 - `@webcontainer/api` must be in `optimizeDeps.exclude` or Vite will fail to pre-bundle it
+- DeepSeek's `deepseek-coder` model ID is deprecated — only `deepseek-chat` (V3) and `deepseek-reasoner` (R1) are active
 
 ## Pointers
 

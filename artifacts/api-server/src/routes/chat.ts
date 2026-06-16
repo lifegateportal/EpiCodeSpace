@@ -34,14 +34,14 @@ const ALLOWED_MODELS: Record<string, string[]> = {
   'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
   claude:          ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
   gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
-  deepseek:        ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'],
+  deepseek:        ['deepseek-chat', 'deepseek-reasoner'],
 };
 
 const AGENT_PERSONAS: Record<string, string> = {
   'epicode-agent': 'EpiCode Agent, a full-stack autonomous coding assistant with deep knowledge of React, Node.js, Vite, Tailwind, and modern web architecture',
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
-  deepseek:       'DeepSeek Coder V2, a code-specialised model that prefers dense code blocks over prose and excels at generation and refactoring',
+  deepseek:       'DeepSeek V3, a highly capable coding and reasoning assistant — be thorough, direct, and produce complete working code',
 };
 
 const WORKSPACE_TOOLS = [
