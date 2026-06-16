@@ -1,1 +1,2 @@
 - [WebContainer boot and mount rules](webcontainer-mount-rules.md) — never pass mountPoint to mount(); never call configureAPIKey(); deepseek-coder is deprecated
+- [node-pty on Replit](node-pty-replit.md) — requires Python3 (via installSystemDependencies) to compile; native binary lives at node_modules/.pnpm/node-pty@1.1.0/.../build/Release/pty.node
