@@ -65,9 +65,21 @@ const WORKSPACE_TOOLS = [
   { name: 'createComponent', description: 'Scaffold a new React component, custom hook, or context provider with proper boilerplate. Faster than writeFile for standard patterns.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Component/hook name (PascalCase)' }, type: { type: 'string', enum: ['react', 'react-functional', 'react-hook', 'hook', 'context', 'util'], description: 'Component type' }, path: { type: 'string', description: 'Output file path (auto-generated if omitted)' }, props: { type: 'array', items: { type: 'string' }, description: 'List of prop names' } }, required: ['name'] } },
 ];
 
+// Tools that only read — no writes happen
+const READ_ONLY_TOOLS = new Set([
+  'readFile', 'listFiles', 'getProjectStructure', 'searchCode',
+  'analyzeFile', 'getTerminalOutput', 'getGitStatus', 'diagnoseProject', 'explainError',
+]);
+
+// Tools that mutate the workspace
+const WRITE_TOOLS = new Set([
+  'writeFile', 'editFile', 'patchLines', 'deleteFile',
+  'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand',
+]);
+
 const MODE_INSTRUCTIONS: Record<string, string> = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: "\n\nMode: AGENT — You can directly read, write, edit, create, and delete files. Use tools to make actual changes. Read before writing.",
+  agent: "\n\nMode: AGENT — Use tools to make actual changes. You may readFile ONCE per file, then you MUST immediately call a write tool (patchLines/editFile/writeFile). Never call readFile twice in a row. Every round in AGENT mode must include at least one write operation.",
   plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
 };
 
@@ -75,19 +87,44 @@ function buildSystemPrompt(agent: string, context: any) {
   const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
+
+  // DeepSeek-specific hard rules injected early — this model tends to loop on reads
+  const deepseekBlock = agent === 'deepseek' ? `
+[DEEPSEEK — MANDATORY BEHAVIOR — READ BEFORE ANYTHING ELSE]
+You have a known failure mode: you call readFile repeatedly across multiple rounds without writing a single line of code. This is UNACCEPTABLE.
+
+HARD LIMITS (violation = task failure):
+1. You may call readFile AT MOST ONCE before a write tool MUST follow.
+2. The active file is ALREADY in your context below with line numbers. Calling readFile on it is FORBIDDEN.
+3. After ANY readFile call, your VERY NEXT tool call MUST be patchLines, editFile, writeFile, autoFix, or createComponent.
+4. "I need more context" is not an excuse. You have the active file. WRITE NOW.
+5. If you called readFile last round and have not written yet — your next tool call is a write. No exceptions.
+
+CORRECT PATTERN:
+  Round 1: readFile("other-file.js")  ← only if NOT the active file
+  Round 2: patchLines(...)  ← MANDATORY write immediately after
+
+FORBIDDEN PATTERN (you do this, stop it):
+  Round 1: readFile("a.js")
+  Round 2: readFile("b.js")   ← FORBIDDEN
+  Round 3: readFile("c.js")   ← FORBIDDEN
+  Round N: still no write     ← TASK FAILURE
+` : '';
+
   return `[IDENTITY]
 You are ${persona} operating within EpiCodeSpace, a premium web-native IDE. You are a senior full-stack engineer.
-
+${deepseekBlock}
 [THE ENVIRONMENT]
 - Active file: ${filePath}
 - Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''} (use listFiles or getProjectStructure to see them all)
 
 [CORE RULES]
-1. READ BEFORE WRITING — always inspect a file before modifying it; never assume its contents.
-2. Never produce placeholder code ("// TODO", "...existing code...", "// add your logic here") — write complete, working implementations.
-3. Match the user's existing style, frameworks, naming conventions, and patterns exactly.
-4. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
-5. After installing packages or making config changes, run the dev server.
+1. The active file is ALREADY in context below. Do NOT readFile it — edit it immediately with patchLines/editFile/writeFile.
+2. readFile any OTHER file at most once, then IMMEDIATELY write. Never two reads in a row.
+3. Never produce placeholder code ("// TODO", "...existing code...", "// add your logic here") — write complete, working implementations.
+4. Match the user's existing style, frameworks, naming conventions, and patterns exactly.
+5. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
+6. After installing packages or making config changes, run the dev server.
 
 [CRITICAL — READ THIS FIRST]
 The active file content is already provided below with line numbers. DO NOT call readFile for the active file. Make changes immediately using patchLines, editFile, or writeFile.
@@ -306,19 +343,32 @@ async function callProvider(config: any, apiKey: string, systemPrompt: string, m
 }
 
 function appendToolResults(apiMessages: any[], toolResults: any[], pendingToolCalls: any[], transform: string) {
+  // Tool-level system message (e.g., from duplicate-call detection)
   const dedupeMessage = toolResults.find(r => typeof r?.result?.systemMessage === 'string')?.result?.systemMessage;
+
+  // Detect a pure read-only round — every tool called was a read tool, nothing was written.
+  // When this happens we inject a MANDATORY write constraint so the model stops stalling.
+  const roundHasWrite = pendingToolCalls.some(tc => WRITE_TOOLS.has(tc.name));
+  const roundAllRead  = pendingToolCalls.length > 0 && !roundHasWrite;
+  const writeConstraint = roundAllRead
+    ? '🚨 MANDATORY: You spent the last round ONLY reading files and wrote nothing. Your VERY NEXT tool call MUST be a write operation: patchLines, editFile, writeFile, createComponent, or autoFix. Do NOT call readFile, listFiles, getProjectStructure, searchCode, analyzeFile, or any other read tool. You have enough context — IMPLEMENT NOW.'
+    : null;
+
+  // Combine both messages; prefer dedupeMessage first, append write constraint if present
+  const systemMsg = [dedupeMessage, writeConstraint].filter(Boolean).join('\n\n') || null;
+
   if (transform === 'openai') {
     apiMessages.push({ role: 'assistant', content: null, tool_calls: pendingToolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) });
     for (const r of toolResults) { apiMessages.push({ role: 'tool', tool_call_id: r.id, content: JSON.stringify(r.result) }); }
-    if (dedupeMessage) apiMessages.push({ role: 'system', content: dedupeMessage });
+    if (systemMsg) apiMessages.push({ role: 'system', content: systemMsg });
   } else if (transform === 'anthropic') {
     apiMessages.push({ role: 'assistant', content: pendingToolCalls.map(tc => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments })) });
     apiMessages.push({ role: 'user', content: toolResults.map(r => ({ type: 'tool_result', tool_use_id: r.id, content: JSON.stringify(r.result) })) });
-    if (dedupeMessage) apiMessages.push({ role: 'user', content: `[System note] ${dedupeMessage}` });
+    if (systemMsg) apiMessages.push({ role: 'user', content: `[System note] ${systemMsg}` });
   } else if (transform === 'gemini') {
     apiMessages.push({ _geminiRole: 'model', _geminiParts: pendingToolCalls.map(tc => ({ functionCall: { name: tc.name, args: tc.arguments } })) });
     apiMessages.push({ _geminiRole: 'user', _geminiParts: toolResults.map(r => ({ functionResponse: { name: r.name, response: r.result } })) });
-    if (dedupeMessage) apiMessages.push({ _geminiRole: 'user', _geminiParts: [{ text: `[System note] ${dedupeMessage}` }] });
+    if (systemMsg) apiMessages.push({ _geminiRole: 'user', _geminiParts: [{ text: `[System note] ${systemMsg}` }] });
   }
 }
 

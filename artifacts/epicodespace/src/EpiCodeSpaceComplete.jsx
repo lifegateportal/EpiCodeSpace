@@ -2780,6 +2780,7 @@ ${finalCode}
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = MAX_ROUNDS;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
+      let consecReadOnlyRounds = 0; // rounds where ONLY read tools were called (no writes)
 
       try {
         for (let round = 0; round < roundLimit; round++) {
@@ -2974,6 +2975,24 @@ ${finalCode}
                 terminalCmds.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
               }
             }
+
+            // ── Read-loop detection ───────────────────────────────────────────
+            // If the model called ONLY read tools this round (nothing was written),
+            // track it. After 2 consecutive read-only rounds inject a hard user
+            // message into history so the model is forced to write next round.
+            const WRITE_TOOL_NAMES = new Set([
+              'writeFile', 'editFile', 'patchLines', 'deleteFile',
+              'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand',
+            ]);
+            const roundHasWrite = data.tool_calls.some(tc => WRITE_TOOL_NAMES.has(tc.name));
+            consecReadOnlyRounds = roundHasWrite ? 0 : consecReadOnlyRounds + 1;
+
+            if (consecReadOnlyRounds >= 2) {
+              const msg = `🚨 STOP READING. You have completed ${consecReadOnlyRounds} rounds of reading files without writing a single line of code. This is a failure. Your NEXT tool call MUST be patchLines, editFile, or writeFile. Do NOT call readFile, listFiles, getProjectStructure, searchCode, or any other read tool. You have enough context — IMPLEMENT NOW.`;
+              history = [...history, { role: 'user', content: msg }].slice(-22);
+              allSteps.push(`⚠️ Read-loop (${consecReadOnlyRounds} read-only rounds) — forcing write on next round.`);
+            }
+            // ─────────────────────────────────────────────────────────────────
 
             pendingToolCalls = data.tool_calls;
 
