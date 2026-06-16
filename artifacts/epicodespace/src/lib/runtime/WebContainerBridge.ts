@@ -132,7 +132,9 @@ class Bridge {
         });
 
         const tree = buildTreeFromFlat(opts.files);
-        await rawContainer.mount(tree);
+        // Mount into the workdir so the shell's cwd matches the project root.
+        // workdirName:'epicodespace' → /home/epicodespace — files must land there.
+        await rawContainer.mount(tree, { mountPoint: '/home/epicodespace' });
 
         this.container = rawContainer;
         this.setState('ready');
@@ -215,7 +217,7 @@ class Bridge {
       throw new Error('Container not ready — boot first, then sync.');
     }
     const tree = buildTreeFromFlat(files);
-    await c.mount(tree);
+    await c.mount(tree, { mountPoint: '/home/epicodespace' });
     logger.info('runtime', 'syncFiles complete', { fileCount: Object.keys(files).length });
   }
 }
