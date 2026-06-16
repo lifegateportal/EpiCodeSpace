@@ -27,6 +27,7 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
   const writerRef = useRef(null);
   const [bootState, setBootState] = useState(bridge.state);
   const [bootError, setBootError] = useState(null);
+  const [reloadRequired, setReloadRequired] = useState(false);
   const [processRunning, setProcessRunning] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
 
@@ -417,33 +418,15 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
       const msg = err?.message || String(err);
       const isEnoent = /ENOENT|no such file/i.test(msg);
       if (isEnoent) {
-        // Corrupted WebContainers state — clear OPFS + Service Workers + IndexedDB.
-        // Service Workers in particular survive page reloads; a stale WC SW causes
-        // ENOENT on every boot until it is unregistered and the page is reloaded.
+        // ENOENT means WebContainers' internal module state is corrupted from the
+        // failed boot attempt. This state lives in JS memory and cannot be cleared
+        // without a page reload — retrying boot on the same page always fails.
+        // Strategy: clear persistent storage (OPFS/SW/IDB), then require a reload.
         term?.writeln(`\x1b[33m▶ boot failed (ENOENT) — clearing WebContainers cache…\x1b[0m`);
-        const clearedCount = await clearWebContainerOPFS();
-        if (clearedCount > 0) {
-          // Service Workers were likely cleared — the old SW still controls this
-          // page until a reload. Tell the user to reload rather than retry here.
-          term?.writeln('\x1b[33m✔ cache cleared — please reload the page, then boot again\x1b[0m');
-          term?.writeln('\x1b[90m# Service Workers persist until reload. Reload → Boot container → should work.\x1b[0m');
-          setBootError('reload-required');
-        } else {
-          // Nothing to clear — try one more boot in case it was transient.
-          term?.writeln('\x1b[36m▶ nothing cleared — retrying boot once…\x1b[0m');
-          try {
-            await attemptBoot();
-            term?.writeln('\x1b[32m✔ container ready\x1b[0m');
-            await startShell();
-            return;
-          } catch (retryErr) {
-            const retryMsg = retryErr?.message || String(retryErr);
-            setBootError(retryMsg);
-            term?.writeln(`\x1b[31m✖ boot failed: ${retryMsg}\x1b[0m`);
-            term?.writeln('\x1b[90m# Reload the page and try again. If this persists, clear site data in Safari Settings.\x1b[0m');
-            logger.error('terminal', 'boot failed after retry', retryErr);
-          }
-        }
+        await clearWebContainerOPFS();
+        term?.writeln('\x1b[33m✔ cache cleared — reload the page to finish recovery\x1b[0m');
+        term?.writeln('\x1b[90m# WebContainers holds in-memory state from the failed boot that only a page reload can reset.\x1b[0m');
+        setReloadRequired(true);
         return;
       }
       setBootError(msg);
@@ -453,21 +436,17 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
   }, [files, startShell, clearWebContainerOPFS]);
 
   const handleClearAndReboot = useCallback(async () => {
+    // After ENOENT, WebContainers holds corrupted in-memory state that persists
+    // until page reload. Clear storage first, then reload — don't attempt reboot.
     const term = termRef.current;
     term?.writeln('\x1b[33m▶ clearing WebContainer cache…\x1b[0m');
     processRef.current = null;
     writerRef.current = null;
     setProcessRunning(false);
     await clearWebContainerOPFS();
-    term?.writeln('\x1b[36m▶ rebooting…\x1b[0m');
-    try {
-      await bridge.reboot({ files });
-      term?.writeln('\x1b[32m✔ rebooted\x1b[0m');
-      await startShell();
-    } catch (err) {
-      term?.writeln(`\x1b[31m✖ reboot failed: ${err?.message || err}\x1b[0m`);
-    }
-  }, [files, startShell, clearWebContainerOPFS]);
+    term?.writeln('\x1b[33m✔ cache cleared — reloading page…\x1b[0m');
+    window.location.reload();
+  }, [clearWebContainerOPFS]);
 
   const handleReboot = useCallback(async () => {
     const term = termRef.current;
@@ -616,14 +595,23 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
               {bootState === 'booting' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
               Boot container
             </button>
-            {bootError && /ENOENT|no such file/i.test(bootError) && (
+            {reloadRequired && (
+              <button
+                onClick={() => { clearWebContainerOPFS().then(() => window.location.reload()); }}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-amber-600 hover:bg-amber-500 font-semibold"
+                title="Clear WebContainer cache and reload the page — required to recover from ENOENT"
+              >
+                <RefreshCw className="w-3 h-3" /> Reload Page
+              </button>
+            )}
+            {bootError && !reloadRequired && /ENOENT|no such file/i.test(bootError) && (
               <button
                 onClick={handleClearAndReboot}
                 disabled={!isolated || bootState === 'booting'}
                 className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-rose-700 hover:bg-rose-600 disabled:opacity-40"
-                title="Clear corrupted WebContainer cache and reboot"
+                title="Clear corrupted WebContainer cache and reload"
               >
-                <RefreshCw className="w-3 h-3" /> Clear Cache &amp; Reboot
+                <RefreshCw className="w-3 h-3" /> Clear &amp; Reload
               </button>
             )}
           </>
@@ -708,7 +696,13 @@ const WebContainerTerminal = forwardRef(function WebContainerTerminal({ files, s
         </div>
       )}
 
-      {bootError && (
+      {reloadRequired && (
+        <div className="px-3 py-2 text-xs text-amber-300 bg-amber-950/40 border-b border-amber-900 flex items-center gap-2">
+          <RefreshCw className="w-3 h-3 shrink-0" />
+          Boot failed — tap <strong className="text-amber-200">Reload Page</strong> above to recover.
+        </div>
+      )}
+      {bootError && !reloadRequired && (
         <div className="px-3 py-2 text-xs text-rose-300 bg-rose-950/40 border-b border-rose-900">
           {bootError}
         </div>
