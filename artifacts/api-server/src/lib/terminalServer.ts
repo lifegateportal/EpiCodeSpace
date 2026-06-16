@@ -97,6 +97,12 @@ function handleConnection(ws: WebSocket): void {
             ...process.env,
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
+            // Per-session npm cache avoids shared-cache corruption across sessions.
+            npm_config_cache: `${sessionDir}/.npm-cache`,
+            // Disable npm's worker thread IPC which conflicts with PTY file descriptors,
+            // causing "Exit handler never called!" crashes in production containers.
+            npm_config_foreground_scripts: 'true',
+            // npm_config_loglevel: 'error',  // quieter output (optional)
           } as Record<string, string>,
         });
 
