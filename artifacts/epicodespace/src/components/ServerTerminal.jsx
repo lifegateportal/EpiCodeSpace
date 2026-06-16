@@ -8,19 +8,22 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import {
   RefreshCw, Square, Power, Loader2,
-  Copy, ClipboardPaste, UploadCloud,
+  Copy, ClipboardPaste, UploadCloud, ExternalLink,
 } from 'lucide-react';
 
 /**
  * ServerTerminal — xterm.js terminal backed by a real server-side bash shell
- * via WebSocket + node-pty.  Drop-in replacement for WebContainerTerminal:
- * accepts the same props (files, sink, onServerUrl, onOutput) and exposes
- * the same ref API (sendCommand, isReady).
+ * via WebSocket + node-pty.  Drop-in replacement for WebContainerTerminal.
  *
- * No WASM, no COOP/COEP headers, works on every browser including Safari.
+ * Props:  files, sink, onServerUrl, onOutput
+ * Ref:    sendCommand(cmd) → bool, isReady() → bool
+ *
+ * When the server detects a dev server starting (e.g. Next.js on port 5000),
+ * it sends a `serverUrl` message with the correct public Replit URL.
+ * We call onServerUrl(url) to populate the Preview tab and show a banner.
  */
 const ServerTerminal = forwardRef(function ServerTerminal(
-  { files, sink, onOutput },
+  { files, sink, onServerUrl, onOutput },
   ref,
 ) {
   const hostRef = useRef(null);
@@ -28,10 +31,11 @@ const ServerTerminal = forwardRef(function ServerTerminal(
   const fitRef  = useRef(null);
   const wsRef   = useRef(null);
 
-  const [connState, setConnState]     = useState('idle'); // idle | connecting | ready | dead
-  const [connError, setConnError]     = useState(null);
+  const [connState, setConnState]         = useState('idle'); // idle | connecting | ready | dead
+  const [connError, setConnError]         = useState(null);
   const [processRunning, setProcessRunning] = useState(false);
-  const [hasSelection, setHasSelection]     = useState(false);
+  const [hasSelection, setHasSelection]   = useState(false);
+  const [detectedUrl, setDetectedUrl]     = useState(null); // { port, url }
 
   // ── xterm.js mount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -100,7 +104,6 @@ const ServerTerminal = forwardRef(function ServerTerminal(
   useEffect(() => () => { wsRef.current?.close(); }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────
-  /** Flatten the fileSystem map to path → string content for the server. */
   const buildFilesMap = useCallback(() => {
     const src = sink?.getLatest?.() ?? files ?? {};
     const out = {};
@@ -112,7 +115,6 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
   // ── Connect ───────────────────────────────────────────────────────────
   const connect = useCallback(() => {
-    // Close any existing connection first
     if (wsRef.current) {
       wsRef.current.onclose = null;
       wsRef.current.close();
@@ -121,6 +123,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
     setConnState('connecting');
     setConnError(null);
+    setDetectedUrl(null);
 
     const term = termRef.current;
     term?.writeln('\x1b[36m▶ connecting to server terminal…\x1b[0m');
@@ -147,25 +150,40 @@ const ServerTerminal = forwardRef(function ServerTerminal(
       if (msg.type === 'output') {
         termRef.current?.write(msg.data);
         onOutput?.(msg.data);
+
       } else if (msg.type === 'ready') {
         setConnState('ready');
         setProcessRunning(true);
         term?.writeln('\x1b[32m✔ server terminal ready\x1b[0m');
+
       } else if (msg.type === 'exit') {
         setProcessRunning(false);
         term?.writeln(`\x1b[33m\r\n# shell exited (code ${msg.exitCode ?? '?'})\x1b[0m`);
+
       } else if (msg.type === 'error') {
         setConnState('dead');
         setConnError(msg.message);
         term?.writeln(`\x1b[31m✖ ${msg.message}\x1b[0m`);
+
+      } else if (msg.type === 'serverUrl') {
+        // Server detected a dev server on a local port and resolved the public URL
+        const { port, url } = msg;
+        setDetectedUrl({ port, url });
+        onServerUrl?.(url);
+        term?.writeln(
+          `\x1b[32m\r\n✔ Dev server on port ${port} → \x1b[36m\x1b[4m${url}\x1b[0m`
+        );
+        term?.writeln(
+          '\x1b[90m  (Use the Preview tab or the link above to open it)\x1b[0m\r\n'
+        );
       }
     };
 
     ws.onerror = () => {
       setConnState('dead');
-      const msg = 'WebSocket connection failed — is the API server running?';
-      setConnError(msg);
-      term?.writeln(`\x1b[31m✖ ${msg}\x1b[0m`);
+      const m = 'WebSocket connection failed — is the API server running?';
+      setConnError(m);
+      term?.writeln(`\x1b[31m✖ ${m}\x1b[0m`);
     };
 
     ws.onclose = () => {
@@ -175,7 +193,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
         setProcessRunning(false);
       }
     };
-  }, [buildFilesMap, onOutput]);
+  }, [buildFilesMap, onOutput, onServerUrl]);
 
   // ── Disconnect ────────────────────────────────────────────────────────
   const disconnect = useCallback(() => {
@@ -186,6 +204,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
     }
     setConnState('idle');
     setProcessRunning(false);
+    setDetectedUrl(null);
     termRef.current?.writeln('\x1b[33m# disconnected\x1b[0m');
   }, []);
 
@@ -221,7 +240,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
     }
   }, []);
 
-  // ── Ref API (matches WebContainerTerminal) ────────────────────────────
+  // ── Ref API ───────────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
     sendCommand(cmd) {
       const ws = wsRef.current;
@@ -239,7 +258,9 @@ const ServerTerminal = forwardRef(function ServerTerminal(
   }), [connState]);
 
   // ── Render ────────────────────────────────────────────────────────────
-  const stateLabel = { idle: 'Disconnected', connecting: 'Connecting…', ready: 'Connected', dead: 'Error' }[connState] ?? connState;
+  const stateLabel = {
+    idle: 'Disconnected', connecting: 'Connecting…', ready: 'Connected', dead: 'Error',
+  }[connState] ?? connState;
 
   return (
     <div className="flex flex-col h-full bg-[#0b1020] text-slate-200">
@@ -298,6 +319,22 @@ const ServerTerminal = forwardRef(function ServerTerminal(
       {connError && (
         <div className="px-3 py-2 text-xs text-rose-300 bg-rose-950/40 border-b border-rose-900">
           {connError}
+        </div>
+      )}
+
+      {/* Detected dev server banner */}
+      {detectedUrl && (
+        <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-emerald-950/60 border-b border-emerald-800/60">
+          <span className="text-emerald-400 font-medium">▶ Port {detectedUrl.port}</span>
+          <a
+            href={detectedUrl.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-cyan-400 underline hover:text-cyan-300 truncate"
+          >
+            {detectedUrl.url}
+            <ExternalLink className="w-3 h-3 flex-shrink-0" />
+          </a>
         </div>
       )}
 

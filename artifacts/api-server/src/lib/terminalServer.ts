@@ -7,6 +7,24 @@ import * as os from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from './logger';
 
+// Build the public Replit URL for a given local port.
+// REPLIT_DEV_DOMAIN has the form: <REPL_ID>-00-<suffix>.<region>.replit.dev
+// Swapping "-00-" → "-PORT-" gives the port-specific URL.
+function getPortUrl(port: number): string | null {
+  const devDomain = process.env['REPLIT_DEV_DOMAIN'];
+  if (!devDomain) return null;
+  if (devDomain.includes('-00-')) {
+    return `https://${devDomain.replace('-00-', `-${port}-`)}`;
+  }
+  // Fallback: try prepending the port as a subdomain
+  return `https://${port}-${devDomain}`;
+}
+
+// Regex to find "http://localhost:PORT" or "https://localhost:PORT" in raw output.
+// Strips ANSI escape codes before matching.
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+const LOCAL_URL_RE = /https?:\/\/localhost:(\d{2,5})/g;
+
 export function attachTerminalServer(server: http.Server): void {
   const wss = new WebSocketServer({ server, path: '/api/terminal' });
   logger.info({ path: '/api/terminal' }, 'terminal WebSocket server attached');
@@ -17,6 +35,8 @@ function handleConnection(ws: WebSocket): void {
   const sessionId = randomUUID().slice(0, 8);
   const sessionDir = path.join(os.tmpdir(), `epicode-${sessionId}`);
   let ptyProcess: pty.IPty | null = null;
+  // Track ports we've already announced so we don't spam.
+  const announcedPorts = new Set<number>();
 
   const send = (msg: object) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -31,6 +51,24 @@ function handleConnection(ws: WebSocket): void {
     }
     fs.rm(sessionDir, { recursive: true, force: true }).catch(() => {});
     logger.info({ sessionId }, 'terminal session cleaned up');
+  };
+
+  // Scan a chunk of terminal output for "localhost:PORT" and announce new ones.
+  const scanForPorts = (raw: string) => {
+    const clean = raw.replace(ANSI_RE, '');
+    LOCAL_URL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LOCAL_URL_RE.exec(clean)) !== null) {
+      const port = Number(m[1]);
+      if (!announcedPorts.has(port)) {
+        announcedPorts.add(port);
+        const url = getPortUrl(port);
+        if (url) {
+          send({ type: 'serverUrl', port, url });
+          logger.info({ sessionId, port, url }, 'detected dev server port');
+        }
+      }
+    }
   };
 
   ws.on('message', async (raw) => {
@@ -62,7 +100,11 @@ function handleConnection(ws: WebSocket): void {
           } as Record<string, string>,
         });
 
-        ptyProcess.onData((data) => send({ type: 'output', data }));
+        ptyProcess.onData((data) => {
+          send({ type: 'output', data });
+          scanForPorts(data);
+        });
+
         ptyProcess.onExit(({ exitCode }) => {
           send({ type: 'exit', exitCode });
           ptyProcess = null;
