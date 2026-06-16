@@ -13,19 +13,19 @@ import { logger } from '../logger.js';
 import { shouldSync, normalize, MAX_MIRROR_BYTES } from './policy.ts';
 
 // configureAPIKey must be called at module-init time, before WebContainer.boot().
-// Non-localhost origins need a key from https://webcontainers.io/
-// Set VITE_WEBCONTAINER_APIKEY as a secret in Replit; it is baked into the bundle at build time.
-// IMPORTANT: use the plain import.meta.env.VITE_* pattern — Vite's static replacement only
-// matches this exact form, not (import.meta as any).env variants.
-{
-  const apiKey = import.meta.env.VITE_WEBCONTAINER_APIKEY;
-  if (apiKey) {
-    configureAPIKey(apiKey);
-    logger.info('runtime', 'configureAPIKey called', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' });
-  } else {
-    logger.warn('runtime', 'VITE_WEBCONTAINER_APIKEY not set — npm will hang on non-localhost origins', { origin: typeof window !== 'undefined' ? window.location.origin : 'ssr' });
-  }
-}
+// IMPORTANT: Only call configureAPIKey once the published origin is registered at
+// webcontainers.io. Calling it with an unregistered origin causes boot to fail with ENOENT.
+// To enable: register https://epi-code-space.replit.app at webcontainers.io, then
+// uncomment the block below. Until then, the container boots fine without the key
+// (npm network operations will hang on non-localhost origins).
+//
+// {
+//   const apiKey = import.meta.env.VITE_WEBCONTAINER_APIKEY;
+//   if (apiKey) {
+//     configureAPIKey(apiKey);
+//     logger.info('runtime', 'configureAPIKey called', { origin: window.location.origin });
+//   }
+// }
 
 export type BootState = 'idle' | 'booting' | 'ready' | 'dead';
 
