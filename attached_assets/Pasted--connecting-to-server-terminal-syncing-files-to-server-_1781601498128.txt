@@ -1,0 +1,51 @@
+▶ connecting to server terminal…
+▶ syncing files to server…
+✔ server terminal ready
+runner@repl:/tmp/epicode-8083170c$ ▶ syncing 138 files…
+✔ synced
+npm install
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm.
+npm warn Unknown env config "npm-globalconfig". This will stop working in the next major version of npm.
+npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+npm warn Unknown env config "catalog". This will stop working in the next major version of npm.
+npm warn Unknown env config "recursive". This will stop working in the next major version of npm.
+npm warn Unknown env config "overrides". This will stop working in the next major version of npm.
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+npm warn deprecated jpeg-exif@1.1.4: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
+added 309 packages, and audited 310 packages in 16s
+
+98 packages are looking for funding
+  run `npm fund` for details
+
+10 vulnerabilities (6 low, 4 moderate)
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+runner@repl:/tmp/epicode-8083170c$ npm run dev
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm.
+npm warn Unknown env config "npm-globalconfig". This will stop working in the next major version of npm.
+npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+npm warn Unknown env config "catalog". This will stop working in the next major version of npm.
+npm warn Unknown env config "recursive". This will stop working in the next major version of npm.
+npm warn Unknown env config "overrides". This will stop working in the next major version of npm.
+
+> nexus-director@0.1.0 dev
+> rm -rf .next && NEXT_DISABLE_DEVTOOLS=1 next dev --port 5000 --hostname 0.0.0.0
+
+ ⚠ Invalid next.config.ts options detected: 
+ ⚠     Unrecognized key(s) in object: 'serverRequestBodySizeLimit' at "experimental"
+ ⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+   ▲ Next.js 15.5.19
+   - Local:        http://localhost:5000
+   - Network:      http://0.0.0.0:5000
+   - Experiments (use with caution):
+     · serverActions
+     · serverRequestBodySizeLimit: "50mb"
+
+ ✓ Starting...
+ ✓ Ready in 1983ms
