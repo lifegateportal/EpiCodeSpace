@@ -2,13 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-const rawPort = process.env.PORT;
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
+const rawPort = process.env.PORT ?? "21256";
 
 const port = Number(rawPort);
 
@@ -16,13 +10,8 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH;
-
-if (!basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
+const basePath = process.env.BASE_PATH ?? "/";
+const apiOrigin = process.env.API_ORIGIN ?? `http://localhost:${process.env.API_PORT ?? "8080"}`;
 
 const crossOriginIsolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -99,7 +88,7 @@ export default defineConfig({
       ],
     },
     proxy: {
-      '/api': { target: 'http://localhost:80', changeOrigin: true, ws: true },
+      '/api': { target: apiOrigin, changeOrigin: true, ws: true },
     },
   },
   preview: {
