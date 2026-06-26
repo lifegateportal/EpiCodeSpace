@@ -1,10 +1,10 @@
 import { createServer } from 'http';
 import { createReadStream, statSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, normalize, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const ROOT = join(__dirname, 'dist/public');
+const ROOT = resolve(__dirname, 'dist/public');
 const PORT = Number(process.env.PORT) || 3000;
 
 const MIME = {
@@ -35,13 +35,43 @@ function isFile(p) {
   try { return statSync(p).isFile(); } catch { return false; }
 }
 
+if (!isFile(join(ROOT, 'index.html'))) {
+  throw new Error(`Missing frontend build output at ${ROOT}. Run the frontend build before starting the static server.`);
+}
+
+function resolveRequestPath(urlPath) {
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(urlPath);
+  } catch {
+    return null;
+  }
+
+  const normalizedPath = normalize(decodedPath.replace(/^\/+/, ''));
+  const candidatePath = resolve(ROOT, normalizedPath);
+  const rootPrefix = `${ROOT}${sep}`;
+
+  if (candidatePath !== ROOT && !candidatePath.startsWith(rootPrefix)) {
+    return null;
+  }
+
+  return candidatePath;
+}
+
 const server = createServer((req, res) => {
   for (const [k, v] of Object.entries(ISOLATION_HEADERS)) {
     res.setHeader(k, v);
   }
 
-  const urlPath = req.url.split('?')[0];
-  const filePath = join(ROOT, urlPath);
+  const urlPath = (req.url || '/').split('?')[0];
+  const filePath = resolveRequestPath(urlPath);
+
+  if (!filePath) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
+
   const candidates = [filePath, join(ROOT, 'index.html')];
   const found = candidates.find(isFile);
 
