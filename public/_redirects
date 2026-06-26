@@ -1,0 +1,13 @@
+# Cloudflare Pages / Netlify Redirects
+# Proxy API requests to backend Droplet running Node.js serverless function
+
+# IMPORTANT: Update this line with your actual Droplet backend URL
+# Common formats:
+#   - Public IP: http://123.45.67.89:3000
+#   - Domain: https://api.epicglobal.app
+#   - EpiGlobal internal: https://api-epicodespace.epicglobal.app
+
+/api/*  https://api.epicglobal.app/api/:splat  200
+
+# SPA fallback - serve index.html for all other routes
+/*  /index.html  200
