@@ -941,10 +941,11 @@ function EpiCodeSpaceApp() {
   const installPromptRef = useRef(null);
 
   // ── Chat ──────────────────────────────────────────────────────────────────
-  // Circuit-breaker limits: pause after this many consecutive tool rounds
-  // and lock input once the session crosses the token ceiling.
+  // Circuit-breaker limits: pause after this many consecutive tool rounds.
+  // Token ceiling is warning-only (never blocks input).
   const MAX_TOOL_ROUNDS = 6;
-  const TOKEN_CEILING = 50_000;
+  const TOKEN_CEILING_DEFAULT = 120_000;
+  const TOKEN_CEILING_DEEPSEEK = 220_000;
 
   const [chatInput, setChatInput] = useState('');
   const [chatImage, setChatImage] = useState(null);
@@ -959,6 +960,7 @@ function EpiCodeSpaceApp() {
   const steerInputRef = useRef(null);
   const [chatMode, setChatMode] = useState(() => loadJSON(MODE_KEY, 'agent'));
   const [activeAgent, setActiveAgent] = useState(() => loadJSON(AGENT_KEY, 'epicode-agent'));
+  const tokenCeiling = activeAgent === 'deepseek' ? TOKEN_CEILING_DEEPSEEK : TOKEN_CEILING_DEFAULT;
   // Per-agent model selection (map agentId → modelId). Validated on load so
   // stale entries from a previous catalogue don't break the API call.
   const [activeModels, setActiveModels] = useState(() => {
@@ -2893,9 +2895,10 @@ ${finalCode}
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
-      const MAX_ROUNDS = 15;
+      const MAX_ROUNDS_DEFAULT = 15;
+      const MAX_ROUNDS_DEEPSEEK = 30;
       const isDeepSeekAgent = activeAgent === 'deepseek';
-      const roundLimit = MAX_ROUNDS;
+      const roundLimit = isDeepSeekAgent ? MAX_ROUNDS_DEEPSEEK : MAX_ROUNDS_DEFAULT;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
 
@@ -4994,13 +4997,13 @@ ${finalCode}
 
             {/* Chat Input */}
             <div className="p-3 bg-[#15092a] border-t border-fuchsia-500/20 shrink-0" style={{ paddingBottom: 'max(0.75rem, var(--sab))' }}>
-              {sessionTokens >= TOKEN_CEILING && (
+              {sessionTokens >= tokenCeiling && (
                 <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-900/20 border border-amber-500/30 px-3 py-2 text-amber-300 text-[11px]">
                   <span className="text-base leading-none">⚠️</span>
                   <span>
-                    Warning: Approaching token limit (~{Math.round(sessionTokens / 1000)}k used). Consider summarizing or{' '}
+                    Warning only: high token usage (~{Math.round(sessionTokens / 1000)}k used of ~{Math.round(tokenCeiling / 1000)}k budget). Consider summarizing or{' '}
                     <button type="button" className="underline hover:text-amber-100 transition-colors" onClick={handleNewConversation}>starting a new context</button> soon.
-                    You can still continue sending messages.
+                    You can keep sending messages; this does not hard-stop the agent.
                   </span>
                 </div>
               )}
