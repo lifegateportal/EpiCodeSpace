@@ -405,6 +405,18 @@ function keyAliases(envKey: string) {
   ]));
 }
 
+function heuristicKeyNames(envKey: string) {
+  const provider = envKey.replace(/_API_KEY$/, '');
+  const keys = Object.keys(process.env || {});
+  return keys.filter((k) => {
+    const upper = k.toUpperCase();
+    if (!upper.includes(provider)) return false;
+    if (upper.includes('PUBLIC')) return false;
+    if (upper.includes('CLIENT')) return false;
+    return upper.includes('KEY') || upper.includes('TOKEN');
+  });
+}
+
 function resolveApiKey(envKey: string) {
   for (const key of keyAliases(envKey)) {
     const value = process.env[key];
@@ -412,6 +424,14 @@ function resolveApiKey(envKey: string) {
       return value.trim();
     }
   }
+
+  for (const key of heuristicKeyNames(envKey)) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
   return undefined;
 }
 
@@ -459,6 +479,7 @@ router.post('/chat', async (req, res) => {
           error: `API key not configured. Set ${config.envKey} in environment variables.`,
           missingKey: config.envKey,
           acceptedKeys: keyAliases(config.envKey),
+          detectedProviderKeys: heuristicKeyNames(config.envKey),
         });
         return;
       }
