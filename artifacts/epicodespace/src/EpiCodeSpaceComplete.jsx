@@ -1045,6 +1045,8 @@ function EpiCodeSpaceApp() {
   const chatAbortRef = useRef(null);
   const autoDevStartedRef = useRef(false);
   const autoDevProcessRef = useRef(null);
+  const autoDevRetryAfterRef = useRef(0);
+  const autoDevLastErrorToastRef = useRef({ key: '', at: 0 });
   const lastAutoSnapshotHashRef = useRef('');
   const lastAutoSnapshotAtRef = useRef(0);
   const storageWarnedRef = useRef({ w80: false, w90: false });
@@ -1158,6 +1160,7 @@ function EpiCodeSpaceApp() {
     if (activeTerminalTab !== 'preview') return;
     if (wcServerUrl) return;
     if (autoDevStartedRef.current) return;
+    if (Date.now() < autoDevRetryAfterRef.current) return;
 
     autoDevStartedRef.current = true;
     let cancelled = false;
@@ -1178,6 +1181,7 @@ function EpiCodeSpaceApp() {
           terminal: { cols: 80, rows: 24 },
         });
         autoDevProcessRef.current = proc;
+        autoDevRetryAfterRef.current = 0;
 
         // Fire-and-forget output drain so backpressure never stalls the process.
         proc.output.pipeTo(new WritableStream({
@@ -1187,7 +1191,16 @@ function EpiCodeSpaceApp() {
         })).catch(() => {});
       } catch (err) {
         autoDevStartedRef.current = false;
-        toast.error(`Preview auto-start failed: ${err?.message || err}`);
+        autoDevRetryAfterRef.current = Date.now() + 30_000;
+        const msg = `Preview auto-start failed: ${err?.message || err}`;
+        const last = autoDevLastErrorToastRef.current;
+        const duplicate = last.key === msg && (Date.now() - last.at) < 15_000;
+        if (!duplicate) {
+          autoDevLastErrorToastRef.current = { key: msg, at: Date.now() };
+          toast.error(msg);
+        } else {
+          logger.warn('runtime', msg);
+        }
       }
     })();
 
