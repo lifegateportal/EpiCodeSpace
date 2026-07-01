@@ -32,6 +32,7 @@ import {
 } from './lib/storage.js';
 import DOMPurify from 'dompurify';
 import { AGENT_REGISTRY, defaultModelFor, isValidModelFor } from './lib/agentRegistry.js';
+import { createAgentTools as createSharedAgentTools, buildAgentResponse as buildSharedAgentResponse } from './lib/agentTools.js';
 import { AUTO_MODEL_ID, resolveAutoRoute, autoFetch } from './lib/modelRouter.ts';
 import { MAX_INLINE_READ_BYTES } from './lib/fs/types.ts';
 import { FsClient } from './lib/fs/FsClient.ts';
@@ -602,6 +603,79 @@ function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
 }
 
+const AGENT_RUN_STATES = {
+  IDLE: 'idle',
+  PLANNING: 'planning',
+  TOOL_EXECUTION: 'tool_execution',
+  VERIFYING: 'verifying',
+  RESPONDING: 'responding',
+  FAILED: 'failed',
+};
+
+const TOOL_POLICY = {
+  readFile: 'read',
+  listFiles: 'read',
+  getProjectStructure: 'read',
+  searchCode: 'read',
+  analyzeFile: 'read',
+  getTerminalOutput: 'read',
+  getGitStatus: 'read',
+  diagnoseProject: 'read',
+  explainError: 'read',
+  writeFile: 'safe_write',
+  editFile: 'safe_write',
+  patchLines: 'safe_write',
+  searchAndReplace: 'safe_write',
+  autoFix: 'safe_write',
+  createComponent: 'safe_write',
+  deleteFile: 'risky_write',
+  runCommand: 'command',
+  npmInstall: 'command',
+};
+
+function isWritePolicy(toolName) {
+  return TOOL_POLICY[toolName] === 'safe_write' || TOOL_POLICY[toolName] === 'risky_write' || TOOL_POLICY[toolName] === 'command';
+}
+
+function packChatHistory(messages, activeFile, userMessage, maxItems = 20) {
+  if (!Array.isArray(messages) || messages.length <= maxItems) return messages;
+
+  const needleSet = new Set(
+    (userMessage || '')
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length >= 4)
+  );
+  const activeNeedle = (activeFile || '').toLowerCase();
+
+  const scored = messages.map((m, idx) => {
+    const text = typeof m?.content === 'string' ? m.content.toLowerCase() : '';
+    const recency = idx / Math.max(1, messages.length - 1);
+    let relevance = 0;
+    if (activeNeedle && text.includes(activeNeedle)) relevance += 3;
+    for (const n of needleSet) {
+      if (text.includes(n)) relevance += 1;
+    }
+    if (m?.role === 'user') relevance += 0.5;
+    return { idx, msg: m, score: recency + relevance };
+  });
+
+  const mustKeep = new Set();
+  mustKeep.add(messages.length - 1);
+  if (messages.length > 1) mustKeep.add(messages.length - 2);
+
+  const selected = scored
+    .filter((s) => !mustKeep.has(s.idx))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, maxItems - mustKeep.size))
+    .map((s) => s.idx);
+
+  for (const idx of mustKeep) selected.push(idx);
+
+  const sorted = Array.from(new Set(selected)).sort((a, b) => a - b).map((idx) => messages[idx]);
+  return sorted;
+}
+
 function makeMessageId(prefix = 'msg') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -859,6 +933,7 @@ function EpiCodeSpaceApp() {
   const [copiedMsgKey, setCopiedMsgKey] = useState('');
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
+  const [agentRunState, setAgentRunState] = useState(AGENT_RUN_STATES.IDLE);
   const [sessionTokens, setSessionTokens] = useState(0);
   const [steerInput, setSteerInput] = useState('');
   const [isSteerOpen, setIsSteerOpen] = useState(false);
@@ -2089,7 +2164,7 @@ ${finalCode}
         const f = currentFS[targetPath];
         if (!f) return { ok: false, error: `File not found: ${targetPath}` };
         // Re-use the same analysis engine as createAgentTools
-        const tools = createAgentTools(currentFS, targetPath);
+        const tools = createSharedAgentTools(currentFS, targetPath);
         return tools.analyzeFile.execute(targetPath);
       }
       case 'runCommand': {
@@ -2185,7 +2260,7 @@ ${finalCode}
         const targetPath = args.path || activeFile;
         const f = currentFS[targetPath];
         if (!f) return { ok: false, error: `File not found: ${targetPath}` };
-        const tools = createAgentTools(currentFS, targetPath);
+        const tools = createSharedAgentTools(currentFS, targetPath);
         const analysis = tools.analyzeFile.execute(targetPath);
         if (!analysis.ok || analysis.issues.length === 0) {
           return { ok: true, path: targetPath, fixed: 0, message: 'No auto-fixable issues found.' };
@@ -2732,6 +2807,7 @@ ${finalCode}
     if (!overrideMessage) setChatInput('');
     setChatImage(null);
     setIsTyping(true);
+    setAgentRunState(AGENT_RUN_STATES.PLANNING);
 
     const context = {
       activeFile,
@@ -2767,6 +2843,7 @@ ${finalCode}
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .slice(-20)
       .map(m => ({ role: m.role, content: m.content }));
+    history = packChatHistory(history, activeFile, userMessage, 20);
 
     (async () => {
       let allSteps = [];
@@ -2776,6 +2853,9 @@ ${finalCode}
       let pendingToolCalls = null;
       let toolResults = null;
       let lastToolCallSig = null;
+      let verificationFailures = 0;
+      const executionStartedAt = Date.now();
+      const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
       const MAX_ROUNDS = 15;
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = MAX_ROUNDS;
@@ -2817,6 +2897,8 @@ ${finalCode}
 
           // If model returned text only, we're done
           if (data.type === 'text') {
+            setAgentRunState(AGENT_RUN_STATES.RESPONDING);
+            stateTransitions.push({ state: AGENT_RUN_STATES.RESPONDING, at: Date.now() });
             const shouldForceToolRetry =
               chatMode === 'agent' &&
               round === 0 &&
@@ -2852,6 +2934,12 @@ ${finalCode}
               timestamp: Date.now(),
               usage: data.usage,          // surface cache-hit telemetry
               truncated: data._truncated, // set by the API on context-length fallback
+              telemetry: {
+                durationMs: Date.now() - executionStartedAt,
+                rounds: round + 1,
+                transitions: stateTransitions,
+                toolCalls: allToolCalls.length,
+              },
               changedFiles: summary.files,
               changedPlus: summary.totalPlus,
               changedMinus: summary.totalMinus,
@@ -2877,6 +2965,8 @@ ${finalCode}
 
           // Model wants to call tools
           if (data.type === 'tool_calls' && data.tool_calls?.length) {
+            setAgentRunState(AGENT_RUN_STATES.TOOL_EXECUTION);
+            stateTransitions.push({ state: AGENT_RUN_STATES.TOOL_EXECUTION, at: Date.now() });
             consecToolRounds++;
 
             // Soft warning after MAX_TOOL_ROUNDS — does NOT block continuation.
@@ -2950,6 +3040,33 @@ ${finalCode}
                   setActiveFile(tc.arguments.path);
                 }
               });
+
+              // Mandatory post-edit verification pass before finalizing.
+              setAgentRunState(AGENT_RUN_STATES.VERIFYING);
+              stateTransitions.push({ state: AGENT_RUN_STATES.VERIFYING, at: Date.now() });
+              const changedPaths = Array.from(new Set(changeItems.map((c) => c.path)));
+              const verificationIssues = [];
+              for (const path of changedPaths) {
+                const check = await executeToolCall('analyzeFile', { path }, currentFS);
+                if (check?.ok) {
+                  const errorCount = (check.issues || []).filter((i) => i.type === 'error').length;
+                  if (errorCount > 0) verificationIssues.push({ path, errorCount, summary: check.summary });
+                  allSteps.push(`✅ **verify**(${path}) → ${check.issueCount ?? 0} issue(s), ${errorCount} error(s)`);
+                }
+              }
+              if (verificationIssues.length > 0 && verificationFailures < 2) {
+                verificationFailures++;
+                const issueText = verificationIssues
+                  .map((v) => `${v.path}: ${v.errorCount} error(s) [${v.summary}]`)
+                  .join('; ');
+                history = [
+                  ...history,
+                  {
+                    role: 'user',
+                    content: `Post-edit verification found remaining errors. Fix these before finalizing: ${issueText}. Use write tools now.`,
+                  },
+                ].slice(-22);
+              }
             }
             // Run terminal commands requested by agent
             // Smart routing: npm/node/npx/yarn/pnpm → WebContainers runtime; all others → simulated terminal
@@ -2980,11 +3097,7 @@ ${finalCode}
             // If the model called ONLY read tools this round (nothing was written),
             // track it. After 2 consecutive read-only rounds inject a hard user
             // message into history so the model is forced to write next round.
-            const WRITE_TOOL_NAMES = new Set([
-              'writeFile', 'editFile', 'patchLines', 'deleteFile',
-              'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand',
-            ]);
-            const roundHasWrite = data.tool_calls.some(tc => WRITE_TOOL_NAMES.has(tc.name));
+            const roundHasWrite = data.tool_calls.some(tc => isWritePolicy(tc.name));
             consecReadOnlyRounds = roundHasWrite ? 0 : consecReadOnlyRounds + 1;
 
             if (consecReadOnlyRounds >= 2) {
@@ -3001,7 +3114,7 @@ ${finalCode}
               const progressMsg = prev.find(m => m._progress && m.agent === activeAgent);
               const msg = {
                 role: 'assistant', _progress: true,
-                content: `Working... (${allToolCalls.length} tool call${allToolCalls.length > 1 ? 's' : ''})`,
+                content: `Working (${agentRunState})... (${allToolCalls.length} tool call${allToolCalls.length > 1 ? 's' : ''})`,
                 agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
                 toolCalls: [...allToolCalls], steps: [...allSteps],
                 mode: chatMode, timestamp: Date.now(),
@@ -3027,6 +3140,12 @@ ${finalCode}
             changedFiles: summary.files,
             changedPlus: summary.totalPlus,
             changedMinus: summary.totalMinus,
+            telemetry: {
+              durationMs: Date.now() - executionStartedAt,
+              rounds: round + 1,
+              transitions: stateTransitions,
+              toolCalls: allToolCalls.length,
+            },
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
@@ -3050,6 +3169,12 @@ ${finalCode}
             changedFiles: summary.files,
             changedPlus: summary.totalPlus,
             changedMinus: summary.totalMinus,
+            telemetry: {
+              durationMs: Date.now() - executionStartedAt,
+              rounds: roundLimit,
+              transitions: stateTransitions,
+              toolCalls: allToolCalls.length,
+            },
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
             canContinue: true,
           };
@@ -3063,9 +3188,11 @@ ${finalCode}
           return;
         }
         logger.error('chat', 'API call failed — falling back to local agent', { message: err?.message });
+        setAgentRunState(AGENT_RUN_STATES.FAILED);
+        stateTransitions.push({ state: AGENT_RUN_STATES.FAILED, at: Date.now() });
         // Fallback to local simulated response
-        const tools = createAgentTools(fileSystem, activeFile);
-        const { response: fallbackResponse } = buildAgentResponse(activeAgent, userMessage, tools, fileSystem, activeFile);
+        const tools = createSharedAgentTools(fileSystem, activeFile);
+        const { response: fallbackResponse } = buildSharedAgentResponse(activeAgent, userMessage, tools, fileSystem, activeFile);
         const msgId = makeMessageId('assistant');
         const assistantMsg = {
           id: msgId,
@@ -3079,9 +3206,10 @@ ${finalCode}
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
       } finally {
         setIsTyping(false);
+        setAgentRunState(AGENT_RUN_STATES.IDLE);
       }
     })();
-  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;

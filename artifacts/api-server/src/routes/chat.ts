@@ -99,6 +99,27 @@ const WORKSPACE_TOOLS = [
   { name: 'createComponent', description: 'Scaffold a new React component, custom hook, or context provider with proper boilerplate. Faster than writeFile for standard patterns.', parameters: { type: 'object', properties: { name: { type: 'string', description: 'Component/hook name (PascalCase)' }, type: { type: 'string', enum: ['react', 'react-functional', 'react-hook', 'hook', 'context', 'util'], description: 'Component type' }, path: { type: 'string', description: 'Output file path (auto-generated if omitted)' }, props: { type: 'array', items: { type: 'string' }, description: 'List of prop names' } }, required: ['name'] } },
 ];
 
+const TOOL_POLICY: Record<string, 'read' | 'safe_write' | 'risky_write' | 'command'> = {
+  readFile: 'read',
+  listFiles: 'read',
+  getProjectStructure: 'read',
+  searchCode: 'read',
+  analyzeFile: 'read',
+  getTerminalOutput: 'read',
+  getGitStatus: 'read',
+  diagnoseProject: 'read',
+  explainError: 'read',
+  writeFile: 'safe_write',
+  editFile: 'safe_write',
+  patchLines: 'safe_write',
+  searchAndReplace: 'safe_write',
+  autoFix: 'safe_write',
+  createComponent: 'safe_write',
+  deleteFile: 'risky_write',
+  npmInstall: 'command',
+  runCommand: 'command',
+};
+
 // Tools that only read — no writes happen
 const READ_ONLY_TOOLS = new Set([
   'readFile', 'listFiles', 'getProjectStructure', 'searchCode',
@@ -171,6 +192,9 @@ function buildSystemPrompt(agent: string, context: any) {
   const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
+  const policyPreview = Object.entries(TOOL_POLICY)
+    .map(([tool, tier]) => `${tool}:${tier}`)
+    .join(', ');
 
   // DeepSeek-specific hard rules injected early — this model tends to loop on reads
   const deepseekBlock = agent === 'deepseek' ? `
@@ -238,6 +262,19 @@ WHEN editFile FAILS with "oldText not found":
 - Do not re-read files you already have. The active file is in context with line numbers.
 - When you find a bug: fix it immediately with patchLines or editFile. Do not list it and wait.
 - Complete all changes in one pass. Do not stop after the first file.
+
+[TOOL POLICY TIERS]
+- read: inspect only (readFile, listFiles, searchCode, analyzeFile, getTerminalOutput, getGitStatus, diagnoseProject, explainError)
+- safe_write: direct file changes (patchLines, editFile, writeFile, autoFix, createComponent, searchAndReplace)
+- risky_write: destructive changes (deleteFile)
+- command: terminal/package actions (runCommand, npmInstall)
+Prefer safe_write tools after one read. Use risky_write only when explicitly necessary.
+Policy map: ${policyPreview}
+
+[POST-EDIT VERIFICATION — MANDATORY]
+After any write operation, run analyzeFile on every changed file.
+If any error-level issues remain, continue fixing; do NOT finalize yet.
+Only finish when changed files no longer have error-level issues or when blocked by missing runtime context.
 
 [TOOL SELECTION]
 | Need | Tool |
@@ -333,6 +370,43 @@ function truncateMessages(messages: any[], keepHead = 2, keepTail = 6) {
   const tail = messages.slice(-keepTail);
   const marker = { role: 'user', content: '[... earlier conversation truncated to fit context window ...]' };
   return [...head, marker, ...tail];
+}
+
+function packMessagesForProvider(messages: any[], context: any, maxMessages = 22) {
+  if (!Array.isArray(messages) || messages.length <= maxMessages) return messages;
+
+  const activeFile = String(context?.activeFile || '').toLowerCase();
+  const userNeedles = new Set(
+    String(messages[messages.length - 1]?.content || '')
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length >= 4)
+  );
+
+  const scored = messages.map((m, idx) => {
+    const text = String(m?.content || '').toLowerCase();
+    const recency = idx / Math.max(1, messages.length - 1);
+    let relevance = 0;
+    if (activeFile && text.includes(activeFile)) relevance += 3;
+    for (const n of userNeedles) if (text.includes(n)) relevance += 1;
+    if (m?.role === 'user') relevance += 0.5;
+    if (text.includes('error') || text.includes('exception') || text.includes('failed')) relevance += 1;
+    return { idx, msg: m, score: recency + relevance };
+  });
+
+  const mustKeep = new Set<number>();
+  mustKeep.add(messages.length - 1);
+  if (messages.length > 1) mustKeep.add(messages.length - 2);
+
+  const selected = scored
+    .filter((s) => !mustKeep.has(s.idx))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, maxMessages - mustKeep.size))
+    .map((s) => s.idx);
+
+  for (const idx of mustKeep) selected.push(idx);
+
+  return Array.from(new Set(selected)).sort((a, b) => a - b).map((idx) => messages[idx]);
 }
 
 function findLastIndex(arr: any[], pred: (x: any) => boolean) {
@@ -579,6 +653,7 @@ router.post('/chat', async (req, res) => {
     const useTools = safeMode === 'agent' || safeMode === 'plan';
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
+    apiMessages = packMessagesForProvider(apiMessages, context);
     if (contextStr) {
       const lastUserIdx = apiMessages.length - 1;
       if (lastUserIdx >= 0 && apiMessages[lastUserIdx].role === 'user') {
