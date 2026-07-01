@@ -603,6 +603,25 @@ function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
 }
 
+function compactLargeText(value, max = 4000) {
+  if (typeof value !== 'string' || value.length <= max) return value;
+  const half = Math.floor(max / 2);
+  return `${value.slice(0, half)}\n...[truncated for resume continuity]...\n${value.slice(-half)}`;
+}
+
+function compactToolResultPayload(result) {
+  if (result == null || typeof result !== 'object') return result;
+  if (Array.isArray(result)) return result.slice(0, 50).map((v) => compactToolResultPayload(v));
+  const out = {};
+  for (const [k, v] of Object.entries(result)) {
+    if (typeof v === 'string') out[k] = compactLargeText(v, 4000);
+    else if (Array.isArray(v)) out[k] = v.slice(0, 50).map((x) => compactToolResultPayload(x));
+    else if (v && typeof v === 'object') out[k] = compactToolResultPayload(v);
+    else out[k] = v;
+  }
+  return out;
+}
+
 const AGENT_RUN_STATES = {
   IDLE: 'idle',
   PLANNING: 'planning',
@@ -2790,10 +2809,11 @@ ${finalCode}
   }, [activeFile]);
 
   // ── Chat handler (agent-aware with tool loop) ──────────────────────────
-  const handleAgentSubmit = useCallback((e, overrideMessage) => {
+  const handleAgentSubmit = useCallback((e, overrideMessage, options = {}) => {
     e.preventDefault();
     const userMessage = (overrideMessage ?? chatInput).trim();
     if ((!userMessage && !chatImage) || isTyping) return;
+    const resumeFromMessageId = options?.resumeFromMessageId || null;
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
@@ -2839,10 +2859,27 @@ ${finalCode}
     }
 
     const convo = conversations.find(c => c.id === activeConvoId);
-    let history = [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .slice(-20)
-      .map(m => ({ role: m.role, content: m.content }));
+    const resumeMsg = resumeFromMessageId
+      ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
+      : null;
+    const resumeState = resumeMsg?.resumeState || null;
+
+    let history = resumeState?.history
+      ? [...resumeState.history, { role: 'user', content: apiUserContent }]
+      : [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .slice(-20)
+          .map(m => ({ role: m.role, content: m.content }));
+
+    if (activeAgent === 'deepseek' && resumeState) {
+      history = [
+        ...history,
+        {
+          role: 'user',
+          content: 'Resume mode: continue from previous tool state. Do NOT restart by reading files again. Your next action must be a write tool unless blocked.',
+        },
+      ].slice(-22);
+    }
     history = packChatHistory(history, activeFile, userMessage, 20);
 
     (async () => {
@@ -2850,9 +2887,9 @@ ${finalCode}
       let allToolCalls = [];
       const allFileChanges = new Map();
       let currentFS = { ...fileSystem };
-      let pendingToolCalls = null;
-      let toolResults = null;
-      let lastToolCallSig = null;
+      let pendingToolCalls = Array.isArray(resumeState?.pendingToolCalls) ? resumeState.pendingToolCalls : null;
+      let toolResults = Array.isArray(resumeState?.toolResults) ? resumeState.toolResults : null;
+      let lastToolCallSig = resumeState?.lastToolCallSig || null;
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
@@ -2860,7 +2897,10 @@ ${finalCode}
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = MAX_ROUNDS;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
-      let consecReadOnlyRounds = 0; // rounds where ONLY read tools were called (no writes)
+      let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
+
+      if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
+      if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
 
       try {
         for (let round = 0; round < roundLimit; round++) {
@@ -3176,6 +3216,17 @@ ${finalCode}
               toolCalls: allToolCalls.length,
             },
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
+            resumeState: {
+              history: packChatHistory(history, activeFile, userMessage, 20),
+              pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
+              toolResults: Array.isArray(toolResults)
+                ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
+                : [],
+              lastToolCallSig,
+              consecReadOnlyRounds,
+              allSteps: allSteps.slice(-120),
+              allToolCalls: allToolCalls.slice(-120),
+            },
             canContinue: true,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
@@ -4838,7 +4889,11 @@ ${finalCode}
                         type="button"
                         onClick={() => {
                           setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, canContinue: false } : m));
-                          handleAgentSubmit({ preventDefault: () => {} }, 'Continue from where you left off. Pick up all remaining tasks and complete them fully.');
+                          handleAgentSubmit(
+                            { preventDefault: () => {} },
+                            'Continue from where you left off. Pick up remaining tasks and complete them fully without re-reading already inspected files.',
+                            { resumeFromMessageId: msg.id }
+                          );
                         }}
                         className="inline-flex items-center gap-1.5 rounded-md bg-fuchsia-600/80 hover:bg-fuchsia-500 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors shadow"
                       >
