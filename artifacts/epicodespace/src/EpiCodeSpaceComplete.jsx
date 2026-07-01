@@ -1009,23 +1009,11 @@ function EpiCodeSpaceApp() {
   const [showAbout, setShowAbout] = useState(false);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [wcServerUrl, setWcServerUrl] = useState('');
+  const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
   // Lazy-load gate: the user must explicitly tap "Load Preview" before the
   // WebContainer preview iframe loads. Auto-loading it immediately after
   // server-ready causes a WASM memory spike that aborts the shell on Safari.
   const [previewLoaded, setPreviewLoaded] = useState(false);
-  const handleRuntimeServerUrl = useCallback((url) => {
-    if (!url) return;
-    setWcServerUrl((prev) => {
-      // If URL is unchanged but runtime re-announced server-ready, force iframe
-      // refresh so stale preview sessions don't spin forever after dev restarts.
-      if (prev === url) {
-        if (previewLoaded) setPreviewKey((k) => k + 1);
-        return prev;
-      }
-      return url;
-    });
-  }, [previewLoaded]);
-  const setPreviewUrl = handleRuntimeServerUrl; // alias used by WebContainerTerminal
   const [showStorageMonitor, setShowStorageMonitor] = useState(false);
   const [showDeployModal,          setShowDeployModal]          = useState(false);
   const [showConnectionsManager,   setShowConnectionsManager]   = useState(false);

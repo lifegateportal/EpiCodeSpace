@@ -55,7 +55,9 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use("/api", router);
 
-if (process.env["NODE_ENV"] === "production" && existsSync(frontendIndex)) {
+const shouldServeFrontend = process.env["NODE_ENV"] !== "development" && existsSync(frontendIndex);
+
+if (shouldServeFrontend) {
   app.use(express.static(frontendRoot));
 
   app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
@@ -63,7 +65,7 @@ if (process.env["NODE_ENV"] === "production" && existsSync(frontendIndex)) {
   });
 
   logger.info({ frontendRoot }, "serving frontend bundle from API server");
-} else if (process.env["NODE_ENV"] === "production") {
+} else if (process.env["NODE_ENV"] !== "development") {
   logger.warn({ frontendRoot }, "frontend bundle not found; static app serving disabled");
 }
 

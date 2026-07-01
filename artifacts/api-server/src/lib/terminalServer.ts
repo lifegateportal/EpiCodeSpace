@@ -141,19 +141,6 @@ function getDevDomainUrl(port: number): string | null {
 const ANSI_RE      = /\x1b\[[0-9;]*[A-Za-z]/g;
 const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/g;
 
-async function writeTextFileIfChanged(fullPath: string, nextContent: string): Promise<boolean> {
-  let current: string | null = null;
-  try {
-    current = await fs.readFile(fullPath, 'utf8');
-  } catch {
-    current = null;
-  }
-  if (current === nextContent) return false;
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
-  await fs.writeFile(fullPath, nextContent, 'utf8');
-  return true;
-}
-
 // ── Session init file ─────────────────────────────────────────────────────────
 
 async function writeSessionInit(sessionDir: string): Promise<string> {
@@ -172,7 +159,6 @@ async function writeSessionInit(sessionDir: string): Promise<string> {
     'export npm_config_audit=false',
     'export NO_UPDATE_NOTIFIER=1',
     'export DISABLE_OPENCOLLECTIVE=1',
-    'export BROWSER=none',
     '# Always use development so npm installs devDependencies',
     'export NODE_ENV=development',
     '',
@@ -278,7 +264,8 @@ function handleConnection(ws: WebSocket): void {
           await Promise.all(
             Object.entries(files).map(async ([filePath, content]) => {
               const full = path.join(existing.sessionDir, filePath);
-              await writeTextFileIfChanged(full, String(content));
+              await fs.mkdir(path.dirname(full), { recursive: true });
+              await fs.writeFile(full, String(content), 'utf8');
             })
           );
 
@@ -307,7 +294,8 @@ function handleConnection(ws: WebSocket): void {
         await Promise.all(
           Object.entries(files).map(async ([filePath, content]) => {
             const full = path.join(sessionDir, filePath);
-            await writeTextFileIfChanged(full, String(content));
+            await fs.mkdir(path.dirname(full), { recursive: true });
+            await fs.writeFile(full, String(content), 'utf8');
           })
         );
 
@@ -348,7 +336,6 @@ function handleConnection(ws: WebSocket): void {
             NO_UPDATE_NOTIFIER: '1',
             DISABLE_OPENCOLLECTIVE: '1',
             SUPPRESS_JEST_WARNINGS: '1',
-            BROWSER: 'none',
           } as Record<string, string>,
         });
 
@@ -387,7 +374,8 @@ function handleConnection(ws: WebSocket): void {
       if (!session) return;
       try {
         const full = path.join(session.sessionDir, String(msg.path));
-        await writeTextFileIfChanged(full, String(msg.content ?? ''));
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, String(msg.content ?? ''), 'utf8');
       } catch { /* ignore */ }
     }
   });

@@ -17,7 +17,6 @@ import { getSessionPort } from './terminalServer';
 // the correct upstream target per-request based on the session ID in the path.
 const _proxy = createProxyMiddleware<Request, Response>({
   changeOrigin: true,
-  ws: true,
   // req.url here is relative to the /api/preview mount point:
   //   /api/preview/<sessionId>/path  →  req.url = /<sessionId>/path
   router: (req) => {
