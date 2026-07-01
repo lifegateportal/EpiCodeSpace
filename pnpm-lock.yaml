@@ -232,6 +232,16 @@ importers:
         version: 3.1.0
 
   artifacts/epicodespace:
+    dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.1068.0
+        version: 3.1068.0
+      node-pty:
+        specifier: ^1.1.0
+        version: 1.1.0
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
     devDependencies:
       '@hookform/resolvers':
         specifier: ^3.10.0

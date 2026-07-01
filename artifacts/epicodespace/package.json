@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
-    "build": "pnpm --filter @workspace/api-server run build && vite build --config vite.config.ts",
+    "build": "pnpm --filter @workspace/api-server run build && vite build --config vite.config.ts && rm -rf dist/api-server && mkdir -p dist/api-server && cp -R ../api-server/dist/. dist/api-server/",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1068.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",
