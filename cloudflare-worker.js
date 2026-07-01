@@ -1,7 +1,7 @@
 // Cloudflare Worker to proxy /api/* to backend Droplet
 // Deploy this at: Cloudflare Dashboard → Workers & Pages → Create Worker
 
-const BACKEND_API_URL = 'YOUR_DROPLET_BACKEND_URL'; // e.g., 'https://api.epicglobal.app' or 'http://123.45.67.89:3000'
+const BACKEND_API_URL = 'https://api.epicglobal.app';
 
 export default {
   async fetch(request, env) {
@@ -10,23 +10,33 @@ export default {
     // Proxy /api/* requests to backend
     if (url.pathname.startsWith('/api/')) {
       const backendUrl = new URL(url.pathname + url.search, BACKEND_API_URL);
-      
-      // Forward the request to backend
-      const backendRequest = new Request(backendUrl, {
-        method: request.method,
-        headers: request.headers,
-        body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-      });
-      
-      // Get response from backend
-      const response = await fetch(backendRequest);
-      
-      // Add CORS headers if needed
+
+      // Preserve WebSocket upgrades exactly (required for /api/terminal).
+      const isWebSocket = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+      if (isWebSocket) {
+        return fetch(new Request(backendUrl.toString(), request));
+      }
+
+      // Handle CORS preflight for normal HTTP API requests.
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': url.origin,
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': request.headers.get('Access-Control-Request-Headers') || 'Content-Type, Authorization',
+            'Access-Control-Max-Age': '86400',
+          },
+        });
+      }
+
+      const response = await fetch(new Request(backendUrl.toString(), request));
+
       const headers = new Headers(response.headers);
       headers.set('Access-Control-Allow-Origin', url.origin);
-      headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type');
-      
+      headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,

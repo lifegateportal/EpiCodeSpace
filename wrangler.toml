@@ -1,0 +1,7 @@
+name = "epicodespace-api-proxy"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-07-01"
+
+routes = [
+  { pattern = "epicodespace.epicglobal.app/api/*", zone_name = "epicglobal.app" }
+]
