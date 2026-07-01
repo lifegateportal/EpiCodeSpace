@@ -392,10 +392,33 @@ function isRateLimited(ip: string) {
   return false;
 }
 
+function keyAliases(envKey: string) {
+  const noApi = envKey.replace(/_API_KEY$/, '_KEY');
+  const noUnderscore = envKey.replace(/_API_KEY$/, 'APIKEY');
+  return Array.from(new Set([
+    envKey,
+    noApi,
+    noUnderscore,
+    `VITE_${envKey}`,
+    `VITE_${noApi}`,
+    `VITE_${noUnderscore}`,
+  ]));
+}
+
+function resolveApiKey(envKey: string) {
+  for (const key of keyAliases(envKey)) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 function getDeepSeekFallback(currentAgent: string, currentConfig: any, pendingToolCalls: any[]) {
   if (currentAgent === 'deepseek') return null;
   const fallbackBase = PROVIDER_CONFIG.deepseek;
-  const fallbackKey = process.env[fallbackBase.envKey];
+  const fallbackKey = resolveApiKey(fallbackBase.envKey);
   if (!fallbackKey) return null;
   if (pendingToolCalls?.length && currentConfig?.transform !== fallbackBase.transform) return null;
   return { agent: 'deepseek', config: { ...fallbackBase }, apiKey: fallbackKey };
@@ -426,13 +449,18 @@ router.post('/chat', async (req, res) => {
     const config = { ...baseConfig, model: resolvedModel };
     let activeAgent = agent;
     let activeConfig = config;
-    let activeApiKey: string | undefined = process.env[config.envKey];
+    let activeApiKey: string | undefined = resolveApiKey(config.envKey);
     let fallbackReason: string | null = null;
 
     if (!activeApiKey) {
       const fallback = getDeepSeekFallback(agent, config, pendingToolCalls);
       if (!fallback) {
-        res.status(500).json({ error: `API key not configured. Set ${config.envKey} in environment variables.`, missingKey: config.envKey }); return;
+        res.status(500).json({
+          error: `API key not configured. Set ${config.envKey} in environment variables.`,
+          missingKey: config.envKey,
+          acceptedKeys: keyAliases(config.envKey),
+        });
+        return;
       }
       activeAgent = fallback.agent;
       activeConfig = fallback.config;
