@@ -4326,7 +4326,7 @@ ${finalCode}
                       </button>
                       <div className="text-[10px] text-purple-500/40 text-center max-w-xs">
                         If the preview shows blank after loading, go back to Runtime tab,
-                        tap <strong className="text-purple-400/60">New Shell ↺</strong>, then run
+                        tap <strong className="text-purple-400/60">Restart</strong> in the terminal toolbar, then run
                         <code className="mx-1 text-fuchsia-400/60">npm run dev</code> again
                         — SWC is cached so the second start is fast and stable.
                       </div>
