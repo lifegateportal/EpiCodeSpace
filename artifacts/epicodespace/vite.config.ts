@@ -10,7 +10,7 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH ?? "/";
+const basePath = process.env.BASE_PATH ?? "./";
 const apiOrigin = process.env.API_ORIGIN ?? `http://localhost:${process.env.API_PORT ?? "8080"}`;
 
 const crossOriginIsolationHeaders = {
