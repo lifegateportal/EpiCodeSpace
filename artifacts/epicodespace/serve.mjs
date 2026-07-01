@@ -1,42 +1,10 @@
 import { createServer, request as httpRequest } from 'http';
 import { spawn } from 'child_process';
-import { createReadStream, readFileSync, statSync } from 'fs';
+import { createReadStream, statSync } from 'fs';
 import { join, extname, normalize, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const WORKSPACE_ROOT = resolve(__dirname, '..', '..');
-
-function loadEnvFile(path) {
-  let raw = '';
-  try {
-    raw = readFileSync(path, 'utf8');
-  } catch {
-    return;
-  }
-
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const idx = trimmed.indexOf('=');
-    if (idx <= 0) continue;
-
-    const key = trimmed.slice(0, idx).trim();
-    if (!key || process.env[key]) continue;
-
-    let value = trimmed.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
-
-// Local/dev convenience: make keys in .env files available to the web process
-// and the spawned API sidecar without requiring manual export commands.
-loadEnvFile(resolve(WORKSPACE_ROOT, '.env.local'));
-loadEnvFile(resolve(WORKSPACE_ROOT, '.env'));
-
 const ROOT = resolve(__dirname, 'dist/public');
 const PORT = Number(process.env.PORT) || 3000;
 const API_SIDECAR_PORT = process.env.API_SIDECAR_PORT || '18080';
