@@ -244,21 +244,55 @@ export function createAgentTools(fileSystem, activeFile) {
         const files = Object.keys(fileSystem);
         const issues = [];
         const info = [];
+        let pkg = {};
+        let allDeps = {};
+        let detectedPm = 'npm';
+        let installCmd = 'npm install --include=dev';
+        let devCmd = 'npm run dev';
 
         const pkgFile = fileSystem['package.json'];
         if (!pkgFile) {
           issues.push({ severity: 'error', category: 'setup', msg: 'No package.json found' });
         } else {
-          let pkg = {};
           try { pkg = JSON.parse(pkgFile.content || '{}'); } catch { /* ignore */ }
-          const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+          allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
           info.push(`package.json: ${pkg.name || 'unnamed'}`);
           if (pkg.scripts?.dev)   info.push(`dev script: "${pkg.scripts.dev}"`);
           if (pkg.scripts?.start) info.push(`start script: "${pkg.scripts.start}"`);
 
+          const pmField = String(pkg.packageManager || '').toLowerCase();
+          const hasPnpmLock = !!fileSystem['pnpm-lock.yaml'];
+          const hasYarnLock = !!fileSystem['yarn.lock'];
+          const hasBunLock = !!fileSystem['bun.lockb'];
+          if (pmField.startsWith('pnpm') || hasPnpmLock) {
+            detectedPm = 'pnpm';
+            installCmd = 'pnpm install --prod=false';
+            devCmd = 'pnpm run dev';
+          } else if (pmField.startsWith('yarn') || hasYarnLock) {
+            detectedPm = 'yarn';
+            installCmd = 'yarn install';
+            devCmd = 'yarn dev';
+          } else if (pmField.startsWith('bun') || hasBunLock) {
+            detectedPm = 'bun';
+            installCmd = 'bun install';
+            devCmd = 'bun run dev';
+          }
+          info.push(`detected package manager: ${detectedPm}`);
+
           const cssFrameworks = ['tailwindcss', 'bootstrap', '@mui/material', 'antd', '@chakra-ui/react', 'styled-components', '@emotion/react', 'daisyui'];
           const usedFrameworks = cssFrameworks.filter(f => allDeps[f]);
           if (usedFrameworks.length) info.push(`CSS/UI frameworks: ${usedFrameworks.join(', ')}`);
+
+          const devScript = String(pkg.scripts?.dev || '');
+          if (/\bvite\b/.test(devScript) && !allDeps['vite']) {
+            issues.push({ severity: 'error', category: 'setup', msg: 'dev script uses vite but package.json has no vite dependency' });
+          }
+          if (allDeps['tailwindcss'] && !allDeps['postcss']) {
+            issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss detected but postcss dependency is missing' });
+          }
+          if (allDeps['tailwindcss'] && !allDeps['autoprefixer']) {
+            issues.push({ severity: 'warning', category: 'css', msg: 'tailwindcss detected but autoprefixer dependency is missing' });
+          }
 
           if (allDeps['tailwindcss']) {
             const hasTwConfig   = files.some(f => /^tailwind\.config\.(js|ts|cjs|mjs)$/.test(f));
@@ -272,7 +306,16 @@ export function createAgentTools(fileSystem, activeFile) {
 
         const hasNodeModules = files.some(f => f.startsWith('node_modules/'));
         if (!hasNodeModules) {
-          issues.push({ severity: 'critical', category: 'setup', msg: 'node_modules not found — run `npm install` in the terminal' });
+          issues.push({ severity: 'critical', category: 'setup', msg: `node_modules not found — run ${installCmd} in the terminal` });
+        } else {
+          const hasViteBin = files.some(f => f === 'node_modules/.bin/vite' || f.endsWith('/node_modules/.bin/vite'));
+          const hasTailwindBin = files.some(f => f === 'node_modules/.bin/tailwindcss' || f.endsWith('/node_modules/.bin/tailwindcss'));
+          if (/\bvite\b/.test(String(pkg.scripts?.dev || '')) && !hasViteBin) {
+            issues.push({ severity: 'critical', category: 'setup', msg: `vite binary missing in node_modules/.bin. Reinstall devDependencies with ${installCmd}.` });
+          }
+          if (allDeps['tailwindcss'] && !hasTailwindBin) {
+            issues.push({ severity: 'critical', category: 'css', msg: `tailwindcss binary missing in node_modules/.bin. Reinstall devDependencies with ${installCmd}.` });
+          }
         }
 
         const cssFiles = files.filter(f => f.endsWith('.css'));
@@ -285,10 +328,33 @@ export function createAgentTools(fileSystem, activeFile) {
         const warnCount     = issues.filter(i => i.severity === 'warning').length;
 
         let recommendation = 'Project setup looks good';
-        if (criticalCount > 0) recommendation = 'Run `npm install` in the terminal, then `npm run dev` to start the dev server.';
+        if (criticalCount > 0) recommendation = `Run \`${installCmd}\` in the terminal, then \`${devCmd}\` to start the dev server.`;
         else if (errorCount > 0) recommendation = 'Fix the CSS configuration errors above, then restart the dev server.';
 
-        return { ok: true, totalFiles: files.length, issues, info, issueCount: issues.length, criticalCount, errorCount, warnCount, summary: issues.length === 0 ? 'No issues' : `${criticalCount} critical, ${errorCount} error, ${warnCount} warning`, recommendation };
+        const suggestedCommands = [installCmd, devCmd];
+        if (allDeps['tailwindcss']) {
+          if (detectedPm === 'pnpm') suggestedCommands.push('pnpm add -D tailwindcss postcss autoprefixer');
+          else if (detectedPm === 'yarn') suggestedCommands.push('yarn add -D tailwindcss postcss autoprefixer');
+          else if (detectedPm === 'bun') suggestedCommands.push('bun add -d tailwindcss postcss autoprefixer');
+          else suggestedCommands.push('npm install --include=dev --save-dev tailwindcss postcss autoprefixer');
+        }
+
+        return {
+          ok: true,
+          totalFiles: files.length,
+          issues,
+          info,
+          packageManager: detectedPm,
+          installCommand: installCmd,
+          devCommand: devCmd,
+          suggestedCommands,
+          issueCount: issues.length,
+          criticalCount,
+          errorCount,
+          warnCount,
+          summary: issues.length === 0 ? 'No issues' : `${criticalCount} critical, ${errorCount} error, ${warnCount} warning`,
+          recommendation,
+        };
       },
     },
   };
@@ -341,7 +407,7 @@ export function buildAgentResponse(agentId, query, tools, fileSystem, activeFile
       : '';
 
     const actionBlock = diagnosis.criticalCount > 0
-      ? '\n\n**Fix:**\n1. Open the **Terminal** panel\n2. Run: `npm install`\n3. Then run: `npm run dev` (or check `package.json` for the correct start script)\n4. Reload the preview'
+      ? `\n\n**Fix:**\n1. Open the **Terminal** panel\n2. Run: \`${diagnosis.installCommand || 'npm install --include=dev'}\`\n3. Then run: \`${diagnosis.devCommand || 'npm run dev'}\`\n4. Reload the preview`
       : diagnosis.errorCount > 0
       ? '\n\n**Fix the errors above**, then restart your dev server.'
       : '\n\nProject setup looks correct. Try reloading the preview or restarting the dev server.';

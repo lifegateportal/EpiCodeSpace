@@ -2293,10 +2293,33 @@ ${finalCode}
       }
       case 'npmInstall': {
         const { packages = '', dev = false } = args;
-        const cmd = packages.trim()
-          ? `npm install${dev ? ' --save-dev' : ''} ${packages.trim()}`
-          : 'npm install';
-        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched: ${cmd}` };
+        let pkg = {};
+        try { pkg = JSON.parse(currentFS['package.json']?.content || '{}'); } catch { /* ignore */ }
+        const packageManager = String(pkg.packageManager || '').toLowerCase();
+        const hasPnpmLock = !!currentFS['pnpm-lock.yaml'];
+        const hasYarnLock = !!currentFS['yarn.lock'];
+        const hasBunLock = !!currentFS['bun.lockb'];
+
+        let pm = 'npm';
+        if (packageManager.startsWith('pnpm') || hasPnpmLock) pm = 'pnpm';
+        else if (packageManager.startsWith('yarn') || hasYarnLock) pm = 'yarn';
+        else if (packageManager.startsWith('bun') || hasBunLock) pm = 'bun';
+
+        const trimmed = packages.trim();
+        let cmd;
+        if (trimmed) {
+          if (pm === 'pnpm') cmd = `pnpm add${dev ? ' -D' : ''} ${trimmed}`;
+          else if (pm === 'yarn') cmd = `yarn add${dev ? ' -D' : ''} ${trimmed}`;
+          else if (pm === 'bun') cmd = `bun add${dev ? ' -d' : ''} ${trimmed}`;
+          else cmd = `npm install --include=dev${dev ? ' --save-dev' : ''} ${trimmed}`;
+        } else {
+          if (pm === 'pnpm') cmd = 'pnpm install --prod=false';
+          else if (pm === 'yarn') cmd = 'yarn install';
+          else if (pm === 'bun') cmd = 'bun install';
+          else cmd = 'npm install --include=dev';
+        }
+
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched (${pm}): ${cmd}` };
       }
       case 'getTerminalOutput': {
         const maxLines = Math.min(args.lines || 60, 200);
@@ -2425,23 +2448,57 @@ ${finalCode}
         const files = Object.keys(currentFS);
         const issues = [];
         const info = [];
+        let pkg = {};
+        let allDeps = {};
+        let detectedPm = 'npm';
+        let installCmd = 'npm install --include=dev';
+        let devCmd = 'npm run dev';
 
         // ── package.json ──────────────────────────────────────────────────
         const pkgFile = currentFS['package.json'];
         if (!pkgFile) {
           issues.push({ severity: 'error', category: 'setup', msg: 'No package.json found — this may not be a Node.js project root' });
         } else {
-          let pkg = {};
           try { pkg = JSON.parse(pkgFile.content || '{}'); } catch { /* malformed */ }
-          const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+          allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
           info.push(`package.json: ${pkg.name || 'unnamed'} v${pkg.version || '?'}`);
           if (pkg.scripts?.dev)   info.push(`dev script: "${pkg.scripts.dev}"`);
           if (pkg.scripts?.start) info.push(`start script: "${pkg.scripts.start}"`);
+
+          const pmField = String(pkg.packageManager || '').toLowerCase();
+          const hasPnpmLock = !!currentFS['pnpm-lock.yaml'];
+          const hasYarnLock = !!currentFS['yarn.lock'];
+          const hasBunLock = !!currentFS['bun.lockb'];
+          if (pmField.startsWith('pnpm') || hasPnpmLock) {
+            detectedPm = 'pnpm';
+            installCmd = 'pnpm install --prod=false';
+            devCmd = 'pnpm run dev';
+          } else if (pmField.startsWith('yarn') || hasYarnLock) {
+            detectedPm = 'yarn';
+            installCmd = 'yarn install';
+            devCmd = 'yarn dev';
+          } else if (pmField.startsWith('bun') || hasBunLock) {
+            detectedPm = 'bun';
+            installCmd = 'bun install';
+            devCmd = 'bun run dev';
+          }
+          info.push(`detected package manager: ${detectedPm}`);
 
           // CSS frameworks present
           const cssFrameworks = ['tailwindcss', 'bootstrap', '@mui/material', 'antd', '@chakra-ui/react', 'styled-components', '@emotion/react', 'daisyui'];
           const usedFrameworks = cssFrameworks.filter(f => allDeps[f]);
           if (usedFrameworks.length) info.push(`CSS/UI frameworks in deps: ${usedFrameworks.join(', ')}`);
+
+          const devScript = String(pkg.scripts?.dev || '');
+          if (/\bvite\b/.test(devScript) && !allDeps['vite']) {
+            issues.push({ severity: 'error', category: 'setup', msg: 'dev script uses vite but package.json has no vite dependency' });
+          }
+          if (allDeps['tailwindcss'] && !allDeps['postcss']) {
+            issues.push({ severity: 'error', category: 'css', msg: 'tailwindcss detected but postcss dependency is missing' });
+          }
+          if (allDeps['tailwindcss'] && !allDeps['autoprefixer']) {
+            issues.push({ severity: 'warning', category: 'css', msg: 'tailwindcss detected but autoprefixer dependency is missing' });
+          }
 
           // Tailwind-specific checks
           if (allDeps['tailwindcss']) {
@@ -2458,9 +2515,17 @@ ${finalCode}
         // ── node_modules ──────────────────────────────────────────────────
         const hasNodeModules = files.some(f => f.startsWith('node_modules/'));
         if (!hasNodeModules) {
-          issues.push({ severity: 'critical', category: 'setup', msg: 'node_modules not found — dependencies are not installed. Run `npm install` (or `pnpm install`) in the terminal.' });
+          issues.push({ severity: 'critical', category: 'setup', msg: `node_modules not found — dependencies are not installed. Run ${installCmd} in the terminal.` });
         } else {
           info.push('node_modules present');
+          const hasViteBin = files.some(f => f === 'node_modules/.bin/vite' || f.endsWith('/node_modules/.bin/vite'));
+          const hasTailwindBin = files.some(f => f === 'node_modules/.bin/tailwindcss' || f.endsWith('/node_modules/.bin/tailwindcss'));
+          if (/\bvite\b/.test(String(pkg.scripts?.dev || '')) && !hasViteBin) {
+            issues.push({ severity: 'critical', category: 'setup', msg: `vite binary missing in node_modules/.bin. Reinstall devDependencies with ${installCmd}.` });
+          }
+          if (allDeps['tailwindcss'] && !hasTailwindBin) {
+            issues.push({ severity: 'critical', category: 'css', msg: `tailwindcss binary missing in node_modules/.bin. Reinstall devDependencies with ${installCmd}.` });
+          }
         }
 
         // ── index.html ────────────────────────────────────────────────────
@@ -2506,11 +2571,19 @@ ${finalCode}
 
         let recommendation = 'Project setup looks good';
         if (criticalCount > 0) {
-          recommendation = 'CRITICAL: Run `npm install` in the terminal to install dependencies, then start the dev server with `npm run dev`.';
+          recommendation = `CRITICAL: Run \`${installCmd}\` in the terminal to install dependencies, then start the dev server with \`${devCmd}\`.`;
         } else if (errorCount > 0) {
           recommendation = 'Fix the CSS configuration errors above, then restart the dev server.';
         } else if (warnCount > 0) {
           recommendation = 'Review the warnings above — they may explain missing styles.';
+        }
+
+        const suggestedCommands = [installCmd, devCmd];
+        if (allDeps['tailwindcss']) {
+          if (detectedPm === 'pnpm') suggestedCommands.push('pnpm add -D tailwindcss postcss autoprefixer');
+          else if (detectedPm === 'yarn') suggestedCommands.push('yarn add -D tailwindcss postcss autoprefixer');
+          else if (detectedPm === 'bun') suggestedCommands.push('bun add -d tailwindcss postcss autoprefixer');
+          else suggestedCommands.push('npm install --include=dev --save-dev tailwindcss postcss autoprefixer');
         }
 
         return {
@@ -2518,6 +2591,10 @@ ${finalCode}
           totalFiles: files.length,
           issues,
           info,
+          packageManager: detectedPm,
+          installCommand: installCmd,
+          devCommand: devCmd,
+          suggestedCommands,
           issueCount: issues.length,
           criticalCount,
           errorCount,
