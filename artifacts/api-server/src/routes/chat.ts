@@ -1,7 +1,41 @@
 import { Router } from "express";
 import { logger } from "../lib/logger";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 const router = Router();
+
+function loadEnvFile(filePath: string) {
+  let raw = '';
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch {
+    return;
+  }
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+
+    const key = trimmed.slice(0, eq).trim();
+    if (!key || process.env[key]) continue;
+
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+// Load local env files if present. Existing process env always takes precedence.
+const envCandidates = [
+  path.resolve(process.cwd(), '.env.local'),
+  path.resolve(process.cwd(), '.env'),
+];
+for (const p of envCandidates) loadEnvFile(p);
 
 const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: string; transform: string }> = {
   'epicode-agent': {
@@ -82,6 +116,56 @@ const MODE_INSTRUCTIONS: Record<string, string> = {
   agent: "\n\nMode: AGENT — Use tools to make actual changes. You may readFile ONCE per file, then you MUST immediately call a write tool (patchLines/editFile/writeFile). Never call readFile twice in a row. Every round in AGENT mode must include at least one write operation.",
   plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
 };
+
+const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '45000'));
+const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '2'));
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status: number) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function isAbortError(err: any) {
+  return err?.name === 'AbortError' || /aborted|timeout/i.test(String(err?.message || ''));
+}
+
+async function fetchProvider(url: string, init: RequestInit, providerName: string) {
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= PROVIDER_MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (res.ok) return res;
+
+      if (!isRetryableStatus(res.status) || attempt === PROVIDER_MAX_RETRIES) {
+        return res;
+      }
+
+      // Best-effort drain before retrying.
+      try { await res.text(); } catch {}
+      await wait(Math.min(4000, 300 * (2 ** attempt)));
+      continue;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      lastError = err;
+      if (attempt === PROVIDER_MAX_RETRIES) break;
+      await wait(Math.min(4000, 300 * (2 ** attempt)));
+    }
+  }
+
+  const e: any = new Error(`${providerName} request failed after retries`);
+  e.cause = lastError;
+  e.isTimeout = isAbortError(lastError);
+  throw e;
+}
 
 function buildSystemPrompt(agent: string, context: any) {
   const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
@@ -265,7 +349,7 @@ async function callOpenAI(config: any, apiKey: string, systemPrompt: string, mes
     body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     body.tool_choice = 'auto';
   }
-  const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
+  const res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, config.model);
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`${config.model} error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data: any = await res.json();
   const choice = data.choices?.[0];
@@ -295,7 +379,7 @@ async function callAnthropic(config: any, apiKey: string, systemPrompt: string, 
     if (tools.length) (tools[tools.length - 1] as any).cache_control = { type: 'ephemeral' };
     body.tools = tools;
   }
-  const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' }, body: JSON.stringify(body) });
+  const res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' }, body: JSON.stringify(body) }, config.model);
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Claude error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data: any = await res.json();
   const toolBlocks = data.content?.filter((b: any) => b.type === 'tool_use') || [];
@@ -314,7 +398,7 @@ async function callGemini(config: any, apiKey: string, systemPrompt: string, mes
   });
   const body: any = { contents, systemInstruction: { parts: [{ text: systemPrompt }] }, generationConfig: { maxOutputTokens: 16384, temperature: 0.7 } };
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await fetchProvider(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, config.model);
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Gemini error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data: any = await res.json();
   const parts = data.candidates?.[0]?.content?.parts || [];
@@ -523,7 +607,12 @@ router.post('/chat', async (req, res) => {
     res.status(200).json({ ...result, agent: activeAgent, model: activeConfig.model || activeAgent, fallbackFrom: activeAgent !== agent ? agent : null, fallbackReason });
   } catch (err: any) {
     req.log.error({ err }, 'Chat API error');
-    res.status(502).json({ error: err.message || 'Upstream API error' });
+    const timeoutHint = err?.isTimeout || /failed after retries/i.test(String(err?.message || ''));
+    res.status(502).json({
+      error: err.message || 'Upstream API error',
+      code: timeoutHint ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',
+      retryable: true,
+    });
   }
 });
 
