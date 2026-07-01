@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = resolve(__dirname, 'dist/public');
 const PORT = Number(process.env.PORT) || 3000;
-const API_SIDECAR_PORT = process.env.API_SIDECAR_PORT || '8080';
+const API_SIDECAR_PORT = process.env.API_SIDECAR_PORT || '18080';
 const API_ORIGIN = process.env.API_ORIGIN || `http://127.0.0.1:${API_SIDECAR_PORT}`;
 const API_ENTRY = resolve(__dirname, 'dist/api-server/index.mjs');
 
