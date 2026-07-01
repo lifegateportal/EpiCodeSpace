@@ -5,7 +5,9 @@ import EpiCodeSpaceApp from './EpiCodeSpaceComplete.jsx';
 import { ToastProvider } from './components/Toaster.jsx';
 import LockScreen from './components/LockScreen.jsx';
 
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+const shouldResetServiceWorkers = import.meta.env.PROD || import.meta.env.DEV || window.location.hostname === 'localhost';
+
+if (shouldResetServiceWorkers && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.getRegistrations()
       .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
@@ -13,7 +15,7 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
         if (!('caches' in window)) return;
         const cacheKeys = await caches.keys();
         await Promise.all(cacheKeys
-          .filter((key) => key.startsWith('epicodespace-'))
+          .filter((key) => key.startsWith('epicodespace-') || key.includes('workbox') || key.includes('vite'))
           .map((key) => caches.delete(key)));
       })
       .catch(() => {

@@ -2128,7 +2128,25 @@ ${finalCode}
         const f = currentFS[args.path];
         if (!f) return { ok: false, error: `File not found: ${args.path}` };
         const safeContent = f.content ?? '';
-        return { ok: true, path: args.path, content: safeContent, language: f.language, lines: safeContent.split('\n').length };
+        const lines = safeContent.split('\n');
+        const totalLines = lines.length;
+        const hasRange = Number.isFinite(args.startLine) || Number.isFinite(args.endLine);
+        const s = hasRange ? Math.max(1, Math.min(parseInt(args.startLine, 10) || 1, totalLines)) : 1;
+        const e = hasRange ? Math.max(s, Math.min(parseInt(args.endLine, 10) || totalLines, totalLines)) : totalLines;
+        const chunk = lines.slice(s - 1, e).join('\n');
+        const maxChars = Math.max(1000, Math.min(parseInt(args.maxChars, 10) || 60000, 200000));
+        const limited = chunk.length > maxChars ? `${chunk.slice(0, maxChars)}\n... [truncated ${chunk.length - maxChars} chars]` : chunk;
+        return {
+          ok: true,
+          path: args.path,
+          content: limited,
+          language: f.language,
+          lines: totalLines,
+          startLine: s,
+          endLine: e,
+          truncated: chunk.length > maxChars,
+          note: hasRange ? `Returned lines ${s}-${e} of ${totalLines}` : `Returned full file (${totalLines} lines)`,
+        };
       }
       case 'writeFile': {
         if (!args.path || typeof args.path !== 'string') return { ok: false, error: 'writeFile: path is required' };

@@ -79,7 +79,7 @@ const AGENT_PERSONAS: Record<string, string> = {
 };
 
 const WORKSPACE_TOOLS = [
-  { name: 'readFile', description: 'Read the full contents of a file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+  { name: 'readFile', description: 'Read file contents. For large files, pass startLine/endLine to read a focused chunk and avoid context overflow.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number', description: 'Optional 1-indexed start line (for chunk reads)' }, endLine: { type: 'number', description: 'Optional 1-indexed end line (for chunk reads)' }, maxChars: { type: 'number', description: 'Optional hard cap for returned characters (default 60000)' } }, required: ['path'] } },
   { name: 'writeFile', description: 'Create or fully overwrite a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
   { name: 'editFile', description: 'Patch a file by replacing an exact block of text. Fuzzy-matches whitespace. If it fails, use patchLines instead.', parameters: { type: 'object', properties: { path: { type: 'string' }, oldText: { type: 'string', description: 'Exact text to find and replace (copy verbatim from readFile output)' }, newText: { type: 'string', description: 'Replacement text' } }, required: ['path', 'oldText', 'newText'] } },
   { name: 'patchLines', description: 'Replace a range of lines in a file by line number. PREFERRED over editFile when you know which lines to change — always works, no text-matching needed. Use the line numbers from readFile output.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number', description: '1-indexed first line to replace (inclusive)' }, endLine: { type: 'number', description: '1-indexed last line to replace (inclusive)' }, newContent: { type: 'string', description: 'New content to insert in place of startLine–endLine' } }, required: ['path', 'startLine', 'endLine', 'newContent'] } },
@@ -244,6 +244,10 @@ AFTER EVERY readFile, your next tool call MUST be a write operation (patchLines 
 2. editFile(path, oldText, newText) — good for small patches; uses fuzzy whitespace matching
 3. writeFile(path, content) — use when replacing most of a file or creating new files
 4. autoFix(path) — use first for any file with quality issues (var/==/debugger)
+
+[LARGE FILE STRATEGY]
+When a file is large, call readFile with { path, startLine, endLine } to read only the relevant chunk.
+Then apply patchLines to the exact line range. Avoid reading whole giant files unless absolutely necessary.
 
 WHEN editFile FAILS with "oldText not found":
 → Immediately call patchLines with the correct line numbers — DO NOT call readFile again

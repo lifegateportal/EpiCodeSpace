@@ -12,11 +12,27 @@ export function createAgentTools(fileSystem, activeFile) {
     readFile: {
       name: 'readFile',
       description: 'Read file contents',
-      execute: (path) => {
+      execute: (path, startLine, endLine, maxChars = 60000) => {
         const f = fileSystem[path];
-        return f
-          ? { ok: true, content: f.content, language: f.language }
-          : { ok: false, error: `File '${path}' not found` };
+        if (!f) return { ok: false, error: `File '${path}' not found` };
+        const safe = f.content ?? '';
+        const lines = safe.split('\n');
+        const totalLines = lines.length;
+        const hasRange = Number.isFinite(startLine) || Number.isFinite(endLine);
+        const s = hasRange ? Math.max(1, Math.min(parseInt(startLine, 10) || 1, totalLines)) : 1;
+        const e = hasRange ? Math.max(s, Math.min(parseInt(endLine, 10) || totalLines, totalLines)) : totalLines;
+        const chunk = lines.slice(s - 1, e).join('\n');
+        const cap = Math.max(1000, Math.min(parseInt(maxChars, 10) || 60000, 200000));
+        const limited = chunk.length > cap ? `${chunk.slice(0, cap)}\n... [truncated ${chunk.length - cap} chars]` : chunk;
+        return {
+          ok: true,
+          content: limited,
+          language: f.language,
+          lines: totalLines,
+          startLine: s,
+          endLine: e,
+          truncated: chunk.length > cap,
+        };
       },
     },
     listFiles: {
