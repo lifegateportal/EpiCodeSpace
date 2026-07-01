@@ -638,6 +638,7 @@ const TOOL_POLICY = {
   searchCode: 'read',
   analyzeFile: 'read',
   getTerminalOutput: 'read',
+  getProblems: 'read',
   getGitStatus: 'read',
   diagnoseProject: 'read',
   explainError: 'read',
@@ -650,6 +651,9 @@ const TOOL_POLICY = {
   deleteFile: 'risky_write',
   runCommand: 'command',
   npmInstall: 'command',
+  runTests: 'command',
+  runLint: 'command',
+  runTypecheck: 'command',
 };
 
 function isWritePolicy(toolName) {
@@ -943,7 +947,7 @@ function EpiCodeSpaceApp() {
   // ── Chat ──────────────────────────────────────────────────────────────────
   // Circuit-breaker limits: pause after this many consecutive tool rounds.
   // Token ceiling is warning-only (never blocks input).
-  const MAX_TOOL_ROUNDS = 6;
+  const MAX_TOOL_ROUNDS = 10;
   const TOKEN_CEILING_DEFAULT = 120_000;
   const TOKEN_CEILING_DEEPSEEK = 220_000;
 
@@ -2136,6 +2140,26 @@ ${finalCode}
 
   // ── Execute tool calls against virtual filesystem ────────────────────────
   const executeToolCall = useCallback(async (name, args, currentFS) => {
+    const detectPackageManager = () => {
+      let pkg = {};
+      try { pkg = JSON.parse(currentFS['package.json']?.content || '{}'); } catch { /* ignore */ }
+      const packageManager = String(pkg.packageManager || '').toLowerCase();
+      const hasPnpmLock = !!currentFS['pnpm-lock.yaml'];
+      const hasYarnLock = !!currentFS['yarn.lock'];
+      const hasBunLock = !!currentFS['bun.lockb'];
+      if (packageManager.startsWith('pnpm') || hasPnpmLock) return 'pnpm';
+      if (packageManager.startsWith('yarn') || hasYarnLock) return 'yarn';
+      if (packageManager.startsWith('bun') || hasBunLock) return 'bun';
+      return 'npm';
+    };
+
+    const pmRun = (pm, script) => {
+      if (pm === 'pnpm') return `pnpm ${script}`;
+      if (pm === 'yarn') return `yarn ${script}`;
+      if (pm === 'bun') return `bun run ${script}`;
+      return `npm run ${script}`;
+    };
+
     switch (name) {
       case 'readFile': {
         const f = currentFS[args.path];
@@ -2231,8 +2255,23 @@ ${finalCode}
           ok: true,
           action: 'runCommand',
           command: cmd,
-          note: `Command dispatched to terminal: \`${cmd}\`. Output will appear in the terminal panel. If you need to verify the result (e.g. build errors, test output, git status), ask the user to share the terminal output or issue a follow-up readFile.`,
+          note: `Command dispatched: \`${cmd}\`. Follow immediately with getTerminalOutput or getProblems to verify results.`,
         };
+      }
+      case 'runTests': {
+        const pm = detectPackageManager();
+        const cmd = (args.command || '').trim() || pmRun(pm, 'test');
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched tests (${pm}): ${cmd}` };
+      }
+      case 'runLint': {
+        const pm = detectPackageManager();
+        const cmd = (args.command || '').trim() || pmRun(pm, 'lint');
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched lint (${pm}): ${cmd}` };
+      }
+      case 'runTypecheck': {
+        const pm = detectPackageManager();
+        const cmd = (args.command || '').trim() || pmRun(pm, 'typecheck');
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched typecheck (${pm}): ${cmd}` };
       }
       case 'getProjectStructure': {
         const allPaths = Object.keys(currentFS).sort();
@@ -2330,6 +2369,29 @@ ${finalCode}
           return { ok: true, lines: errors.length, output: errors.join('\n'), note: `Filtered ${maxLines} lines for errors/warnings` };
         }
         return { ok: true, lines: recent.length, output: recent.join('\n'), note: `Last ${recent.length} terminal lines` };
+      }
+      case 'getProblems': {
+        const maxLines = Math.min(args.lines || 120, 400);
+        const buf = terminalOutputRef.current;
+        const recent = buf.slice(-maxLines);
+        const problems = [];
+        for (const [idx, line] of recent.entries()) {
+          const text = String(line || '');
+          if (/\berror\b|TypeError|ReferenceError|SyntaxError|Cannot find module|Failed to compile|TS\d+:/i.test(text)) {
+            problems.push({ severity: 'error', line: idx + 1, text });
+          } else if (/\bwarn(ing)?\b|deprecated|lint/i.test(text)) {
+            problems.push({ severity: 'warning', line: idx + 1, text });
+          }
+        }
+        return {
+          ok: true,
+          scannedLines: recent.length,
+          problemCount: problems.length,
+          problems: problems.slice(0, 120),
+          summary: problems.length === 0
+            ? 'No obvious errors/warnings detected in recent terminal output.'
+            : `${problems.filter(p => p.severity === 'error').length} error(s), ${problems.filter(p => p.severity === 'warning').length} warning(s)`,
+        };
       }
       case 'autoFix': {
         const targetPath = args.path || activeFile;
@@ -2648,6 +2710,8 @@ ${finalCode}
         cmdsToRun.push(tc.arguments.command);
       } else if (tc.name === 'npmInstall' && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
+      } else if ((tc.name === 'runTests' || tc.name === 'runLint' || tc.name === 'runTypecheck') && r.action === 'runCommand') {
+        cmdsToRun.push(r.command);
       } else if (tc.name === 'getGitStatus' && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
       } else if (tc.name === 'autoFix' && r.action === 'edit' && typeof r.content === 'string') {
@@ -2899,7 +2963,7 @@ ${finalCode}
     '/explain': `Explain the active file thoroughly: what it does, how it's structured, what each major section does, and any notable patterns or potential improvements.`,
     '/test':    `Write comprehensive unit tests for the active file. Use the project's existing test framework (check package.json). Create the test file alongside the source file.`,
     '/doc':     `Add JSDoc/TSDoc comments to all exported functions and components in the active file. Do not change any logic — only add documentation.`,
-    '/refactor':`Refactor the active file: improve readability, reduce complexity, fix code smells, modernize syntax. Explain each change before making it.`,
+    '/refactor':`Refactor the active file: improve readability, reduce complexity, fix code smells, modernize syntax. Make the edits first with tools, then summarize why each change was made.`,
     '/commit':  `Generate a git commit message for the current changes. Call getGitStatus to see what changed, then write a conventional commit message (type: description).`,
     '/new':     `Scaffold a new component or module for this project.`,
     '/deps':    `Check for missing or outdated dependencies. Call diagnoseProject, then list any packages that need to be installed.`,
@@ -3003,10 +3067,13 @@ ${finalCode}
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
-      const MAX_ROUNDS_DEFAULT = 15;
-      const MAX_ROUNDS_DEEPSEEK = 30;
+      const MAX_ROUNDS_DEFAULT = 20;
+      const MAX_ROUNDS_DEEPSEEK = 36;
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = isDeepSeekAgent ? MAX_ROUNDS_DEEPSEEK : MAX_ROUNDS_DEFAULT;
+      const effectiveModel = chatMode === 'agent' && activeAgent === 'deepseek' && activeModel === 'deepseek-reasoner'
+        ? 'deepseek-chat'
+        : activeModel;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
 
@@ -3015,7 +3082,7 @@ ${finalCode}
 
       try {
         for (let round = 0; round < roundLimit; round++) {
-          const payload = { agent: activeAgent, model: activeModel, messages: history, context, mode: chatMode };
+          const payload = { agent: activeAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
@@ -3251,8 +3318,8 @@ ${finalCode}
             const roundHasWrite = data.tool_calls.some(tc => isWritePolicy(tc.name));
             consecReadOnlyRounds = roundHasWrite ? 0 : consecReadOnlyRounds + 1;
 
-            if (consecReadOnlyRounds >= 2) {
-              const msg = `🚨 STOP READING. You have completed ${consecReadOnlyRounds} rounds of reading files without writing a single line of code. This is a failure. Your NEXT tool call MUST be patchLines, editFile, or writeFile. Do NOT call readFile, listFiles, getProjectStructure, searchCode, or any other read tool. You have enough context — IMPLEMENT NOW.`;
+            if (consecReadOnlyRounds >= 3) {
+              const msg = `🚨 You are stuck in a read loop (${consecReadOnlyRounds} read-only rounds). Use available context and perform a concrete change now (patchLines/editFile/writeFile), or runTests/runLint/runTypecheck if verification is the blocker.`;
               history = [...history, { role: 'user', content: msg }].slice(-22);
               allSteps.push(`⚠️ Read-loop (${consecReadOnlyRounds} read-only rounds) — forcing write on next round.`);
             }

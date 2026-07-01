@@ -1,36 +1,48 @@
-# This is an example configuration file
-# To learn more, see the full config.yaml reference: https://docs.continue.dev/reference
-
-name: Example Config
+name: EpiCodeSpace Agent Config
 version: 1.0.0
 schema: v1
 
-# Define which models can be used
-# https://docs.continue.dev/customization/models
 models:
-  - name: my gpt-5
+  - name: GPT-5 Chat
     provider: openai
     model: gpt-5
-    apiKey: YOUR_OPENAI_API_KEY_HERE
-  - name: qwen2.5-coder 7b
-    provider: ollama
-    model: qwen2.5-coder:7b
+    apiKey: ${{ secrets.OPENAI_API_KEY }}
     roles:
-      - apply
-      - autocomplete
       - chat
+      - apply
       - edit
-  - name: Claude 4 Sonnet
+    defaultCompletionOptions:
+      contextLength: 200000
+      maxTokens: 32000
+      temperature: 0.1
+    capabilities:
+      - tool_use
+
+  - name: GPT-5 Fast
+    provider: openai
+    model: gpt-5-mini
+    apiKey: ${{ secrets.OPENAI_API_KEY }}
+    roles:
+      - autocomplete
+      - edit
+    defaultCompletionOptions:
+      contextLength: 128000
+      maxTokens: 16000
+      temperature: 0.1
+    capabilities:
+      - tool_use
+
+  - name: Claude Sonnet 4.5
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-5
     apiKey: ${{ secrets.ANTHROPIC_API_KEY }}
     roles:
       - chat
-      - edit
       - apply
+      - edit
     defaultCompletionOptions:
       contextLength: 200000
-      maxTokens: 64000
+      maxTokens: 32000
+      temperature: 0.1
     capabilities:
       - tool_use
-      - image_input

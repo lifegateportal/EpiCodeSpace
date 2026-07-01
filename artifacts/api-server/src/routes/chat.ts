@@ -88,11 +88,15 @@ const WORKSPACE_TOOLS = [
   { name: 'searchCode', description: 'Search for a text pattern across all workspace files.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } },
   { name: 'analyzeFile', description: 'Run static analysis on a file.', parameters: { type: 'object', properties: { path: { type: 'string' } } } },
   { name: 'runCommand', description: 'Run a shell command in the terminal. ROUTING IS AUTOMATIC — you do not need to choose: npm/npx/node/yarn/pnpm commands go to the WebContainers Runtime (real execution); git/system commands go to the simulated Terminal. Examples: "npm install axios" → runtime; "git status" → terminal.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Shell command to run. For package installs prefer npmInstall tool. For dev server use "npm run dev".' } }, required: ['command'] } },
+  { name: 'runTests', description: 'Run the project test command using the detected package manager (pnpm/yarn/npm). Use after code changes and before finalizing fixes.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit test command override, e.g. "pnpm test -- --runInBand".' } } } },
+  { name: 'runLint', description: 'Run the project lint command using the detected package manager. Use to validate style and static checks after edits.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit lint command override.' } } } },
+  { name: 'runTypecheck', description: 'Run TypeScript typechecking if available. Prefer this after TS/JS refactors to catch regressions.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit typecheck command override.' } } } },
   { name: 'diagnoseProject', description: 'Diagnose common project setup issues: missing node_modules, broken CSS/styling setup, missing config files, incorrect Tailwind/PostCSS configuration, missing CSS imports in HTML. Use this whenever the user reports unstyled UI, missing styles, or a project that looks like plain HTML.', parameters: { type: 'object', properties: {} } },
   { name: 'getProjectStructure', description: 'Get the full directory tree of the workspace as a nested structure. Use before making multi-file changes to understand the project layout, folder organization, and file types.', parameters: { type: 'object', properties: {} } },
   { name: 'searchAndReplace', description: 'Find and replace text across workspace files. Use for bulk renaming, updating imports, changing variable names or constants across many files. Changes are applied immediately.', parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Text or regex pattern to find' }, replacement: { type: 'string', description: 'Replacement text' }, targetFile: { type: 'string', description: 'Optional: limit to one file path' }, regex: { type: 'boolean', description: 'Treat pattern as regex (default false)' }, caseSensitive: { type: 'boolean', description: 'Case-sensitive match (default false)' } }, required: ['pattern', 'replacement'] } },
   { name: 'npmInstall', description: 'Install npm packages. Use when new dependencies are needed. Equivalent to running npm install [packages] in the terminal.', parameters: { type: 'object', properties: { packages: { type: 'string', description: 'Space-separated package names, e.g. "react-router-dom date-fns". Leave empty to install all from package.json.' }, dev: { type: 'boolean', description: 'Install as devDependency (--save-dev)' } } } },
   { name: 'getTerminalOutput', description: 'Read the last N lines of terminal output — including build errors, test failures, console logs, and runtime output. ALWAYS call this first when the user reports an error, asks to fix something, or when you need to see actual runtime behavior.', parameters: { type: 'object', properties: { lines: { type: 'number', description: 'Number of recent lines to fetch (default 60, max 200)' }, errorsOnly: { type: 'boolean', description: 'If true, filter for lines containing error/warn/fail keywords only' } } } },
+  { name: 'getProblems', description: 'Parse recent terminal output and return structured build/test/lint/type errors with severity and suggested next action. Use immediately after runTests/runLint/runTypecheck/runCommand.', parameters: { type: 'object', properties: { lines: { type: 'number', description: 'How many recent terminal lines to inspect (default 120, max 400)' } } } },
   { name: 'autoFix', description: 'Automatically fix all auto-patchable issues in a file: converts var→const, loose == to ===, removes debugger statements. Apply this FIRST on any file with quality/style issues, then handle the remaining complex bugs with editFile.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'File to fix (defaults to active file)' } } } },
   { name: 'explainError', description: 'Parse an error message or stack trace and return a structured explanation with root cause, fix steps, and code example. Use when the user pastes an error or when getTerminalOutput reveals an error you need to understand.', parameters: { type: 'object', properties: { error: { type: 'string', description: 'The full error message or stack trace text' } }, required: ['error'] } },
   { name: 'getGitStatus', description: 'Run git status and git diff --stat to see what files have changed. Use before generating commit messages or when the user asks about pending changes.', parameters: { type: 'object', properties: {} } },
@@ -106,6 +110,7 @@ const TOOL_POLICY: Record<string, 'read' | 'safe_write' | 'risky_write' | 'comma
   searchCode: 'read',
   analyzeFile: 'read',
   getTerminalOutput: 'read',
+  getProblems: 'read',
   getGitStatus: 'read',
   diagnoseProject: 'read',
   explainError: 'read',
@@ -118,25 +123,38 @@ const TOOL_POLICY: Record<string, 'read' | 'safe_write' | 'risky_write' | 'comma
   deleteFile: 'risky_write',
   npmInstall: 'command',
   runCommand: 'command',
+  runTests: 'command',
+  runLint: 'command',
+  runTypecheck: 'command',
 };
 
 // Tools that only read — no writes happen
 const READ_ONLY_TOOLS = new Set([
   'readFile', 'listFiles', 'getProjectStructure', 'searchCode',
-  'analyzeFile', 'getTerminalOutput', 'getGitStatus', 'diagnoseProject', 'explainError',
+  'analyzeFile', 'getTerminalOutput', 'getProblems', 'getGitStatus', 'diagnoseProject', 'explainError',
 ]);
 
 // Tools that mutate the workspace
 const WRITE_TOOLS = new Set([
   'writeFile', 'editFile', 'patchLines', 'deleteFile',
-  'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand',
+  'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand', 'runTests', 'runLint', 'runTypecheck',
 ]);
 
 const MODE_INSTRUCTIONS: Record<string, string> = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: "\n\nMode: AGENT — Use tools to make actual changes. You may readFile ONCE per file, then you MUST immediately call a write tool (patchLines/editFile/writeFile). Never call readFile twice in a row. Every round in AGENT mode must include at least one write operation.",
+  agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. Prefer completing at least one concrete write action within the next 2-3 tool calls.",
   plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
 };
+
+function shouldUseToolsForMode(mode: string) {
+  return mode === 'agent' || mode === 'plan';
+}
+
+function getToolsForMode(mode: string) {
+  if (mode === 'ask') return [] as typeof WORKSPACE_TOOLS;
+  if (mode === 'plan') return WORKSPACE_TOOLS.filter((t) => READ_ONLY_TOOLS.has(t.name));
+  return WORKSPACE_TOOLS;
+}
 
 const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '45000'));
 const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '2'));
@@ -196,136 +214,44 @@ function buildSystemPrompt(agent: string, context: any) {
     .map(([tool, tier]) => `${tool}:${tier}`)
     .join(', ');
 
-  // DeepSeek-specific hard rules injected early — this model tends to loop on reads
-  const deepseekBlock = agent === 'deepseek' ? `
-[DEEPSEEK — MANDATORY BEHAVIOR — READ BEFORE ANYTHING ELSE]
-You have a known failure mode: you call readFile repeatedly across multiple rounds without writing a single line of code. This is UNACCEPTABLE.
-
-HARD LIMITS (violation = task failure):
-1. You may call readFile AT MOST ONCE before a write tool MUST follow.
-2. The active file is ALREADY in your context below with line numbers. Calling readFile on it is FORBIDDEN.
-3. After ANY readFile call, your VERY NEXT tool call MUST be patchLines, editFile, writeFile, autoFix, or createComponent.
-4. "I need more context" is not an excuse. You have the active file. WRITE NOW.
-5. If you called readFile last round and have not written yet — your next tool call is a write. No exceptions.
-
-CORRECT PATTERN:
-  Round 1: readFile("other-file.js")  ← only if NOT the active file
-  Round 2: patchLines(...)  ← MANDATORY write immediately after
-
-FORBIDDEN PATTERN (you do this, stop it):
-  Round 1: readFile("a.js")
-  Round 2: readFile("b.js")   ← FORBIDDEN
-  Round 3: readFile("c.js")   ← FORBIDDEN
-  Round N: still no write     ← TASK FAILURE
-` : '';
+  const deepseekBlock = agent === 'deepseek'
+    ? '\n[DEEPSEEK NOTES]\n- Avoid read loops: gather minimal context then implement.\n- Prefer line-precise edits with patchLines for reliability.\n'
+    : '';
 
   return `[IDENTITY]
-You are ${persona} operating within EpiCodeSpace, a premium web-native IDE. You are a senior full-stack engineer.
-${deepseekBlock}
-[THE ENVIRONMENT]
+You are ${persona} operating within EpiCodeSpace.
+${deepseekBlock}[ENVIRONMENT]
 - Active file: ${filePath}
-- Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''} (use listFiles or getProjectStructure to see them all)
+- Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''}
 
-[CORE RULES]
-1. The active file is ALREADY in context below. Do NOT readFile it — edit it immediately with patchLines/editFile/writeFile.
-2. readFile any OTHER file at most once, then IMMEDIATELY write. Never two reads in a row.
-3. Never produce placeholder code ("// TODO", "...existing code...", "// add your logic here") — write complete, working implementations.
-4. Match the user's existing style, frameworks, naming conventions, and patterns exactly.
-5. When editing an existing file, use editFile (surgical patch) unless the full file must be replaced.
-6. After installing packages or making config changes, run the dev server.
+[OPERATING RULES]
+1. In AGENT mode, use tools to make real changes; avoid prose-only replies for fix/build requests.
+2. The active file is already in context; read additional files only when required.
+3. Keep edits complete and production-ready (no placeholders/TODO stubs).
+4. Match existing style, naming, and framework conventions.
+5. Prefer patchLines for targeted edits, then editFile, then writeFile.
 
-[CRITICAL — READ THIS FIRST]
-The active file content is already provided below with line numbers. DO NOT call readFile for the active file. Make changes immediately using patchLines, editFile, or writeFile.
+[MODE BEHAVIOR]
+- ASK: no tool calls.
+- PLAN: read-only tools, produce a concrete numbered plan.
+- AGENT: full tools. Gather context, implement, and verify.
 
-AFTER EVERY readFile, your next tool call MUST be a write operation (patchLines / editFile / writeFile / autoFix). Do NOT call readFile twice in a row. Do NOT describe what you will do — just do it.
+[DEBUG/REPAIR FLOW]
+1. getTerminalOutput (or getProblems)
+2. explainError / analyzeFile
+3. edit via patchLines/editFile/writeFile
+4. runTypecheck / runLint / runTests as applicable
+5. Re-check problems and continue until blocking issue or clean result
 
-[EDITING TOOLS — in order of preference]
-1. patchLines(path, startLine, endLine, newContent) — BEST: replace by line number, always works, no text-matching
-2. editFile(path, oldText, newText) — good for small patches; uses fuzzy whitespace matching
-3. writeFile(path, content) — use when replacing most of a file or creating new files
-4. autoFix(path) — use first for any file with quality issues (var/==/debugger)
-
-[LARGE FILE STRATEGY]
-When a file is large, call readFile with { path, startLine, endLine } to read only the relevant chunk.
-Then apply patchLines to the exact line range. Avoid reading whole giant files unless absolutely necessary.
-
-WHEN editFile FAILS with "oldText not found":
-→ Immediately call patchLines with the correct line numbers — DO NOT call readFile again
-
-[DEBUGGING WORKFLOW]
-1. Check context below for terminal output (auto-injected when debugging)
-2. explainError(errorText) if there's a stack trace
-3. analyzeFile(path) to find static issues
-4. autoFix(path) for automatic patches
-5. patchLines / editFile for remaining bugs
-6. If module missing: npmInstall → runCommand("npm run dev")
-
-[EXECUTION RULES — no exceptions]
-- In AGENT mode: every response MUST include at least one tool call that writes/fixes something. Never produce text-only "here's what I would do" responses.
-- Do not say "I'll now fix..." — just call the tool.
-- Do not re-read files you already have. The active file is in context with line numbers.
-- When you find a bug: fix it immediately with patchLines or editFile. Do not list it and wait.
-- Complete all changes in one pass. Do not stop after the first file.
-
-[TOOL POLICY TIERS]
-- read: inspect only (readFile, listFiles, searchCode, analyzeFile, getTerminalOutput, getGitStatus, diagnoseProject, explainError)
-- safe_write: direct file changes (patchLines, editFile, writeFile, autoFix, createComponent, searchAndReplace)
-- risky_write: destructive changes (deleteFile)
-- command: terminal/package actions (runCommand, npmInstall)
-Prefer safe_write tools after one read. Use risky_write only when explicitly necessary.
+[TOOL POLICY]
+- read: inspect only
+- safe_write: direct file edits
+- risky_write: destructive edits
+- command: terminal/package/test/lint/typecheck actions
 Policy map: ${policyPreview}
 
-[POST-EDIT VERIFICATION — MANDATORY]
-After any write operation, run analyzeFile on every changed file.
-If any error-level issues remain, continue fixing; do NOT finalize yet.
-Only finish when changed files no longer have error-level issues or when blocked by missing runtime context.
-
-[TOOL SELECTION]
-| Need | Tool |
-|---|---|
-| Fix specific lines | patchLines |
-| Fix small block | editFile |
-| Rewrite whole file | writeFile |
-| Fix var/==/debugger | autoFix |
-| Bulk rename | searchAndReplace |
-| Read terminal errors | getTerminalOutput |
-| Install package | npmInstall |
-| New component | createComponent |
-
-[CORE RULES]
-1. Active file already in context — do NOT readFile it again. Edit immediately.
-2. Complete code only — no placeholders, no "TODO", no "...existing code...".
-3. Match existing code style, frameworks, naming.
-4. After editing a file, update all imports that reference it.
-5. After installing packages, run the dev server.
-
-[BUILD WORKFLOW]
-1. getProjectStructure (understand layout)
-2. Read entry points + config files your code will depend on
-3. Plan: list files to create/edit and their purpose
-4. Create/edit in dependency order: config → types → utils → components → pages
-5. Update parent imports/routes/barrels
-6. npmInstall if new deps needed → runCommand("npm run dev")
-
-[CSS & STYLING]
-- Unstyled / plain HTML → diagnoseProject first
-- Missing node_modules → npmInstall() then runCommand("npm run dev")  
-- Tailwind checklist: tailwind.config.js ✓ postcss.config.js ✓ @tailwind directives ✓ CSS imported in JS entry ✓
-
-[SLASH COMMANDS — user may type these; expand them fully]
-- /fix → getTerminalOutput → analyzeFile → autoFix → editFile remaining issues
-- /debug → getTerminalOutput → explainError → readFile → fix
-- /explain → readFile → explain structure, purpose, patterns, suggestions
-- /test → readFile → write complete test file with the project's test framework
-- /doc → readFile → add JSDoc to all exports (no logic changes)
-- /refactor → analyzeFile → autoFix → editFile improvements → explain changes
-- /commit → getGitStatus → write conventional commit message
-- /review → analyzeFile + readFile → prioritized findings with severity
-
-[OUTPUT FORMAT]
-- Wrap code in fenced blocks with language tag
-- Precede each block with the file path (bold or as a comment)
-- After making changes, summarize: what was changed, why, and what to do next`;
+[VERIFICATION]
+After edits, verify changed files. If error-level issues remain, keep fixing before finalizing.`;
 }
 
 function buildContextMessage(context: any) {
@@ -418,13 +344,13 @@ function findLastIndex(arr: any[], pred: (x: any) => boolean) {
   return -1;
 }
 
-async function callOpenAI(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean) {
+async function callOpenAI(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean, tools: any[]) {
   const isReasoning = /^o\d/i.test(config.model);
   const body: any = { model: config.model, messages: [{ role: 'system', content: systemPrompt }, ...messages] };
   if (isReasoning) { body.max_completion_tokens = 16384; }
   else { body.max_tokens = 16384; body.temperature = 0.7; }
-  if (useTools && config.model !== 'deepseek-reasoner') {
-    body.tools = WORKSPACE_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  if (useTools && config.model !== 'deepseek-reasoner' && tools.length > 0) {
+    body.tools = tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     body.tool_choice = 'auto';
   }
   const res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, config.model);
@@ -437,7 +363,7 @@ async function callOpenAI(config: any, apiKey: string, systemPrompt: string, mes
   return { type: 'text', content: choice?.message?.content || 'No response.', usage: data.usage };
 }
 
-async function callAnthropic(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean) {
+async function callAnthropic(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean, tools: any[]) {
   const system = [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
   const cachedMessages = messages.map((m: any) => ({ ...m }));
   const lastUserIdx = findLastIndex(cachedMessages, m => m.role === 'user');
@@ -452,10 +378,10 @@ async function callAnthropic(config: any, apiKey: string, systemPrompt: string, 
     }
   }
   const body: any = { model: config.model, max_tokens: 16384, system, messages: cachedMessages };
-  if (useTools) {
-    const tools = WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
-    if (tools.length) (tools[tools.length - 1] as any).cache_control = { type: 'ephemeral' };
-    body.tools = tools;
+  if (useTools && tools.length > 0) {
+    const providerTools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    if (providerTools.length) (providerTools[providerTools.length - 1] as any).cache_control = { type: 'ephemeral' };
+    body.tools = providerTools;
   }
   const res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' }, body: JSON.stringify(body) }, config.model);
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Claude error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
@@ -468,14 +394,14 @@ async function callAnthropic(config: any, apiKey: string, systemPrompt: string, 
   return { type: 'text', content: textBlocks.map((b: any) => b.text).join('\n') || 'No response.', usage: data.usage };
 }
 
-async function callGemini(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean) {
+async function callGemini(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean, tools: any[]) {
   const url = `${config.url.replace('{model}', config.model)}?key=${apiKey}`;
   const contents = messages.map((m: any) => {
     if (m._geminiParts) return { role: m._geminiRole, parts: m._geminiParts };
     return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
   });
   const body: any = { contents, systemInstruction: { parts: [{ text: systemPrompt }] }, generationConfig: { maxOutputTokens: 16384, temperature: 0.7 } };
-  if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
+  if (useTools && tools.length > 0) { body.tools = [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
   const res = await fetchProvider(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, config.model);
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Gemini error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data: any = await res.json();
@@ -488,12 +414,12 @@ async function callGemini(config: any, apiKey: string, systemPrompt: string, mes
   return { type: 'text', content: textParts.map((p: any) => p.text).join('\n') || 'No response.', usage: data.usageMetadata };
 }
 
-async function callProvider(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean) {
+async function callProvider(config: any, apiKey: string, systemPrompt: string, messages: any[], useTools: boolean, tools: any[]) {
   const dispatch = (msgs: any[]) => {
     switch (config.transform) {
-      case 'openai': return callOpenAI(config, apiKey, systemPrompt, msgs, useTools);
-      case 'anthropic': return callAnthropic(config, apiKey, systemPrompt, msgs, useTools);
-      case 'gemini': return callGemini(config, apiKey, systemPrompt, msgs, useTools);
+      case 'openai': return callOpenAI(config, apiKey, systemPrompt, msgs, useTools, tools);
+      case 'anthropic': return callAnthropic(config, apiKey, systemPrompt, msgs, useTools, tools);
+      case 'gemini': return callGemini(config, apiKey, systemPrompt, msgs, useTools, tools);
       default: throw new Error(`Unknown transform: ${config.transform}`);
     }
   };
@@ -513,7 +439,7 @@ function appendToolResults(apiMessages: any[], toolResults: any[], pendingToolCa
   const roundHasWrite = pendingToolCalls.some(tc => WRITE_TOOLS.has(tc.name));
   const roundAllRead  = pendingToolCalls.length > 0 && !roundHasWrite;
   const writeConstraint = roundAllRead
-    ? '🚨 MANDATORY: You spent the last round ONLY reading files and wrote nothing. Your VERY NEXT tool call MUST be a write operation: patchLines, editFile, writeFile, createComponent, or autoFix. Do NOT call readFile, listFiles, getProjectStructure, searchCode, analyzeFile, or any other read tool. You have enough context — IMPLEMENT NOW.'
+    ? '⚠ You spent the last round only reading. Use current context to make concrete progress now: prefer patchLines/editFile/writeFile, or runTests/runLint/runTypecheck when verification is the blocker.'
     : null;
 
   // Combine both messages; prefer dedupeMessage first, append write constraint if present
@@ -622,11 +548,16 @@ router.post('/chat', async (req, res) => {
     if (!baseConfig) { res.status(400).json({ error: `Unknown agent: ${agent}` }); return; }
 
     let resolvedModel = baseConfig.model;
+    let modelAutoAdjustedFrom: string | null = null;
     if (typeof model === 'string' && model.length > 0) {
       if (model.length > 100 || !ALLOWED_MODELS[agent]?.includes(model)) {
         res.status(400).json({ error: `Invalid model '${model}' for agent '${agent}'` }); return;
       }
       resolvedModel = model;
+    }
+    if (agent === 'deepseek' && safeMode === 'agent' && resolvedModel === 'deepseek-reasoner') {
+      modelAutoAdjustedFrom = resolvedModel;
+      resolvedModel = 'deepseek-chat';
     }
     const config = { ...baseConfig, model: resolvedModel };
     let activeAgent = agent;
@@ -653,8 +584,9 @@ router.post('/chat', async (req, res) => {
 
     const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
-    const systemPrompt = buildSystemPrompt(agent, context) + modeInstr;
-    const useTools = safeMode === 'agent' || safeMode === 'plan';
+    const providerTools = getToolsForMode(safeMode);
+    const systemPrompt = buildSystemPrompt(activeAgent, context) + modeInstr;
+    const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
     apiMessages = packMessagesForProvider(apiMessages, context);
@@ -670,7 +602,7 @@ router.post('/chat', async (req, res) => {
 
     let result: any;
     try {
-      result = await callProvider(activeConfig, activeApiKey!, systemPrompt, apiMessages, useTools);
+      result = await callProvider(activeConfig, activeApiKey!, systemPrompt, apiMessages, useTools, providerTools);
     } catch (err: any) {
       const canFallback = activeAgent !== 'deepseek' && isAuthOrKeyError(err);
       if (!canFallback) throw err;
@@ -680,10 +612,11 @@ router.post('/chat', async (req, res) => {
       activeConfig = fallback.config;
       activeApiKey = fallback.apiKey;
       fallbackReason = 'provider_auth_error';
-      result = await callProvider(activeConfig, activeApiKey!, systemPrompt, apiMessages, useTools);
+      const fallbackSystemPrompt = buildSystemPrompt(activeAgent, context) + modeInstr;
+      result = await callProvider(activeConfig, activeApiKey!, fallbackSystemPrompt, apiMessages, useTools, providerTools);
     }
 
-    res.status(200).json({ ...result, agent: activeAgent, model: activeConfig.model || activeAgent, fallbackFrom: activeAgent !== agent ? agent : null, fallbackReason });
+    res.status(200).json({ ...result, agent: activeAgent, model: activeConfig.model || activeAgent, fallbackFrom: activeAgent !== agent ? agent : null, fallbackReason, modelAutoAdjustedFrom });
   } catch (err: any) {
     req.log.error({ err }, 'Chat API error');
     const timeoutHint = err?.isTimeout || /failed after retries/i.test(String(err?.message || ''));

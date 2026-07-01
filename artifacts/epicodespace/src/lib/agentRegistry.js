@@ -32,7 +32,7 @@ const GEMINI_MODELS = [
 
 const DEEPSEEK_MODELS = [
   { id: 'deepseek-chat',     name: 'DeepSeek V3',  tier: 'standard', description: 'Latest DeepSeek model — fast, smart, supports tools' },
-  { id: 'deepseek-reasoner', name: 'DeepSeek R1',  tier: 'premium',  description: 'Reasoning model — best for hard problems (no tool calling)' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1',  tier: 'premium',  description: 'Reasoning model — best for deep analysis; auto-routed to DeepSeek V3 in AGENT mode' },
 ];
 
 /** @type {import('../types').AgentRegistry} */
