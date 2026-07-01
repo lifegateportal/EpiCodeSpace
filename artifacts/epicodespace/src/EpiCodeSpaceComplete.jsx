@@ -424,6 +424,7 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
   if (searchCount) summaryParts.push(`${searchCount} search${searchCount > 1 ? 'es' : ''}`);
   if (cmdCount)    summaryParts.push(`${cmdCount} command${cmdCount > 1 ? 's' : ''}`);
   const summary = summaryParts.join(' · ') || `${steps.length} step${steps.length !== 1 ? 's' : ''}`;
+  const displayToolCalls = compactToolCalls(toolCalls, 12);
 
   return (
     <div className="mb-2 rounded-lg border border-fuchsia-500/20 bg-[#0d0520] overflow-hidden">
@@ -465,9 +466,9 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
             </div>
           ))}
           {/* Tool calls detail */}
-          {toolCalls.length > 0 && (
+          {displayToolCalls.length > 0 && (
             <div className="pt-1.5 mt-1.5 border-t border-white/5 flex flex-wrap gap-1">
-              {toolCalls.map((tc, ti) => {
+              {displayToolCalls.map((tc, ti) => {
                 const isWrite = tc.tool === 'writeFile' || tc.tool === 'editFile';
                 const isDel   = tc.tool === 'deleteFile';
                 const isSrch  = tc.tool === 'searchCode';
@@ -601,6 +602,29 @@ function stableStringify(value) {
 
 function toolCallSignature(name, args) {
   return `${name}:${stableStringify(args ?? {})}`;
+}
+
+function toolCallPath(call) {
+  const args = call?.args || call?.arguments || {};
+  if (typeof args.path === 'string' && args.path) return args.path;
+  if (typeof args.targetFile === 'string' && args.targetFile) return args.targetFile;
+  return null;
+}
+
+function compactToolCalls(calls, max = 14) {
+  if (!Array.isArray(calls) || calls.length === 0) return [];
+  const out = [];
+  const seen = new Set();
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const tc = calls[i] || {};
+    const args = tc.args || tc.arguments || {};
+    const key = `${tc.tool || tc.name}:${args.path || args.targetFile || args.pattern || args.command || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tc);
+    if (out.length >= max) break;
+  }
+  return out.reverse();
 }
 
 function compactLargeText(value, max = 4000) {
@@ -3064,6 +3088,7 @@ ${finalCode}
       let pendingToolCalls = Array.isArray(resumeState?.pendingToolCalls) ? resumeState.pendingToolCalls : null;
       let toolResults = Array.isArray(resumeState?.toolResults) ? resumeState.toolResults : null;
       let lastToolCallSig = resumeState?.lastToolCallSig || null;
+      let activeWorkFile = typeof resumeState?.activeWorkFile === 'string' ? resumeState.activeWorkFile : null;
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
@@ -3146,7 +3171,7 @@ ${finalCode}
               content: data.content,
               agent: activeAgent,
               agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-              toolCalls: allToolCalls,
+              toolCalls: compactToolCalls(allToolCalls, 12),
               steps: allSteps,
               mode: chatMode,
               timestamp: Date.now(),
@@ -3199,10 +3224,26 @@ ${finalCode}
 
             // Execute each tool call locally (sequential so lastToolCallSig stays accurate)
             toolResults = [];
+            const proposedPaths = data.tool_calls
+              .map((tc) => toolCallPath(tc))
+              .filter((p) => typeof p === 'string' && p.length > 0);
+            if (!activeWorkFile && proposedPaths.length > 0) {
+              activeWorkFile = proposedPaths[0];
+              allSteps.push(`🎯 Single-file mode locked to ${activeWorkFile}`);
+            }
             for (const tc of data.tool_calls) {
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
-              const result = isConsecutiveDuplicate
+              const tcPath = toolCallPath(tc);
+              const isOutOfScope = !!activeWorkFile && !!tcPath && tcPath !== activeWorkFile;
+              const result = isOutOfScope
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: `Single-file mode is active on ${activeWorkFile}. Finish and verify that file before touching ${tcPath}.`,
+                    error: `Blocked cross-file change: ${tcPath}`,
+                  }
+                : isConsecutiveDuplicate
                 ? {
                     ok: false,
                     duplicate: true,
@@ -3226,6 +3267,8 @@ ${finalCode}
               const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : tc.name === 'runCommand' ? '💻' : '📋';
               const resultSummary = isConsecutiveDuplicate
                 ? '⚠️ duplicate blocked'
+                : isOutOfScope
+                  ? `🚫 blocked (focus ${activeWorkFile})`
                 : tc.name === 'analyzeFile' && result.ok
                   ? `${result.issueCount} issue(s) [${result.summary}]`
                   : tc.name === 'diagnoseProject' && result.ok
@@ -3272,6 +3315,13 @@ ${finalCode}
                   allSteps.push(`✅ **verify**(${path}) → ${check.issueCount ?? 0} issue(s), ${errorCount} error(s)`);
                 }
               }
+              if (activeWorkFile && changedPaths.includes(activeWorkFile)) {
+                const lockedFileHasErrors = verificationIssues.some((v) => v.path === activeWorkFile && v.errorCount > 0);
+                if (!lockedFileHasErrors) {
+                  allSteps.push(`✅ Single-file step complete: ${activeWorkFile}`);
+                  activeWorkFile = null;
+                }
+              }
               if (verificationIssues.length > 0 && verificationFailures < 2) {
                 verificationFailures++;
                 const issueText = verificationIssues
@@ -3315,7 +3365,10 @@ ${finalCode}
             // If the model called ONLY read tools this round (nothing was written),
             // track it. After 2 consecutive read-only rounds inject a hard user
             // message into history so the model is forced to write next round.
-            const roundHasWrite = data.tool_calls.some(tc => isWritePolicy(tc.name));
+            const roundHasWrite = data.tool_calls.some((tc, i) => {
+              if (!isWritePolicy(tc.name)) return false;
+              return !!toolResults?.[i]?.result?.ok;
+            });
             consecReadOnlyRounds = roundHasWrite ? 0 : consecReadOnlyRounds + 1;
 
             if (consecReadOnlyRounds >= 3) {
@@ -3334,7 +3387,7 @@ ${finalCode}
                 role: 'assistant', _progress: true,
                 content: `Working (${agentRunState})... (${allToolCalls.length} tool call${allToolCalls.length > 1 ? 's' : ''})`,
                 agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-                toolCalls: [...allToolCalls], steps: [...allSteps],
+                toolCalls: compactToolCalls(allToolCalls, 12), steps: [...allSteps],
                 mode: chatMode, timestamp: Date.now(),
               };
               return progressMsg ? prev.map(m => m._progress && m.agent === activeAgent ? msg : m) : [...prev, msg];
@@ -3354,7 +3407,7 @@ ${finalCode}
             role: 'assistant',
             content: data.content || 'Done.',
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-            toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
+            toolCalls: compactToolCalls(allToolCalls, 12), steps: allSteps, mode: chatMode, timestamp: Date.now(),
             changedFiles: summary.files,
             changedPlus: summary.totalPlus,
             changedMinus: summary.totalMinus,
@@ -3383,7 +3436,7 @@ ${finalCode}
             role: 'assistant',
             content: `I've completed ${allToolCalls.length} operation${allToolCalls.length !== 1 ? 's' : ''} and reached the round limit. There may be more work remaining.`,
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-            toolCalls: allToolCalls, steps: allSteps, mode: chatMode, timestamp: Date.now(),
+            toolCalls: compactToolCalls(allToolCalls, 12), steps: allSteps, mode: chatMode, timestamp: Date.now(),
             changedFiles: summary.files,
             changedPlus: summary.totalPlus,
             changedMinus: summary.totalMinus,
@@ -3401,6 +3454,7 @@ ${finalCode}
                 ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
                 : [],
               lastToolCallSig,
+              activeWorkFile,
               consecReadOnlyRounds,
               allSteps: allSteps.slice(-120),
               allToolCalls: allToolCalls.slice(-120),
@@ -3428,7 +3482,7 @@ ${finalCode}
           role: 'assistant',
           content: `⚠️ *API unavailable — using local mode*\n\n${fallbackResponse}`,
           agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-          toolCalls: allToolCalls, steps: [...allSteps, `⚠️ API error: ${err.message}`],
+          toolCalls: compactToolCalls(allToolCalls, 12), steps: [...allSteps, `⚠️ API error: ${err.message}`],
           mode: chatMode, timestamp: Date.now(),
         };
         setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);

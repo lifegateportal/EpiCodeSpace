@@ -230,6 +230,8 @@ ${deepseekBlock}[ENVIRONMENT]
 3. Keep edits complete and production-ready (no placeholders/TODO stubs).
 4. Match existing style, naming, and framework conventions.
 5. Prefer patchLines for targeted edits, then editFile, then writeFile.
+6. Work one file at a time: choose a target file, finish implementation and verification there, then move to the next file.
+7. Do not rotate across many files in one pass unless the user explicitly asks for a broad refactor.
 
 [MODE BEHAVIOR]
 - ASK: no tool calls.
