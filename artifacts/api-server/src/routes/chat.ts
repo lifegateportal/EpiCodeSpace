@@ -230,8 +230,10 @@ ${deepseekBlock}[ENVIRONMENT]
 3. Keep edits complete and production-ready (no placeholders/TODO stubs).
 4. Match existing style, naming, and framework conventions.
 5. Prefer patchLines for targeted edits, then editFile, then writeFile.
-6. Work one file at a time: choose a target file, finish implementation and verification there, then move to the next file.
-7. Do not rotate across many files in one pass unless the user explicitly asks for a broad refactor.
+6. Use a primary-file workflow: choose ONE writable target file, complete implementation + verification there, then move to the next file.
+7. While focused on a primary file, cross-file WRITES are forbidden unless explicitly requested by the user.
+8. Cross-file READS are allowed only for minimal dependency context (small number, then return to the primary file).
+9. Do not rotate across many files in one pass unless the user explicitly asks for a broad refactor.
 
 [MODE BEHAVIOR]
 - ASK: no tool calls.

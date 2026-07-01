@@ -413,10 +413,10 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
     return { emoji, text, isThought, isWarning };
   });
 
-  const writeCount   = toolCalls.filter(tc => tc.tool === 'writeFile' || tc.tool === 'editFile').length;
+  const writeCount   = toolCalls.filter(tc => tc.tool === 'writeFile' || tc.tool === 'editFile' || tc.tool === 'patchLines').length;
   const readCount    = toolCalls.filter(tc => tc.tool === 'readFile').length;
   const searchCount  = toolCalls.filter(tc => tc.tool === 'searchCode').length;
-  const cmdCount     = toolCalls.filter(tc => tc.tool === 'runCommand').length;
+  const cmdCount     = toolCalls.filter(tc => tc.tool === 'runCommand' || tc.tool === 'runTests' || tc.tool === 'runLint' || tc.tool === 'runTypecheck').length;
 
   const summaryParts = [];
   if (writeCount)  summaryParts.push(`${writeCount} file${writeCount > 1 ? 's' : ''} written`);
@@ -424,7 +424,7 @@ function ThinkingBlock({ steps = [], toolCalls = [], inProgress = false, mode })
   if (searchCount) summaryParts.push(`${searchCount} search${searchCount > 1 ? 'es' : ''}`);
   if (cmdCount)    summaryParts.push(`${cmdCount} command${cmdCount > 1 ? 's' : ''}`);
   const summary = summaryParts.join(' · ') || `${steps.length} step${steps.length !== 1 ? 's' : ''}`;
-  const displayToolCalls = compactToolCalls(toolCalls, 12);
+  const displayToolCalls = compactToolCalls(toolCalls.filter(tc => !tc.blocked), 12);
 
   return (
     <div className="mb-2 rounded-lg border border-fuchsia-500/20 bg-[#0d0520] overflow-hidden">
@@ -3089,6 +3089,9 @@ ${finalCode}
       let toolResults = Array.isArray(resumeState?.toolResults) ? resumeState.toolResults : null;
       let lastToolCallSig = resumeState?.lastToolCallSig || null;
       let activeWorkFile = typeof resumeState?.activeWorkFile === 'string' ? resumeState.activeWorkFile : null;
+      let supportReadFiles = Array.isArray(resumeState?.supportReadFiles)
+        ? resumeState.supportReadFiles.filter((p) => typeof p === 'string')
+        : [];
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
@@ -3099,6 +3102,7 @@ ${finalCode}
       const effectiveModel = chatMode === 'agent' && activeAgent === 'deepseek' && activeModel === 'deepseek-reasoner'
         ? 'deepseek-chat'
         : activeModel;
+      const MAX_SUPPORT_READ_FILES = 2;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
 
@@ -3224,24 +3228,44 @@ ${finalCode}
 
             // Execute each tool call locally (sequential so lastToolCallSig stays accurate)
             toolResults = [];
-            const proposedPaths = data.tool_calls
+            const isWriteTool = (name) => name === 'writeFile' || name === 'editFile' || name === 'patchLines' || name === 'deleteFile' || name === 'searchAndReplace' || name === 'autoFix' || name === 'createComponent';
+            const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
+
+            const proposedWritePaths = data.tool_calls
+              .filter((tc) => isWriteTool(tc.name))
               .map((tc) => toolCallPath(tc))
               .filter((p) => typeof p === 'string' && p.length > 0);
-            if (!activeWorkFile && proposedPaths.length > 0) {
-              activeWorkFile = proposedPaths[0];
+
+            if (!activeWorkFile && proposedWritePaths.length > 0) {
+              activeWorkFile = proposedWritePaths[0];
+              supportReadFiles = [];
               allSteps.push(`🎯 Single-file mode locked to ${activeWorkFile}`);
             }
+
             for (const tc of data.tool_calls) {
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
-              const isOutOfScope = !!activeWorkFile && !!tcPath && tcPath !== activeWorkFile;
+              const writeOutOfScope = !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
+
+              let readOutOfScope = false;
+              if (!!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile) {
+                if (!supportReadFiles.includes(tcPath) && supportReadFiles.length >= MAX_SUPPORT_READ_FILES) {
+                  readOutOfScope = true;
+                }
+              }
+
+              const isOutOfScope = writeOutOfScope || readOutOfScope;
               const result = isOutOfScope
                 ? {
                     ok: false,
                     blocked: true,
-                    systemMessage: `Single-file mode is active on ${activeWorkFile}. Finish and verify that file before touching ${tcPath}.`,
-                    error: `Blocked cross-file change: ${tcPath}`,
+                    systemMessage: writeOutOfScope
+                      ? `Single-file write mode is active on ${activeWorkFile}. Finish and verify that file before writing ${tcPath}.`
+                      : `Support reads are limited to ${MAX_SUPPORT_READ_FILES} files while focused on ${activeWorkFile}.`,
+                    error: writeOutOfScope
+                      ? `Blocked cross-file write: ${tcPath}`
+                      : `Blocked support read: ${tcPath}`,
                   }
                 : isConsecutiveDuplicate
                 ? {
@@ -3250,6 +3274,11 @@ ${finalCode}
                     systemMessage: 'You just read this file, please proceed with the data provided',
                   }
                 : await executeToolCall(tc.name, tc.arguments, currentFS);
+
+              if (!isOutOfScope && !!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile && !supportReadFiles.includes(tcPath)) {
+                supportReadFiles.push(tcPath);
+                allSteps.push(`📎 support read ${supportReadFiles.length}/${MAX_SUPPORT_READ_FILES}: ${tcPath}`);
+              }
 
               if (!isConsecutiveDuplicate) {
                 lastToolCallSig = signature;
@@ -3320,6 +3349,7 @@ ${finalCode}
                 if (!lockedFileHasErrors) {
                   allSteps.push(`✅ Single-file step complete: ${activeWorkFile}`);
                   activeWorkFile = null;
+                  supportReadFiles = [];
                 }
               }
               if (verificationIssues.length > 0 && verificationFailures < 2) {
@@ -3455,6 +3485,7 @@ ${finalCode}
                 : [],
               lastToolCallSig,
               activeWorkFile,
+              supportReadFiles,
               consecReadOnlyRounds,
               allSteps: allSteps.slice(-120),
               allToolCalls: allToolCalls.slice(-120),
