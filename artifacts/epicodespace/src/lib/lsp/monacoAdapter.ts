@@ -110,7 +110,7 @@ export function installMonacoAdapter(monaco: MonacoApi): () => void {
       if (!model) return;
       const markers = diagnostics.map((d) => ({
         ...lspRangeToMonaco(d.range),
-        message: d.message,
+        message: typeof d.message === 'string' ? d.message : d.message.value,
         severity: lspSeverityToMonaco(monaco, d.severity),
         source: d.source,
         code: typeof d.code === 'string' || typeof d.code === 'number' ? String(d.code) : undefined,
@@ -230,7 +230,7 @@ export function installMonacoAdapter(monaco: MonacoApi): () => void {
             ? it.textEdit.newText
             : (it.insertText ?? it.label);
           return {
-            label: typeof it.label === 'string' ? it.label : it.label.label,
+            label: it.label,
             kind: lspKindToMonaco(monaco, it.kind),
             insertText,
             insertTextRules: it.insertTextFormat === lsp.InsertTextFormat.Snippet

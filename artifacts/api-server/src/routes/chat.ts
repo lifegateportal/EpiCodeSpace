@@ -267,7 +267,7 @@ async function callOpenAI(config: any, apiKey: string, systemPrompt: string, mes
   }
   const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`${config.model} error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
-  const data = await res.json();
+  const data: any = await res.json();
   const choice = data.choices?.[0];
   if (choice?.message?.tool_calls?.length) {
     return { type: 'tool_calls', tool_calls: choice.message.tool_calls.map((tc: any) => { let args = {}; try { args = JSON.parse(tc.function.arguments); } catch {} return { id: tc.id, name: tc.function.name, arguments: args }; }), content: choice.message.content || null, usage: data.usage };
@@ -297,7 +297,7 @@ async function callAnthropic(config: any, apiKey: string, systemPrompt: string, 
   }
   const res = await fetch(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Claude error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
-  const data = await res.json();
+  const data: any = await res.json();
   const toolBlocks = data.content?.filter((b: any) => b.type === 'tool_use') || [];
   const textBlocks = data.content?.filter((b: any) => b.type === 'text') || [];
   if (toolBlocks.length > 0) {
@@ -316,7 +316,7 @@ async function callGemini(config: any, apiKey: string, systemPrompt: string, mes
   if (useTools) { body.tools = [{ functionDeclarations: WORKSPACE_TOOLS.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`Gemini error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
-  const data = await res.json();
+  const data: any = await res.json();
   const parts = data.candidates?.[0]?.content?.parts || [];
   const funcCalls = parts.filter((p: any) => p.functionCall);
   const textParts = parts.filter((p: any) => p.text);
