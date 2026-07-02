@@ -2164,6 +2164,24 @@ ${finalCode}
 
   // ── Execute tool calls against virtual filesystem ────────────────────────
   const executeToolCall = useCallback(async (name, args, currentFS) => {
+    const sanitizeShellCommand = (raw) => {
+      let cmd = String(raw || '').trim();
+      if (!cmd) return '';
+
+      // Strip common markdown/prompt artifacts from model outputs.
+      cmd = cmd
+        .replace(/^```(?:bash|sh)?\s*/i, '')
+        .replace(/```$/i, '')
+        .replace(/^\$\s*/, '')
+        .replace(/^>\s*/, '')
+        .trim();
+
+      // Fix occasional single-letter prefix corruption like "S cd ...".
+      cmd = cmd.replace(/^[A-Za-z]\s+(?=(cd|npm|pnpm|yarn|npx|node|bun|git|ls|cat|echo|pwd|cp|mv|rm|mkdir|touch|grep|find)\b)/i, '');
+
+      return cmd.trim();
+    };
+
     const detectPackageManager = () => {
       let pkg = {};
       try { pkg = JSON.parse(currentFS['package.json']?.content || '{}'); } catch { /* ignore */ }
@@ -2269,7 +2287,8 @@ ${finalCode}
       }
       case 'runCommand': {
         // Require user confirmation before running destructive-looking commands
-        const cmd = (args.command || '').trim();
+        const cmd = sanitizeShellCommand(args.command);
+        if (!cmd) return { ok: false, error: 'runCommand: empty or invalid command after sanitization.' };
         const isDestructive = /\brm\b|\brmdir\b|\bdrop\b|\bdelete\b|\bformat\b|>\s*\//.test(cmd);
         if (isDestructive) {
           const ok = await toast.confirm(`The AI agent wants to run:\n\n  ${cmd}\n\nAllow this command?`, { danger: true, confirmLabel: 'Allow' });
@@ -2284,17 +2303,20 @@ ${finalCode}
       }
       case 'runTests': {
         const pm = detectPackageManager();
-        const cmd = (args.command || '').trim() || pmRun(pm, 'test');
+        const override = sanitizeShellCommand(args.command);
+        const cmd = override || pmRun(pm, 'test');
         return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched tests (${pm}): ${cmd}` };
       }
       case 'runLint': {
         const pm = detectPackageManager();
-        const cmd = (args.command || '').trim() || pmRun(pm, 'lint');
+        const override = sanitizeShellCommand(args.command);
+        const cmd = override || pmRun(pm, 'lint');
         return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched lint (${pm}): ${cmd}` };
       }
       case 'runTypecheck': {
         const pm = detectPackageManager();
-        const cmd = (args.command || '').trim() || pmRun(pm, 'typecheck');
+        const override = sanitizeShellCommand(args.command);
+        const cmd = override || pmRun(pm, 'typecheck');
         return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched typecheck (${pm}): ${cmd}` };
       }
       case 'getProjectStructure': {
@@ -3615,7 +3637,7 @@ ${finalCode}
           id: msgId,
           role: 'assistant',
           content: err?.retryable
-            ? `⚠️ Temporary upstream disconnect (${err.code || 'UPSTREAM_ERROR'}). Progress is checkpointed. Click Continue to resume from the exact step.`
+            ? `⚠️ Upstream retries exhausted (${err.code || 'UPSTREAM_ERROR'}). Progress is checkpointed; click Continue to resume from the exact step.`
             : `⚠️ API error: ${err?.message || 'Unknown error'}. Progress is checkpointed. Click Continue to retry from the last stable step.`,
           agent: activeAgent,
           agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
