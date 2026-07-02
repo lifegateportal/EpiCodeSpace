@@ -3255,6 +3255,75 @@ ${finalCode}
           throw lastErr || new Error('Chat round failed');
         };
 
+        const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno)\s/i.test(String(cmd || '').trim());
+        const isLikelyLongRunningCmd = (cmd) => {
+          const text = String(cmd || '').toLowerCase();
+          return /(\b(run|npm run|pnpm|yarn|bun run)\s+(dev|start|serve|watch)\b|\bnext\s+dev\b|\bvite\b|--watch\b|\btail\s+-f\b)/.test(text);
+        };
+        const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        const dispatchAndWaitForCommand = async (cmd) => {
+          const raw = String(cmd || '').trim();
+          if (!raw) return { ok: false, route: 'none', reason: 'empty command' };
+
+          // Simulated terminal commands are synchronous in this app.
+          if (!isRuntimeCmd(raw)) {
+            setTerminalState('open');
+            setActiveTerminalTab('terminal');
+            handleTerminalCommandRef.current?.(raw);
+            return { ok: true, route: 'terminal', waited: false, status: 0 };
+          }
+
+          setTerminalState('open');
+          setActiveTerminalTab('runtime');
+
+          // Keep dev/watch servers running; waiting for completion would block forever.
+          if (isLikelyLongRunningCmd(raw)) {
+            const sent = wcTermRef.current?.sendCommand(raw);
+            if (sent === false) {
+              handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
+              return { ok: false, route: 'runtime', waited: false, reason: 'runtime not ready' };
+            }
+            return { ok: true, route: 'runtime', waited: false, longRunning: true };
+          }
+
+          const marker = `__ECS_AGENT_CMD_DONE_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
+          const wrapped = `{ ${raw}; }; __ecs_status=$?; echo "${marker}:$__ecs_status"`;
+          const startIdx = terminalOutputRef.current.length;
+          const sent = wcTermRef.current?.sendCommand(wrapped);
+
+          if (sent === false) {
+            handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
+            return { ok: false, route: 'runtime', waited: false, reason: 'runtime not ready' };
+          }
+
+          const timeoutMs = 8 * 60 * 1000;
+          const deadline = Date.now() + timeoutMs;
+          const doneRegex = new RegExp(`${escapeRegExp(marker)}:(-?\\d+)`);
+
+          while (Date.now() < deadline) {
+            const tail = terminalOutputRef.current.slice(startIdx).join('');
+            const m = tail.match(doneRegex);
+            if (m) {
+              return {
+                ok: true,
+                route: 'runtime',
+                waited: true,
+                status: Number.parseInt(m[1], 10) || 0,
+              };
+            }
+            await sleep(250);
+          }
+
+          return {
+            ok: false,
+            route: 'runtime',
+            waited: true,
+            timeout: true,
+            reason: `Timed out waiting for command to finish after ${Math.round(timeoutMs / 1000)}s`,
+          };
+        };
+
         for (let round = 0; round < roundLimit; round++) {
           const payload = { agent: activeAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
@@ -3518,28 +3587,40 @@ ${finalCode}
                 }
               }
             }
-            // Run terminal commands requested by agent
-            // Smart routing: npm/node/npx/yarn/pnpm → WebContainers runtime; all others → simulated terminal
+            // Run terminal commands requested by agent and wait for completion
+            // (for finite runtime commands) before the next tool-call round.
             if (cmdsToRun.length > 0) {
-              const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno)\s/i.test(cmd.trim());
-              const runtimeCmds = cmdsToRun.filter(isRuntimeCmd);
-              const terminalCmds = cmdsToRun.filter(cmd => !isRuntimeCmd(cmd));
-
-              if (runtimeCmds.length > 0) {
-                setTerminalState('open');
-                setActiveTerminalTab('runtime');
-                runtimeCmds.forEach(cmd => {
-                  const sent = wcTermRef.current?.sendCommand(cmd);
-                  // Fallback: if runtime not booted yet, show command in simulated terminal with a note
-                  if (sent === false) {
-                    handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${cmd}`);
+              const commandStatuses = [];
+              for (const cmd of cmdsToRun) {
+                const runStatus = await dispatchAndWaitForCommand(cmd);
+                commandStatuses.push({ cmd, ...runStatus });
+                if (runStatus.ok) {
+                  if (runStatus.longRunning) {
+                    allSteps.push(`🧵 **command**(\`${cmd}\`) → started (long-running)`);
+                  } else if (runStatus.waited) {
+                    allSteps.push(`⏳ **command**(\`${cmd}\`) → finished (exit ${runStatus.status ?? 0})`);
+                  } else {
+                    allSteps.push(`✅ **command**(\`${cmd}\`) → finished`);
                   }
-                });
+                } else if (runStatus.timeout) {
+                  allSteps.push(`⏱️ **command**(\`${cmd}\`) → timeout waiting for completion`);
+                } else {
+                  allSteps.push(`❌ **command**(\`${cmd}\`) → ${runStatus.reason || 'failed to dispatch'}`);
+                }
               }
-              if (terminalCmds.length > 0) {
-                setTerminalState('open');
-                if (runtimeCmds.length === 0) setActiveTerminalTab('terminal');
-                terminalCmds.forEach(cmd => handleTerminalCommandRef.current?.(cmd));
+
+              const blockers = commandStatuses.filter((s) => !s.ok && (s.timeout || s.reason === 'runtime not ready'));
+              if (blockers.length > 0) {
+                const blockerText = blockers
+                  .map((s) => `${s.cmd}: ${s.reason || 'command did not finish'}`)
+                  .join('; ');
+                history = [
+                  ...history,
+                  {
+                    role: 'user',
+                    content: `System command barrier: do not proceed to new tool calls until command execution is resolved. Blocked commands: ${blockerText}`,
+                  },
+                ].slice(-22);
               }
             }
 
