@@ -47,6 +47,8 @@ const EXT_TO_LANG = {
 };
 
 function languageFor(path) {
+  const base = path.split('/').pop()?.toLowerCase() ?? '';
+  if (base === '.env' || base.startsWith('.env.')) return 'ini';
   const ext = path.split('.').pop()?.toLowerCase();
   return EXT_TO_LANG[ext] || 'text';
 }

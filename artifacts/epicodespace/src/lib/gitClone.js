@@ -14,7 +14,13 @@ const EXT_LANG = {
   vue: 'html', svelte: 'html',
 };
 
+function isEnvFile(path) {
+  const base = path.split('/').pop()?.toLowerCase() ?? '';
+  return base === '.env' || base.startsWith('.env.');
+}
+
 function langFromPath(path) {
+  if (isEnvFile(path)) return 'ini';
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   return EXT_LANG[ext] || 'plaintext';
 }
@@ -42,7 +48,6 @@ const BINARY_EXTS = new Set([
   'zip','tar','gz','7z','rar',
   'pdf','doc','docx','xls','xlsx',
   'exe','dll','so','dylib','wasm',
-  'lock',
 ]);
 
 function isBinary(path) {
@@ -57,6 +62,43 @@ const SKIP_DIRS = new Set([
 
 function shouldSkip(path) {
   return path.split('/').some(seg => SKIP_DIRS.has(seg));
+}
+
+const PRIORITY_PATTERNS = [
+  /^package\.json$/i,
+  /^(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb)$/i,
+  /^(tsconfig|jsconfig)\..+$/i,
+  /^(vite|next|nuxt|webpack|rollup|astro|svelte|tailwind|postcss)\.config\..+$/i,
+  /^(app|src)\/(main|index|app|layout)\.[jt]sx?$/i,
+  /\.css$/i,
+  /^\.env(\..+)?$/i,
+  /^README(\.md)?$/i,
+];
+
+function priorityScore(path) {
+  let score = 0;
+  if (isEnvFile(path)) score += 50;
+  if (/\.(css|scss|sass|less)$/i.test(path)) score += 40;
+  if (path.startsWith('src/') || path.startsWith('app/')) score += 10;
+  for (let i = 0; i < PRIORITY_PATTERNS.length; i += 1) {
+    if (PRIORITY_PATTERNS[i].test(path)) {
+      score += 200 - i * 15;
+    }
+  }
+  return score;
+}
+
+function pickCloneSubset(blobs, maxFiles) {
+  if (blobs.length <= maxFiles) return blobs;
+
+  const ranked = blobs
+    .map((item, index) => ({ item, score: priorityScore(item.path), index }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.index - b.index;
+    });
+
+  return ranked.slice(0, maxFiles).map((entry) => entry.item);
 }
 
 async function ghFetch(url, token) {
@@ -95,10 +137,10 @@ export async function cloneRepo(rawUrl, { token, onProgress } = {}) {
     item => item.type === 'blob' && !isBinary(item.path) && !shouldSkip(item.path)
   );
 
-  const MAX_FILES = 300;
-  const subset = blobs.slice(0, MAX_FILES);
+  const MAX_FILES = 1200;
+  const subset = pickCloneSubset(blobs, MAX_FILES);
   if (blobs.length > MAX_FILES) {
-    onProgress?.(`Repo has ${blobs.length} files; capping at ${MAX_FILES} to stay within limits.`);
+    onProgress?.(`Repo has ${blobs.length} files; importing a prioritized ${MAX_FILES}-file subset (entrypoints, CSS, env, and build configs first).`);
   }
 
   onProgress?.(`Fetching ${subset.length} files…`);
