@@ -3273,6 +3273,10 @@ ${finalCode}
       const MAX_SUPPORT_READ_FILES = 2;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
+      let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
+      let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
+      const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
+      const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
 
       if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
@@ -3334,6 +3338,70 @@ ${finalCode}
           return /(\b(run|npm run|pnpm|yarn|bun run)\s+(dev|start|serve|watch)\b|\bnext\s+dev\b|\bvite\b|--watch\b|\btail\s+-f\b)/.test(text);
         };
         const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const normalizeCommand = (cmd) => String(cmd || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const detectPackageManagerFromFS = (fs) => {
+          let pkg = {};
+          try { pkg = JSON.parse(fs?.['package.json']?.content || '{}'); } catch { pkg = {}; }
+          const pmField = String(pkg.packageManager || '').toLowerCase();
+          if (pmField.startsWith('pnpm') || fs?.['pnpm-lock.yaml']) return 'pnpm';
+          if (pmField.startsWith('yarn') || fs?.['yarn.lock']) return 'yarn';
+          if (pmField.startsWith('bun') || fs?.['bun.lockb']) return 'bun';
+          return 'npm';
+        };
+        const readPackageScripts = (fs) => {
+          try {
+            const pkg = JSON.parse(fs?.['package.json']?.content || '{}');
+            return (pkg && typeof pkg.scripts === 'object' && pkg.scripts) ? pkg.scripts : {};
+          } catch {
+            return {};
+          }
+        };
+        const buildCommandAlternatives = (cmd, runStatus, fs) => {
+          const raw = String(cmd || '').trim();
+          const lower = raw.toLowerCase();
+          const pm = detectPackageManagerFromFS(fs);
+          const scripts = readPackageScripts(fs);
+          const output = `${runStatus?.reason || ''}\n${runStatus?.outputSnippet || ''}`.toLowerCase();
+          const out = [];
+
+          if (/^npm\s+install\b/.test(lower) && pm === 'pnpm') {
+            out.push(raw.replace(/^npm\s+install\b/i, 'pnpm add'));
+            out.push('pnpm install --prod=false');
+          }
+          if (/^npm\s+install\b/.test(lower) && pm === 'yarn') {
+            out.push(raw.replace(/^npm\s+install\b/i, 'yarn add'));
+            out.push('yarn install');
+          }
+          if (/^pnpm\s+add\b/.test(lower) && pm === 'npm') {
+            out.push(raw.replace(/^pnpm\s+add\b/i, 'npm install'));
+          }
+          if (/^yarn\s+add\b/.test(lower) && pm === 'npm') {
+            out.push(raw.replace(/^yarn\s+add\b/i, 'npm install'));
+          }
+
+          const missingScriptMatch = output.match(/missing script:\s*"?([a-z0-9:_-]+)"?/i);
+          const missingScript = missingScriptMatch?.[1];
+          if (missingScript && !scripts[missingScript]) {
+            if (scripts.dev) out.push(pm === 'npm' ? 'npm run dev' : `${pm} run dev`);
+            if (scripts.build) out.push(pm === 'npm' ? 'npm run build' : `${pm} run build`);
+            if (scripts.test) out.push(pm === 'npm' ? 'npm run test' : `${pm} run test`);
+            if (missingScript === 'lint') out.push('npx eslint .');
+          }
+
+          if (/runtime not ready/.test(output)) {
+            out.push('npm run dev');
+          }
+
+          const deduped = [];
+          const seen = new Set();
+          for (const c of out) {
+            const n = normalizeCommand(c);
+            if (!n || seen.has(n) || n === normalizeCommand(raw)) continue;
+            seen.add(n);
+            deduped.push(c);
+          }
+          return deduped;
+        };
 
         const dispatchAndWaitForCommand = async (cmd) => {
           const raw = String(cmd || '').trim();
@@ -3375,14 +3443,28 @@ ${finalCode}
           const doneRegex = new RegExp(`${escapeRegExp(marker)}:(-?\\d+)`);
 
           while (Date.now() < deadline) {
-            const tail = terminalOutputRef.current.slice(startIdx).join('');
+            const tailLines = terminalOutputRef.current.slice(startIdx);
+            const tail = tailLines.join('');
             const m = tail.match(doneRegex);
             if (m) {
+              const status = Number.parseInt(m[1], 10) || 0;
+              const outputSnippet = tailLines.slice(-30).join('\n');
+              if (status === 0) {
+                return {
+                  ok: true,
+                  route: 'runtime',
+                  waited: true,
+                  status,
+                  outputSnippet,
+                };
+              }
               return {
-                ok: true,
+                ok: false,
                 route: 'runtime',
                 waited: true,
-                status: Number.parseInt(m[1], 10) || 0,
+                status,
+                outputSnippet,
+                reason: `command exited with status ${status}`,
               };
             }
             await sleep(250);
@@ -3393,6 +3475,7 @@ ${finalCode}
             route: 'runtime',
             waited: true,
             timeout: true,
+            outputSnippet: terminalOutputRef.current.slice(startIdx).slice(-30).join('\n'),
             reason: `Timed out waiting for command to finish after ${Math.round(timeoutMs / 1000)}s`,
           };
         };
@@ -3442,6 +3525,23 @@ ${finalCode}
                 },
               ].slice(-22);
               allSteps.push(`⚠️ Website build not complete yet (score ${websiteStatus?.score || 0}/5). Continuing implementation.`);
+              continue;
+            }
+
+            const lowWriteProgress =
+              chatMode === 'agent' &&
+              looksLikeWorkspaceChangeRequest(userMessage) &&
+              allToolCalls.length >= 18 &&
+              totalWriteSuccesses < 2;
+            if (lowWriteProgress) {
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: 'Progress policy: stop looping on analysis/commands. Apply concrete file edits now and verify them. Do not return prose-only until at least one meaningful write is completed.',
+                },
+              ].slice(-22);
+              allSteps.push('⚠️ Low-write progress detected; forcing concrete edits before final response.');
               continue;
             }
 
@@ -3592,6 +3692,14 @@ ${finalCode}
               toolResults.push({ id: tc.id, name: tc.name, result });
             }
 
+            const roundWriteSuccesses = data.tool_calls.reduce((count, tc, idx) => {
+              const policyWrite = isWritePolicy(tc.name);
+              const ok = !!toolResults?.[idx]?.result?.ok;
+              return policyWrite && ok ? count + 1 : count;
+            }, 0);
+            totalWriteSuccesses += roundWriteSuccesses;
+            noWriteRounds = roundWriteSuccesses > 0 ? 0 : noWriteRounds + 1;
+
             // Apply filesystem mutations
             const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
             changeItems.forEach((item) => {
@@ -3702,15 +3810,56 @@ ${finalCode}
             if (cmdsToRun.length > 0) {
               const commandStatuses = [];
               for (const cmd of cmdsToRun) {
-                const runStatus = await dispatchAndWaitForCommand(cmd);
+                const normalized = normalizeCommand(cmd);
+                let runStatus;
+
+                if (commandBlocked.has(normalized)) {
+                  runStatus = {
+                    ok: false,
+                    blocked: true,
+                    reason: 'blocked after repeated failures; choose a different command',
+                  };
+                } else {
+                  runStatus = await dispatchAndWaitForCommand(cmd);
+                }
+
+                if (!runStatus.ok && !runStatus.blocked) {
+                  const prevFails = Number(commandFailureCounts.get(normalized) || 0);
+                  const failCount = prevFails + 1;
+                  commandFailureCounts.set(normalized, failCount);
+
+                  const alternatives = buildCommandAlternatives(cmd, runStatus, currentFS)
+                    .filter((alt) => !commandBlocked.has(normalizeCommand(alt)));
+                  if (alternatives.length > 0) {
+                    allSteps.push(`🧭 **command**(\`${cmd}\`) failed; trying fallback \`${alternatives[0]}\``);
+                    const altStatus = await dispatchAndWaitForCommand(alternatives[0]);
+                    if (altStatus.ok) {
+                      runStatus = { ...altStatus, fallbackFrom: cmd, command: alternatives[0] };
+                      commandFailureCounts.delete(normalized);
+                    } else {
+                      const altNorm = normalizeCommand(alternatives[0]);
+                      const altFails = Number(commandFailureCounts.get(altNorm) || 0) + 1;
+                      commandFailureCounts.set(altNorm, altFails);
+                    }
+                  }
+
+                  if (!runStatus.ok && failCount >= 2) {
+                    commandBlocked.add(normalized);
+                  }
+                } else if (runStatus.ok) {
+                  commandFailureCounts.delete(normalized);
+                  commandBlocked.delete(normalized);
+                }
+
                 commandStatuses.push({ cmd, ...runStatus });
                 if (runStatus.ok) {
+                  const shownCmd = runStatus.command || cmd;
                   if (runStatus.longRunning) {
-                    allSteps.push(`🧵 **command**(\`${cmd}\`) → started (long-running)`);
+                    allSteps.push(`🧵 **command**(\`${shownCmd}\`) → started (long-running)`);
                   } else if (runStatus.waited) {
-                    allSteps.push(`⏳ **command**(\`${cmd}\`) → finished (exit ${runStatus.status ?? 0})`);
+                    allSteps.push(`⏳ **command**(\`${shownCmd}\`) → finished (exit ${runStatus.status ?? 0})`);
                   } else {
-                    allSteps.push(`✅ **command**(\`${cmd}\`) → finished`);
+                    allSteps.push(`✅ **command**(\`${shownCmd}\`) → finished`);
                   }
                 } else if (runStatus.timeout) {
                   allSteps.push(`⏱️ **command**(\`${cmd}\`) → timeout waiting for completion`);
@@ -3846,6 +3995,10 @@ ${finalCode}
                 : [],
               lastToolCallSig,
               websiteBuildMode,
+              totalWriteSuccesses,
+              noWriteRounds,
+              commandFailureCounts: Object.fromEntries(commandFailureCounts),
+              commandBlocked: Array.from(commandBlocked),
               activeWorkFile,
               supportReadFiles,
               consecReadOnlyRounds,
@@ -3897,6 +4050,10 @@ ${finalCode}
               : [],
             lastToolCallSig,
             websiteBuildMode,
+            totalWriteSuccesses,
+            noWriteRounds,
+            commandFailureCounts: Object.fromEntries(commandFailureCounts),
+            commandBlocked: Array.from(commandBlocked),
             activeWorkFile,
             supportReadFiles,
             consecReadOnlyRounds,
