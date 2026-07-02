@@ -669,6 +669,37 @@ function compactToolCalls(calls, max = 14) {
   return out.reverse();
 }
 
+function buildExecutionRecap(toolCalls = [], changeSummary = { files: [], totalPlus: 0, totalMinus: 0 }) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const files = Array.isArray(changeSummary?.files) ? changeSummary.files : [];
+  if (calls.length === 0 && files.length === 0) return '';
+
+  const countTools = (...names) => calls.filter((c) => names.includes(c.tool || c.name)).length;
+  const writeCount = countTools('writeFile', 'editFile', 'patchLines', 'searchAndReplace', 'autoFix', 'createComponent', 'deleteFile');
+  const readCount = countTools('readFile', 'listFiles', 'searchCode', 'analyzeFile', 'getProjectStructure');
+  const commandCount = countTools('runCommand', 'npmInstall', 'runTests', 'runLint', 'runTypecheck', 'getGitStatus');
+
+  const fileLines = files.slice(0, 8).map((f) => {
+    const suffix = f.action === 'create' || f.action === 'write'
+      ? 'created'
+      : f.action === 'delete'
+        ? 'deleted'
+        : 'updated';
+    return `- ${f.path} (${suffix})`;
+  });
+  const extraFiles = files.length > 8 ? `\n- ...and ${files.length - 8} more file(s)` : '';
+
+  return [
+    '',
+    '### What I did',
+    `- Executed ${calls.length} tool call(s)`,
+    `- Reads: ${readCount}, Writes: ${writeCount}, Commands: ${commandCount}`,
+    files.length > 0 ? `- Changed ${files.length} file(s) (+${changeSummary.totalPlus || 0}/-${changeSummary.totalMinus || 0})` : '- No files were changed',
+    ...(fileLines.length > 0 ? ['- File changes:', ...fileLines] : []),
+    ...(extraFiles ? [extraFiles] : []),
+  ].join('\n');
+}
+
 function compactLargeText(value, max = 4000) {
   if (typeof value !== 'string' || value.length <= max) return value;
   const half = Math.floor(max / 2);
@@ -942,6 +973,7 @@ const PREVIEW_MODE_KEY = 'epicodespace_preview_mode_v1';
 const PINNED_RULES_KEY = 'epicodespace_pinned_rules_v1';
 const LITE_MODE_KEY = 'epicodespace_lite_mode_v1';
 const LAST_BACKUP_AT_KEY = 'epicodespace_last_backup_at_v1';
+const CHAT_QUIET_MODE_KEY = 'epicodespace_chat_quiet_mode_v1';
 
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
@@ -1013,7 +1045,7 @@ function EpiCodeSpaceApp() {
   // ── Chat ──────────────────────────────────────────────────────────────────
   // Circuit-breaker limits: pause after this many consecutive tool rounds.
   // Token ceiling is warning-only (never blocks input).
-  const MAX_TOOL_ROUNDS = 10;
+  const MAX_TOOL_ROUNDS = 60;
   const TOKEN_CEILING_DEFAULT = 120_000;
   const TOKEN_CEILING_DEEPSEEK = 220_000;
 
@@ -1023,6 +1055,8 @@ function EpiCodeSpaceApp() {
   const [copiedMsgKey, setCopiedMsgKey] = useState('');
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
+  const [chatQuietMode, setChatQuietMode] = useState(() => loadJSON(CHAT_QUIET_MODE_KEY, true) !== false);
+  const [showLiveProgressDetails, setShowLiveProgressDetails] = useState(false);
   const [agentRunState, setAgentRunState] = useState(AGENT_RUN_STATES.IDLE);
   const [sessionTokens, setSessionTokens] = useState(0);
   const [steerInput, setSteerInput] = useState('');
@@ -1442,6 +1476,7 @@ function EpiCodeSpaceApp() {
   useEffect(() => { storeJSON(AGENT_KEY, activeAgent); }, [activeAgent]);
   useEffect(() => { storeJSON(MODELS_KEY, activeModels); }, [activeModels]);
   useEffect(() => { storeJSON(MODE_KEY, chatMode); }, [chatMode]);
+  useEffect(() => { storeJSON(CHAT_QUIET_MODE_KEY, chatQuietMode); }, [chatQuietMode]);
   useEffect(() => {
     const t = setTimeout(() => storeJSON(PREFS_KEY, { fontSize, wordWrap }), 300);
     return () => clearTimeout(t);
@@ -3118,6 +3153,7 @@ ${finalCode}
     setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, userMsg] } : c));
     if (!overrideMessage) setChatInput('');
     setChatImage(null);
+    setShowLiveProgressDetails(false);
     setIsTyping(true);
     setAgentRunState(AGENT_RUN_STATES.PLANNING);
 
@@ -3191,7 +3227,7 @@ ${finalCode}
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
       const MAX_ROUNDS_DEFAULT = 20;
-      const MAX_ROUNDS_DEEPSEEK = 36;
+      const MAX_ROUNDS_DEEPSEEK = 120;
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = isDeepSeekAgent ? MAX_ROUNDS_DEEPSEEK : MAX_ROUNDS_DEFAULT;
       const effectiveModel = chatMode === 'agent' && activeAgent === 'deepseek' && activeModel === 'deepseek-reasoner'
@@ -3356,13 +3392,14 @@ ${finalCode}
 
             const msgId = makeMessageId('assistant');
             const summary = summarizeFileChanges(allFileChanges);
+            const recap = buildExecutionRecap(allToolCalls, summary);
             if (summary.files.length > 0) {
               changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
             }
             const assistantMsg = {
               id: msgId,
               role: 'assistant',
-              content: data.content,
+              content: `${data.content || ''}${recap ? `\n\n---\n\n${recap}` : ''}`,
               agent: activeAgent,
               agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
               toolCalls: compactToolCalls(allToolCalls, 12),
@@ -3408,7 +3445,9 @@ ${finalCode}
 
             // Soft warning after MAX_TOOL_ROUNDS — does NOT block continuation.
             if (consecToolRounds === MAX_TOOL_ROUNDS) {
-              toast.warn?.(`⚠️ Warning: Approaching maximum tool rounds (${allToolCalls.length} calls). Consider summarizing or starting a new context soon. You can continue sending messages.`);
+              if (!chatQuietMode) {
+                toast.warn?.(`⚠️ Warning: Approaching maximum tool rounds (${allToolCalls.length} calls). Consider summarizing or starting a new context soon. You can continue sending messages.`);
+              }
             }
 
             // Show thinking text if present
@@ -3562,13 +3601,14 @@ ${finalCode}
                 if (runtimeErrors === 0) {
                   const msgId = makeMessageId('assistant');
                   const summary = summarizeFileChanges(allFileChanges);
+                  const recap = buildExecutionRecap(allToolCalls, summary);
                   if (summary.files.length > 0) {
                     changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
                   }
                   const assistantMsg = {
                     id: msgId,
                     role: 'assistant',
-                    content: `✅ Project roundup complete. Implemented and verified ${summary.files.length} file(s) with no analyzer/runtime errors detected in the latest checks.`,
+                    content: `✅ Project roundup complete. Implemented and verified ${summary.files.length} file(s) with no analyzer/runtime errors detected in the latest checks.${recap ? `\n\n---\n\n${recap}` : ''}`,
                     agent: activeAgent,
                     agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
                     toolCalls: compactToolCalls(allToolCalls, 12),
@@ -3678,13 +3718,14 @@ ${finalCode}
           // Unexpected response shape — treat as text
           const msgId = makeMessageId('assistant');
           const summary = summarizeFileChanges(allFileChanges);
+          const recap = buildExecutionRecap(allToolCalls, summary);
           if (summary.files.length > 0) {
             changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
           }
           const assistantMsg = {
             id: msgId,
             role: 'assistant',
-            content: data.content || 'Done.',
+            content: `${data.content || 'Done.'}${recap ? `\n\n---\n\n${recap}` : ''}`,
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
             toolCalls: compactToolCalls(allToolCalls, 12), steps: allSteps, mode: chatMode, timestamp: Date.now(),
             changedFiles: summary.files,
@@ -3707,13 +3748,14 @@ ${finalCode}
         {
           const msgId = makeMessageId('assistant');
           const summary = summarizeFileChanges(allFileChanges);
+          const recap = buildExecutionRecap(allToolCalls, summary);
           if (summary.files.length > 0) {
             changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
           }
           const finalMsg = {
             id: msgId,
             role: 'assistant',
-            content: `I've completed ${allToolCalls.length} operation${allToolCalls.length !== 1 ? 's' : ''} and reached the round limit. There may be more work remaining.`,
+            content: `I've completed ${allToolCalls.length} operation${allToolCalls.length !== 1 ? 's' : ''} and reached the round limit. There may be more work remaining.${recap ? `\n\n---\n\n${recap}` : ''}`,
             agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
             toolCalls: compactToolCalls(allToolCalls, 12), steps: allSteps, mode: chatMode, timestamp: Date.now(),
             changedFiles: summary.files,
@@ -3756,15 +3798,16 @@ ${finalCode}
         stateTransitions.push({ state: AGENT_RUN_STATES.FAILED, at: Date.now() });
         const msgId = makeMessageId('assistant');
         const summary = summarizeFileChanges(allFileChanges);
+        const recap = buildExecutionRecap(allToolCalls, summary);
         if (summary.files.length > 0) {
           changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
         }
         const assistantMsg = {
           id: msgId,
           role: 'assistant',
-          content: err?.retryable
+          content: (err?.retryable
             ? `⚠️ Upstream retries exhausted (${err.code || 'UPSTREAM_ERROR'}). Progress is checkpointed; click Continue to resume from the exact step.`
-            : `⚠️ API error: ${err?.message || 'Unknown error'}. Progress is checkpointed. Click Continue to retry from the last stable step.`,
+            : `⚠️ API error: ${err?.message || 'Unknown error'}. Progress is checkpointed. Click Continue to retry from the last stable step.`) + (recap ? `\n\n---\n\n${recap}` : ''),
           agent: activeAgent,
           agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
           toolCalls: compactToolCalls(allToolCalls, 12),
@@ -3797,7 +3840,7 @@ ${finalCode}
         setAgentRunState(AGENT_RUN_STATES.IDLE);
       }
     })();
-  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState, chatQuietMode]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
@@ -5468,22 +5511,48 @@ ${finalCode}
                   <div className="flex items-center gap-2 text-purple-400/80 text-[11px] font-semibold uppercase tracking-wider">
                     <Sparkles size={12} className={`${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'} animate-pulse`} /> {AGENT_REGISTRY[activeAgent]?.name}
                   </div>
-                  {/* Live thinking block — populated by progress messages */}
+                  {/* Live status block — optionally expand details in quiet mode */}
                   {(() => {
                     const progressMsg = messages.find(m => m._progress && m.agent === activeAgent);
                     const liveSteps = progressMsg?.steps || [];
                     const liveCalls = progressMsg?.toolCalls || [];
-                    return liveSteps.length > 0 || liveCalls.length > 0
-                      ? <ThinkingBlock steps={liveSteps} toolCalls={liveCalls} inProgress mode={chatMode} />
-                      : (
+                    const hasLiveDetails = liveSteps.length > 0 || liveCalls.length > 0;
+                    if (!hasLiveDetails) {
+                      return (
                         <div className="bg-transparent border border-fuchsia-500/20 text-purple-400 rounded-xl px-4 py-2.5 flex items-center gap-2 w-fit">
                           <Loader2 size={13} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
                           <span className="text-[11px] font-semibold uppercase tracking-wider">Thinking...</span>
                         </div>
                       );
+                    }
+                    if (chatQuietMode && !showLiveProgressDetails) {
+                      return (
+                        <div className="bg-transparent border border-fuchsia-500/20 text-purple-300 rounded-xl px-4 py-2.5 flex items-center gap-2 w-fit">
+                          <Loader2 size={13} className={`animate-spin ${AGENT_REGISTRY[activeAgent]?.color || 'text-fuchsia-400'}`} />
+                          <span className="text-[11px] font-semibold">Working quietly</span>
+                          <span className="text-[10px] text-purple-500/80">{liveCalls.length} calls · {liveSteps.length} steps</span>
+                        </div>
+                      );
+                    }
+                    return <ThinkingBlock steps={liveSteps} toolCalls={liveCalls} inProgress mode={chatMode} />;
                   })()}
                   {/* Stop / Steer controls */}
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setShowLiveProgressDetails((v) => !v)}
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/25 hover:text-purple-100 transition-colors"
+                    >
+                      {showLiveProgressDetails ? <EyeOff size={10} /> : <Eye size={10} />}
+                      {showLiveProgressDetails ? 'Hide live log' : 'Show live log'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setChatQuietMode((v) => !v)}
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/25 hover:text-purple-100 transition-colors"
+                    >
+                      {chatQuietMode ? 'Quiet mode on' : 'Quiet mode off'}
+                    </button>
                     <button type="button" onClick={handleOpenSteer} title="Stop and provide steering"
                       className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/25 hover:text-fuchsia-100 transition-colors">
                       <RotateCcw size={10} /> Steer
@@ -5547,7 +5616,7 @@ ${finalCode}
 
             {/* Chat Input */}
             <div className="p-3 bg-[#15092a] border-t border-fuchsia-500/20 shrink-0" style={{ paddingBottom: 'max(0.75rem, var(--sab))' }}>
-              {sessionTokens >= tokenCeiling && (
+              {sessionTokens >= tokenCeiling && !chatQuietMode && activeAgent !== 'deepseek' && (
                 <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-900/20 border border-amber-500/30 px-3 py-2 text-amber-300 text-[11px]">
                   <span className="text-base leading-none">⚠️</span>
                   <span>
