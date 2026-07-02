@@ -46,6 +46,15 @@ export const AGENT_REGISTRY = {
     capabilities: ['code_gen', 'refactor', 'explain', 'debug', 'file_ops', 'review'],
     models: OPENAI_MODELS,
   },
+  'backend-architect': {
+    id: 'backend-architect',
+    name: 'Backend Architect',
+    icon: 'sparkles',
+    color: 'text-cyan-400',
+    description: 'Strict backend API, database, and integration specialist',
+    capabilities: ['architecture', 'debug', 'review', 'docs', 'code_gen'],
+    models: OPENAI_MODELS,
+  },
   claude: {
     id: 'claude',
     name: 'Claude',

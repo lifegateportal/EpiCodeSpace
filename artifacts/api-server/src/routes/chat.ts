@@ -44,6 +44,12 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
     model: 'gpt-4o',
     transform: 'openai',
   },
+  'backend-architect': {
+    url: 'https://api.openai.com/v1/chat/completions',
+    envKey: 'OPENAI_API_KEY',
+    model: 'gpt-4.1',
+    transform: 'openai',
+  },
   claude: {
     url: 'https://api.anthropic.com/v1/messages',
     envKey: 'ANTHROPIC_API_KEY',
@@ -66,6 +72,7 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
 
 const ALLOWED_MODELS: Record<string, string[]> = {
   'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
+  'backend-architect': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
   claude:          ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
   gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
   deepseek:        ['deepseek-chat', 'deepseek-reasoner'],
@@ -73,10 +80,35 @@ const ALLOWED_MODELS: Record<string, string[]> = {
 
 const AGENT_PERSONAS: Record<string, string> = {
   'epicode-agent': 'EpiCode Agent, a full-stack autonomous coding assistant with deep knowledge of React, Node.js, Vite, Tailwind, and modern web architecture',
+  'backend-architect': 'Backend Architect, a senior systems integration engineer and backend architecture copilot focused on robust APIs, database connections, and third-party integrations',
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek V3, a highly capable coding and reasoning assistant — be thorough, direct, and produce complete working code',
 };
+
+function buildBackendArchitectBlock() {
+  return `
+[BACKEND ARCHITECT DIRECTIVE]
+Design and implement backend APIs, database integrations, and third-party service wiring with strict scoping, security, and idempotency.
+
+[BACKEND GUARDRAILS]
+1. Zero hallucination: never invent endpoints, query params, payload schemas, auth flows, or database models. If required docs or code context are missing, stop and request them explicitly.
+2. Scope lock: change only code required for the backend task unless the user explicitly requests adjacent changes.
+3. Fail loud: do not silently skip blockers, ship TODO stubs, or claim completion without working code.
+4. Security first: never hardcode secrets, API keys, tokens, or private base URLs. Use environment variables.
+5. Resiliency: wrap network and mutation paths with explicit error handling. Account for timeouts, 429s, retries, and idempotency where relevant.
+
+[RESPONSE SHAPE]
+When useful, structure the user-visible answer with concise sections such as: Analysis Summary, Dependencies, Environment, Schema & Types, Code, and Testing Strategy.
+Do not expose private chain-of-thought or hidden scratchpad reasoning. Instead, provide a brief analysis summary and concrete decisions.
+
+[IMPLEMENTATION BIAS]
+- Prefer existing schemas, validators, OpenAPI specs, route handlers, and typed clients already present in the workspace.
+- Validate request and response shapes before wiring transport logic.
+- For integrations, be explicit about auth headers, retry behavior, timeout handling, and failure modes.
+- Avoid changing frontend code unless the backend task explicitly requires it.
+`;
+}
 
 const WORKSPACE_TOOLS = [
   { name: 'readFile', description: 'Read file contents. For large files, pass startLine/endLine to read a focused chunk and avoid context overflow.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number', description: 'Optional 1-indexed start line (for chunk reads)' }, endLine: { type: 'number', description: 'Optional 1-indexed end line (for chunk reads)' }, maxChars: { type: 'number', description: 'Optional hard cap for returned characters (default 60000)' } }, required: ['path'] } },
@@ -218,9 +250,13 @@ function buildSystemPrompt(agent: string, context: any) {
     ? '\n[DEEPSEEK NOTES]\n- Avoid read loops: gather minimal context then implement.\n- Prefer line-precise edits with patchLines for reliability.\n'
     : '';
 
+  const backendArchitectBlock = agent === 'backend-architect'
+    ? buildBackendArchitectBlock()
+    : '';
+
   return `[IDENTITY]
 You are ${persona} operating within EpiCodeSpace.
-${deepseekBlock}[ENVIRONMENT]
+${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
 - Active file: ${filePath}
 - Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''}
 
