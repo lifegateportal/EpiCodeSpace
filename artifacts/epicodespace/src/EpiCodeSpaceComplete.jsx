@@ -112,6 +112,48 @@ function OpfsToggle({ onNotify }) {
   );
 }
 
+const URL_IN_TEXT_RE = /https?:\/\/[^\s)]+/gi;
+
+function isPublicIpv4Host(hostname) {
+  const m = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const parts = m.slice(1).map((n) => Number(n));
+  if (parts.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return false;
+  const [a, b] = parts;
+  if (a === 10) return false;
+  if (a === 127) return false;
+  if (a === 0) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  return true;
+}
+
+function isUsefulDirectPreviewUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (!/^https?:$/.test(url.protocol)) return false;
+    if (!url.port) return false;
+    if (/\/api\/preview\//i.test(url.pathname)) return false;
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return false;
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPublicIpv4Host(host);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractDirectPreviewUrl(line) {
+  if (!line || typeof line !== 'string') return '';
+  const matches = line.match(URL_IN_TEXT_RE) || [];
+  for (const candidate of matches) {
+    const clean = candidate.replace(/[.,;:!?]+$/, '');
+    if (isUsefulDirectPreviewUrl(clean)) return clean;
+  }
+  return '';
+}
+
 /* ─── Error Boundary ────────────────────────────────────────────────────────── */
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -1037,6 +1079,7 @@ function EpiCodeSpaceApp() {
   const [showAbout, setShowAbout] = useState(false);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [wcServerUrl, setWcServerUrl] = useState('');
+  const [directPreviewUrl, setDirectPreviewUrl] = useState('');
   const setPreviewUrl = setWcServerUrl; // alias used by WebContainerTerminal
   // Lazy-load gate: the user must explicitly tap "Load Preview" before the
   // WebContainer preview iframe loads. Auto-loading it immediately after
@@ -1167,6 +1210,7 @@ function EpiCodeSpaceApp() {
     if (state !== 'ready') {
       autoDevStartedRef.current = false;
       setWcServerUrl('');
+      setDirectPreviewUrl('');
     }
   }), []);
 
@@ -3774,6 +3818,11 @@ ${finalCode}
     const buf = terminalOutputRef.current;
     buf.push(line);
     if (buf.length > 300) terminalOutputRef.current = buf.slice(-300);
+
+    const detectedDirectUrl = extractDirectPreviewUrl(line);
+    if (detectedDirectUrl) {
+      setDirectPreviewUrl((prev) => (prev === detectedDirectUrl ? prev : detectedDirectUrl));
+    }
   }, []);
 
   const handleTerminalCommand = useCallback((cmd) => {
@@ -4693,6 +4742,17 @@ ${finalCode}
                     >
                       <ExternalLink size={11} /> Open Tab
                     </button>
+                    {directPreviewUrl && (
+                      <a
+                        href={directPreviewUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[11px] text-amber-300/80 hover:text-amber-200 hover:bg-amber-500/10 border border-amber-500/20 transition-colors"
+                        title="Open direct app URL from runtime output"
+                      >
+                        <ExternalLink size={11} /> Direct Link
+                      </a>
+                    )}
                   </div>
 
                   {/* Preview content */}
