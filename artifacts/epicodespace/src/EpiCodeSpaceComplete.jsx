@@ -805,6 +805,40 @@ function looksLikeWorkspaceChangeRequest(text) {
   return /(fix|update|change|modify|edit|patch|write|save|create|add|remove|delete|rename|refactor|implement|build|generate|scaffold)/.test(value);
 }
 
+function looksLikeWebsiteBuildRequest(text) {
+  const value = (text || '').toLowerCase();
+  return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
+}
+
+function assessWebsiteCoreCompletion(fs) {
+  const paths = Object.keys(fs || {});
+  const hasPath = (re) => paths.some((p) => re.test(p));
+
+  const packageJsonRaw = fs?.['package.json']?.content || '{}';
+  let scripts = {};
+  try {
+    scripts = JSON.parse(packageJsonRaw)?.scripts || {};
+  } catch {
+    scripts = {};
+  }
+
+  const checks = {
+    htmlEntry: hasPath(/^(index\.html|public\/index\.html|src\/index\.html)$/),
+    appEntry: hasPath(/^src\/(main|index)\.(js|jsx|ts|tsx)$/),
+    primaryUi: hasPath(/^src\/(app|App|pages\/.*|components\/.*)\.(js|jsx|ts|tsx)$/),
+    styling: hasPath(/\.(css|scss|sass|less)$/),
+    runScripts: typeof scripts.dev === 'string' && scripts.dev.length > 0 && typeof scripts.build === 'string' && scripts.build.length > 0,
+  };
+
+  const score = Object.values(checks).filter(Boolean).length;
+  const complete = (checks.htmlEntry && checks.appEntry && checks.primaryUi && checks.styling) || score >= 4;
+  const missing = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([k]) => k);
+
+  return { complete, score, checks, missing };
+}
+
 const IMAGE_MIME_TO_EXT = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -3191,6 +3225,9 @@ ${finalCode}
       ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
       : null;
     const resumeState = resumeMsg?.resumeState || null;
+    const websiteBuildMode = (typeof resumeState?.websiteBuildMode === 'boolean')
+      ? resumeState.websiteBuildMode
+      : looksLikeWebsiteBuildRequest(userMessage);
 
     let history = resumeState?.history
       ? [...resumeState.history, { role: 'user', content: apiUserContent }]
@@ -3377,6 +3414,11 @@ ${finalCode}
               round === 0 &&
               allToolCalls.length === 0 &&
               looksLikeWorkspaceChangeRequest(userMessage);
+            const websiteStatus = websiteBuildMode ? assessWebsiteCoreCompletion(currentFS) : null;
+            const shouldContinueWebsiteBuild =
+              chatMode === 'agent' &&
+              websiteBuildMode &&
+              !websiteStatus?.complete;
 
             if (shouldForceToolRetry) {
               history = [
@@ -3387,6 +3429,19 @@ ${finalCode}
                 },
               ].slice(-22);
               allSteps.push('⚠️ Plain-text reply in agent mode; retrying once with forced tool-use reminder.');
+              continue;
+            }
+
+            if (shouldContinueWebsiteBuild) {
+              const missingText = (websiteStatus?.missing || []).join(', ') || 'core website aspects';
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: `Continue building the website. Do not finalize yet. Remaining core aspects to implement: ${missingText}. Use tools to complete these now.`,
+                },
+              ].slice(-22);
+              allSteps.push(`⚠️ Website build not complete yet (score ${websiteStatus?.score || 0}/5). Continuing implementation.`);
               continue;
             }
 
@@ -3599,6 +3654,21 @@ ${finalCode}
                   ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
                   : 0;
                 if (runtimeErrors === 0) {
+                  if (websiteBuildMode) {
+                    const websiteStatus = assessWebsiteCoreCompletion(currentFS);
+                    if (!websiteStatus.complete) {
+                      const missingText = websiteStatus.missing.join(', ') || 'core website aspects';
+                      history = [
+                        ...history,
+                        {
+                          role: 'user',
+                          content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
+                        },
+                      ].slice(-22);
+                      allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
+                      continue;
+                    }
+                  }
                   const msgId = makeMessageId('assistant');
                   const summary = summarizeFileChanges(allFileChanges);
                   const recap = buildExecutionRecap(allToolCalls, summary);
@@ -3775,6 +3845,7 @@ ${finalCode}
                 ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
                 : [],
               lastToolCallSig,
+              websiteBuildMode,
               activeWorkFile,
               supportReadFiles,
               consecReadOnlyRounds,
@@ -3825,6 +3896,7 @@ ${finalCode}
               ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
               : [],
             lastToolCallSig,
+            websiteBuildMode,
             activeWorkFile,
             supportReadFiles,
             consecReadOnlyRounds,
