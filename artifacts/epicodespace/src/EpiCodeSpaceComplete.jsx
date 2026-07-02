@@ -3092,6 +3092,7 @@ ${finalCode}
       let supportReadFiles = Array.isArray(resumeState?.supportReadFiles)
         ? resumeState.supportReadFiles.filter((p) => typeof p === 'string')
         : [];
+      let stagnationRounds = Number(resumeState?.stagnationRounds || 0);
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
@@ -3110,37 +3111,63 @@ ${finalCode}
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
 
       try {
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const requestChatRound = async (payload) => {
+          const MAX_ATTEMPTS = 3;
+          let lastErr = null;
+          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            try {
+              const _fetchFn = (p, sig) => fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(p),
+                signal: sig,
+              });
+
+              const { response: res, usedRoute: _autoRoute } = await autoFetch(
+                payload,
+                userMessage,
+                chatAbortRef.current?.signal,
+                _fetchFn
+              );
+
+              if (_autoRoute) {
+                payload.agent = _autoRoute.agent;
+                payload.model = _autoRoute.model;
+              }
+
+              const data = await res.json();
+              if (res.ok) return data;
+
+              const hint = data.missingKey
+                ? ` Go to Vercel → Project → Settings → Environment Variables, add ${data.missingKey}, and redeploy.`
+                : '';
+              const e = new Error((data.error || `API error ${res.status}`) + hint);
+              e.retryable = !!data.retryable;
+              e.code = data.code;
+              lastErr = e;
+
+              if (!data.retryable || attempt === MAX_ATTEMPTS - 1) throw e;
+
+              allSteps.push(`🔁 Upstream retry ${attempt + 1}/${MAX_ATTEMPTS - 1} after ${data.code || 'error'}`);
+              await sleep(500 * (2 ** attempt));
+            } catch (err) {
+              lastErr = err;
+              if (attempt === MAX_ATTEMPTS - 1) throw err;
+              await sleep(500 * (2 ** attempt));
+            }
+          }
+          throw lastErr || new Error('Chat round failed');
+        };
+
         for (let round = 0; round < roundLimit; round++) {
           const payload = { agent: activeAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
           }
-
-          const _fetchFn = (p, sig) => fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(p),
-            signal: sig,
-          });
-          const { response: res, usedRoute: _autoRoute } = await autoFetch(
-            payload,
-              userMessage,
-            chatAbortRef.current?.signal,
-            _fetchFn
-          );
-          // If Auto routing swapped the agent/model, reflect it in the payload for tool-round continuity
-          if (_autoRoute) {
-            payload.agent = _autoRoute.agent;
-            payload.model = _autoRoute.model;
-          }
-          const data = await res.json();
-          if (!res.ok) {
-            const hint = data.missingKey
-              ? ` Go to Vercel → Project → Settings → Environment Variables, add ${data.missingKey}, and redeploy.`
-              : '';
-            throw new Error((data.error || `API error ${res.status}`) + hint);
-          }
+          const data = await requestChatRound(payload);
 
           // If model returned text only, we're done
           if (data.type === 'text') {
@@ -3364,6 +3391,37 @@ ${finalCode}
                     content: `Post-edit verification found remaining errors. Fix these before finalizing: ${issueText}. Use write tools now.`,
                   },
                 ].slice(-22);
+              } else if (verificationIssues.length === 0 && changedPaths.length > 0 && !activeWorkFile) {
+                const runtimeCheck = await executeToolCall('getProblems', { lines: 120 }, currentFS);
+                const runtimeErrors = runtimeCheck?.ok
+                  ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
+                  : 0;
+                if (runtimeErrors === 0) {
+                  const msgId = makeMessageId('assistant');
+                  const summary = summarizeFileChanges(allFileChanges);
+                  if (summary.files.length > 0) {
+                    changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+                  }
+                  const assistantMsg = {
+                    id: msgId,
+                    role: 'assistant',
+                    content: `✅ Project roundup complete. Implemented and verified ${summary.files.length} file(s) with no analyzer/runtime errors detected in the latest checks.`,
+                    agent: activeAgent,
+                    agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                    toolCalls: compactToolCalls(allToolCalls, 12),
+                    steps: allSteps,
+                    mode: chatMode,
+                    timestamp: Date.now(),
+                    changedFiles: summary.files,
+                    changedPlus: summary.totalPlus,
+                    changedMinus: summary.totalMinus,
+                  };
+                  setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+                  setConversations(prev => prev.map(c => c.id === activeConvoId
+                    ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
+                    : c));
+                  return;
+                }
               }
             }
             // Run terminal commands requested by agent
@@ -3400,6 +3458,49 @@ ${finalCode}
               return !!toolResults?.[i]?.result?.ok;
             });
             consecReadOnlyRounds = roundHasWrite ? 0 : consecReadOnlyRounds + 1;
+
+            const roundMadeProgress = !!changed || roundHasWrite || cmdsToRun.length > 0;
+            stagnationRounds = roundMadeProgress ? 0 : stagnationRounds + 1;
+
+            if (stagnationRounds >= 4) {
+              const msgId = makeMessageId('assistant');
+              const summary = summarizeFileChanges(allFileChanges);
+              if (summary.files.length > 0) {
+                changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+              }
+              const finalMsg = {
+                id: msgId,
+                role: 'assistant',
+                content: `⚠️ Stopping to prevent endless iteration after ${stagnationRounds} low-progress rounds. Current work is checkpointed; click Continue to proceed with a narrower goal (one concrete file outcome).`,
+                agent: activeAgent,
+                agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                toolCalls: compactToolCalls(allToolCalls, 12),
+                steps: allSteps,
+                mode: chatMode,
+                timestamp: Date.now(),
+                changedFiles: summary.files,
+                changedPlus: summary.totalPlus,
+                changedMinus: summary.totalMinus,
+                canContinue: true,
+                resumeState: {
+                  history: packChatHistory(history, activeFile, userMessage, 20),
+                  pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
+                  toolResults: Array.isArray(toolResults)
+                    ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
+                    : [],
+                  lastToolCallSig,
+                  activeWorkFile,
+                  supportReadFiles,
+                  consecReadOnlyRounds,
+                  stagnationRounds,
+                  allSteps: allSteps.slice(-120),
+                  allToolCalls: allToolCalls.slice(-120),
+                },
+              };
+              setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
+              setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), finalMsg] } : c));
+              return;
+            }
 
             if (consecReadOnlyRounds >= 3) {
               const msg = `🚨 You are stuck in a read loop (${consecReadOnlyRounds} read-only rounds). Use available context and perform a concrete change now (patchLines/editFile/writeFile), or runTests/runLint/runTypecheck if verification is the blocker.`;
@@ -3487,6 +3588,7 @@ ${finalCode}
               activeWorkFile,
               supportReadFiles,
               consecReadOnlyRounds,
+              stagnationRounds,
               allSteps: allSteps.slice(-120),
               allToolCalls: allToolCalls.slice(-120),
             },
@@ -3501,23 +3603,47 @@ ${finalCode}
           setMessages(prev => prev.filter(m => !m._progress));
           return;
         }
-        logger.error('chat', 'API call failed — falling back to local agent', { message: err?.message });
+        logger.error('chat', 'API call failed', { message: err?.message, code: err?.code, retryable: err?.retryable });
         setAgentRunState(AGENT_RUN_STATES.FAILED);
         stateTransitions.push({ state: AGENT_RUN_STATES.FAILED, at: Date.now() });
-        // Fallback to local simulated response
-        const tools = createSharedAgentTools(fileSystem, activeFile);
-        const { response: fallbackResponse } = buildSharedAgentResponse(activeAgent, userMessage, tools, fileSystem, activeFile);
         const msgId = makeMessageId('assistant');
+        const summary = summarizeFileChanges(allFileChanges);
+        if (summary.files.length > 0) {
+          changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+        }
         const assistantMsg = {
           id: msgId,
           role: 'assistant',
-          content: `⚠️ *API unavailable — using local mode*\n\n${fallbackResponse}`,
-          agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-          toolCalls: compactToolCalls(allToolCalls, 12), steps: [...allSteps, `⚠️ API error: ${err.message}`],
-          mode: chatMode, timestamp: Date.now(),
+          content: err?.retryable
+            ? `⚠️ Temporary upstream disconnect (${err.code || 'UPSTREAM_ERROR'}). Progress is checkpointed. Click Continue to resume from the exact step.`
+            : `⚠️ API error: ${err?.message || 'Unknown error'}. Progress is checkpointed. Click Continue to retry from the last stable step.`,
+          agent: activeAgent,
+          agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+          toolCalls: compactToolCalls(allToolCalls, 12),
+          steps: [...allSteps, `⚠️ API error: ${err?.message || 'Unknown error'}`],
+          mode: chatMode,
+          timestamp: Date.now(),
+          changedFiles: summary.files,
+          changedPlus: summary.totalPlus,
+          changedMinus: summary.totalMinus,
+          canContinue: true,
+          resumeState: {
+            history: packChatHistory(history, activeFile, userMessage, 20),
+            pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
+            toolResults: Array.isArray(toolResults)
+              ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
+              : [],
+            lastToolCallSig,
+            activeWorkFile,
+            supportReadFiles,
+            consecReadOnlyRounds,
+            stagnationRounds,
+            allSteps: allSteps.slice(-120),
+            allToolCalls: allToolCalls.slice(-120),
+          },
         };
         setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
-        setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
+        setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] } : c));
       } finally {
         setIsTyping(false);
         setAgentRunState(AGENT_RUN_STATES.IDLE);

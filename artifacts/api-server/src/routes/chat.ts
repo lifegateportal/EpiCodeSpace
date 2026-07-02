@@ -156,8 +156,8 @@ function getToolsForMode(mode: string) {
   return WORKSPACE_TOOLS;
 }
 
-const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '45000'));
-const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '2'));
+const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '90000'));
+const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '3'));
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -255,7 +255,14 @@ ${deepseekBlock}[ENVIRONMENT]
 Policy map: ${policyPreview}
 
 [VERIFICATION]
-After edits, verify changed files. If error-level issues remain, keep fixing before finalizing.`;
+After edits, verify changed files. If error-level issues remain, keep fixing before finalizing.
+
+[DONE CRITERIA]
+Finish and provide a final completion response when ALL are true:
+1. Primary file work is implemented.
+2. Verification shows no error-level issues in touched files.
+3. No new high-severity runtime/build errors in recent terminal/problem checks.
+If blocked, checkpoint progress and provide the narrowest next actionable step.`;
 }
 
 function buildContextMessage(context: any) {
