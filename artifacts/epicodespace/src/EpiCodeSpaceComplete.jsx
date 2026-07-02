@@ -757,6 +757,43 @@ function isWritePolicy(toolName) {
   return TOOL_POLICY[toolName] === 'safe_write' || TOOL_POLICY[toolName] === 'risky_write' || TOOL_POLICY[toolName] === 'command';
 }
 
+function isFileWriteTool(toolName) {
+  const p = TOOL_POLICY[toolName];
+  return p === 'safe_write' || p === 'risky_write';
+}
+
+function compactMessageForStorage(msg) {
+  if (!msg || typeof msg !== 'object') return msg;
+  const out = { ...msg };
+  delete out._progress;
+  if (Array.isArray(out.steps) && out.steps.length > 80) out.steps = out.steps.slice(-80);
+  if (Array.isArray(out.toolCalls) && out.toolCalls.length > 60) out.toolCalls = compactToolCalls(out.toolCalls, 60);
+  if (typeof out.content === 'string' && out.content.length > 120000) {
+    out.content = `${out.content.slice(0, 110000)}\n\n...[truncated for local storage budget]...`;
+  }
+  if (out.resumeState && typeof out.resumeState === 'object') {
+    const rs = out.resumeState;
+    out.resumeState = {
+      ...rs,
+      history: Array.isArray(rs.history) ? rs.history.slice(-20) : [],
+      pendingToolCalls: Array.isArray(rs.pendingToolCalls) ? rs.pendingToolCalls.slice(-40) : [],
+      toolResults: Array.isArray(rs.toolResults) ? rs.toolResults.slice(-40) : [],
+      allSteps: Array.isArray(rs.allSteps) ? rs.allSteps.slice(-120) : [],
+      allToolCalls: Array.isArray(rs.allToolCalls) ? compactToolCalls(rs.allToolCalls, 120) : [],
+    };
+  }
+  return out;
+}
+
+function compactConversationsForStorage(convos, perConvoMessageCap = 120) {
+  if (!Array.isArray(convos)) return [];
+  return convos.map((c) => {
+    const msgs = Array.isArray(c?.messages) ? c.messages.filter((m) => !m?._progress) : [];
+    const clipped = msgs.slice(-perConvoMessageCap).map(compactMessageForStorage);
+    return { ...c, messages: clipped };
+  });
+}
+
 function packChatHistory(messages, activeFile, userMessage, maxItems = 20) {
   if (!Array.isArray(messages) || messages.length <= maxItems) return messages;
 
@@ -1504,7 +1541,31 @@ function EpiCodeSpaceApp() {
     void refreshStorageMonitor();
   }, [refreshStorageMonitor, toast]);
   useEffect(() => {
-    const t = setTimeout(() => storeJSON(CONVOS_KEY, conversations), 400);
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(CONVOS_KEY, JSON.stringify(conversations));
+      } catch {
+        // Fall back to compact persistence so assistant replies are retained
+        // instead of losing the entire conversation on quota pressure.
+        try {
+          const compact = compactConversationsForStorage(conversations, 120);
+          localStorage.setItem(CONVOS_KEY, JSON.stringify(compact));
+        } catch {
+          try {
+            const compactHard = compactConversationsForStorage(conversations, 60);
+            localStorage.setItem(CONVOS_KEY, JSON.stringify(compactHard));
+          } catch {
+            // Final fallback: keep most recent conversation only.
+            try {
+              const latest = compactConversationsForStorage(conversations.slice(-1), 80);
+              localStorage.setItem(CONVOS_KEY, JSON.stringify(latest));
+            } catch {
+              /* no-op */
+            }
+          }
+        }
+      }
+    }, 400);
     return () => clearTimeout(t);
   }, [conversations]);
   useEffect(() => { storeJSON(AGENT_KEY, activeAgent); }, [activeAgent]);
@@ -3693,12 +3754,29 @@ ${finalCode}
             }
 
             const roundWriteSuccesses = data.tool_calls.reduce((count, tc, idx) => {
-              const policyWrite = isWritePolicy(tc.name);
+              const policyWrite = isFileWriteTool(tc.name);
               const ok = !!toolResults?.[idx]?.result?.ok;
               return policyWrite && ok ? count + 1 : count;
             }, 0);
             totalWriteSuccesses += roundWriteSuccesses;
             noWriteRounds = roundWriteSuccesses > 0 ? 0 : noWriteRounds + 1;
+
+            if (
+              chatMode === 'agent' &&
+              looksLikeWorkspaceChangeRequest(userMessage) &&
+              allToolCalls.length >= 24 &&
+              totalWriteSuccesses < 3 &&
+              noWriteRounds >= 2
+            ) {
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: 'Progress gate: too many tool calls without concrete edits. Stop command retries and read loops. Perform file writes now (editFile/writeFile/patchLines), then verify.',
+                },
+              ].slice(-22);
+              allSteps.push(`⚠️ Progress gate triggered: ${allToolCalls.length} calls with ${totalWriteSuccesses} file write(s). Forcing write-first behavior.`);
+            }
 
             // Apply filesystem mutations
             const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
