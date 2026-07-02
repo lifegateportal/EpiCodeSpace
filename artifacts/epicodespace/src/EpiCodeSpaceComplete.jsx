@@ -3485,43 +3485,16 @@ ${finalCode}
             stagnationRounds = roundMadeProgress ? 0 : stagnationRounds + 1;
 
             if (stagnationRounds >= 4) {
-              const msgId = makeMessageId('assistant');
-              const summary = summarizeFileChanges(allFileChanges);
-              if (summary.files.length > 0) {
-                changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
-              }
-              const finalMsg = {
-                id: msgId,
-                role: 'assistant',
-                content: `⚠️ Stopping to prevent endless iteration after ${stagnationRounds} low-progress rounds. Current work is checkpointed; click Continue to proceed with a narrower goal (one concrete file outcome).`,
-                agent: activeAgent,
-                agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-                toolCalls: compactToolCalls(allToolCalls, 12),
-                steps: allSteps,
-                mode: chatMode,
-                timestamp: Date.now(),
-                changedFiles: summary.files,
-                changedPlus: summary.totalPlus,
-                changedMinus: summary.totalMinus,
-                canContinue: true,
-                resumeState: {
-                  history: packChatHistory(history, activeFile, userMessage, 20),
-                  pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
-                  toolResults: Array.isArray(toolResults)
-                    ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
-                    : [],
-                  lastToolCallSig,
-                  activeWorkFile,
-                  supportReadFiles,
-                  consecReadOnlyRounds,
-                  stagnationRounds,
-                  allSteps: allSteps.slice(-120),
-                  allToolCalls: allToolCalls.slice(-120),
+              allSteps.push(`⚠️ Low-progress detected (${stagnationRounds} rounds). Auto-steering to finish one concrete file outcome.`);
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: 'System steering: No interruption. Finish one concrete file outcome now. Do not branch to new files. Implement, verify, and conclude.',
                 },
-              };
-              setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
-              setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), finalMsg] } : c));
-              return;
+              ].slice(-22);
+              // Reset so this steering can take effect without repetitive spam.
+              stagnationRounds = 0;
             }
 
             if (consecReadOnlyRounds >= 3) {
