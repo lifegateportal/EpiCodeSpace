@@ -1201,11 +1201,39 @@ function EpiCodeSpaceApp() {
           return;
         }
 
+        const detectPmFromFiles = () => {
+          let pkg = {};
+          try {
+            pkg = JSON.parse(fileSystem['package.json']?.content || '{}');
+          } catch {
+            pkg = {};
+          }
+          const pmField = String(pkg.packageManager || '').toLowerCase();
+          const hasPnpmLock = !!fileSystem['pnpm-lock.yaml'];
+          const hasYarnLock = !!fileSystem['yarn.lock'];
+          const hasBunLock = !!fileSystem['bun.lockb'];
+          if (pmField.startsWith('pnpm') || hasPnpmLock) return 'pnpm';
+          if (pmField.startsWith('yarn') || hasYarnLock) return 'yarn';
+          if (pmField.startsWith('bun') || hasBunLock) return 'bun';
+          return 'npm';
+        };
+
+        const pm = detectPmFromFiles();
+        const bootCmd = pm === 'pnpm'
+          ? 'pnpm install --prod=false && pnpm run dev'
+          : pm === 'yarn'
+            ? 'yarn install && yarn dev'
+            : pm === 'bun'
+              ? 'bun install && bun run dev'
+              : 'npm install --include=dev && npm run dev';
+
+        logger.info('runtime', `preview auto-start using ${pm}: ${bootCmd}`);
+
         await bridge.boot({ files: fileSystem });
         if (cancelled) return;
 
         const container = bridge.getContainer();
-        const proc = await container.spawn('npm', ['run', 'dev'], {
+        const proc = await container.spawn('jsh', ['-lc', bootCmd], {
           terminal: { cols: 80, rows: 24 },
         });
         autoDevProcessRef.current = proc;
