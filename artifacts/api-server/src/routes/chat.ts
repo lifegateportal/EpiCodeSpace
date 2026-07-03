@@ -234,6 +234,12 @@ function buildContextMessage(context: any) {
     parts.push(`File contents (line numbers shown — use patchLines to edit by line range):\n\`\`\`\n${numbered}${suffix}\n\`\`\`\n⚠ This file is already in your context. Do NOT call readFile for it — use patchLines, editFile, or writeFile to make changes immediately.`);
   }
   if (context.files?.length) parts.push(`Workspace files: ${context.files.map((f: any) => `${f.path} (${f.language}, ${f.lines} lines)`).join(', ')}`);
+  if (Array.isArray(context.reasonerRelevantFiles) && context.reasonerRelevantFiles.length > 0) {
+    const relevant = context.reasonerRelevantFiles
+      .map((f: any) => `Relevant file: ${f.path}\n\n\`\`\`\n${f.excerpt || ''}\n\`\`\``)
+      .join('\n\n');
+    parts.push(`Relevant file bundle for planning:\n${relevant}`);
+  }
   if (context.terminalOutput) {
     const t = context.terminalOutput.length > 3000 ? '...(truncated)\n' + context.terminalOutput.slice(-3000) : context.terminalOutput;
     parts.push(`Recent terminal output (auto-captured for debugging):\n\`\`\`\n${t}\n\`\`\`\nNote: These are the last lines from the user's terminal. Look for errors, warnings, or build failures.`);

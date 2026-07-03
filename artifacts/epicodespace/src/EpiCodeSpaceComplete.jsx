@@ -847,6 +847,90 @@ function looksLikeWebsiteBuildRequest(text) {
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
 }
 
+const REASONER_CONTEXT_FILE_LIMIT = 8;
+const REASONER_CONTEXT_FILE_CHARS = 2200;
+
+function buildReasonerNeedles(userMessage, activeFile, pinnedFilePath) {
+  const needles = new Set(
+    String(userMessage || '')
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((word) => word.length >= 4)
+  );
+
+  for (const path of [activeFile, pinnedFilePath]) {
+    const normalized = String(path || '').toLowerCase();
+    for (const part of normalized.split(/[\/._-]+/)) {
+      if (part.length >= 4) needles.add(part);
+    }
+  }
+
+  return Array.from(needles);
+}
+
+function buildReasonerExcerpt(content, needles, maxChars = REASONER_CONTEXT_FILE_CHARS) {
+  const lines = String(content || '').split('\n');
+  const lowered = lines.map((line) => line.toLowerCase());
+  let focusLine = 0;
+
+  for (const needle of needles) {
+    const idx = lowered.findIndex((line) => line.includes(needle));
+    if (idx >= 0) {
+      focusLine = idx;
+      break;
+    }
+  }
+
+  const start = Math.max(0, focusLine - 12);
+  const numbered = [];
+  let usedChars = 0;
+
+  for (let i = start; i < lines.length; i++) {
+    const numberedLine = `${String(i + 1).padStart(4, ' ')} │ ${lines[i]}`;
+    if (numbered.length > 0 && usedChars + numberedLine.length + 1 > maxChars) break;
+    numbered.push(numberedLine);
+    usedChars += numberedLine.length + 1;
+  }
+
+  return numbered.join('\n');
+}
+
+function buildReasonerRelevantFiles(fs, activeFile, userMessage, pinnedFilePath, maxFiles = REASONER_CONTEXT_FILE_LIMIT) {
+  const needles = buildReasonerNeedles(userMessage, activeFile, pinnedFilePath);
+  const candidates = [];
+
+  for (const [path, entry] of Object.entries(fs || {})) {
+    if (!entry || typeof entry !== 'object' || typeof entry.content !== 'string') continue;
+    if (!entry.content.trim()) continue;
+
+    const lowerPath = path.toLowerCase();
+    const lowerContent = entry.content.toLowerCase();
+    let score = 0;
+
+    if (path === activeFile) score += 100;
+    if (path === pinnedFilePath) score += 80;
+    if (/package\.json$|tsconfig|vite\.config|tailwind\.config|openapi\.ya?ml|schema\//i.test(path)) score += 4;
+
+    for (const needle of needles) {
+      if (lowerPath.includes(needle)) score += 10;
+      if (lowerContent.includes(needle)) score += 3;
+    }
+
+    if (score <= 0) continue;
+
+    candidates.push({
+      path,
+      score,
+      excerpt: buildReasonerExcerpt(entry.content, needles),
+    });
+  }
+
+  return candidates
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, maxFiles)
+    .map(({ path, excerpt }) => ({ path, excerpt }));
+}
+
 function assessWebsiteCoreCompletion(fs) {
   const paths = Object.keys(fs || {});
   const hasPath = (re) => paths.some((p) => re.test(p));
@@ -3280,6 +3364,9 @@ ${finalCode}
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
+    if (activeAgent === 'deepseek' && chatMode === 'agent') {
+      context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath);
+    }
 
     const convo = conversations.find(c => c.id === activeConvoId);
     const resumeMsg = resumeFromMessageId
@@ -3408,7 +3495,7 @@ ${finalCode}
               ...history,
               {
                 role: 'user',
-                content: 'Before any tool calls, analyze this task and produce a concise execution brief. Return: 1) the concrete goal, 2) the controlling files or systems most likely involved, 3) the main risks or blockers, and 4) the recommended execution order. Do not call tools, do not claim completion, and do not write code yet.',
+                content: 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a visible numbered execution plan only. Required format: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
               },
             ],
             context,
@@ -3420,12 +3507,30 @@ ${finalCode}
             ? analysis.content.trim()
             : 'No analysis returned.';
 
+          const planMessage = {
+            id: makeMessageId('assistant'),
+            role: 'assistant',
+            content: `DeepSeek Reasoner Plan\n\n${analysisText}`,
+            agent: activeAgent,
+            agentName: `${AGENT_REGISTRY[activeAgent]?.name || 'Agent'} Reasoner`,
+            mode: 'plan',
+            timestamp: Date.now(),
+            toolCalls: [],
+            steps: allSteps.slice(),
+          };
+
+          setMessages(prev => [...prev.filter(m => !m._progress), planMessage]);
+          setConversations(prev => prev.map(c => c.id === activeConvoId
+            ? { ...c, messages: [...c.messages.filter(m => !m._progress), planMessage] }
+            : c));
+          await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
           history = [
             ...history,
-            { role: 'assistant', content: `[DeepSeek Reasoner pre-analysis]\n${analysisText}` },
+            { role: 'assistant', content: `[DeepSeek Reasoner plan]\n${analysisText}` },
             {
               role: 'user',
-              content: 'Use the DeepSeek Reasoner pre-analysis above as your planning baseline. Now execute the task with DeepSeek V3 and workspace tools. Keep the scope tight, but update the plan if direct code evidence or verification disproves the initial analysis.',
+              content: 'Use the printed DeepSeek Reasoner plan above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the plan requires unless direct code evidence or verification disproves the plan. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
             },
           ].slice(-22);
           history = packChatHistory(history, activeFile, userMessage, 20);
