@@ -931,6 +931,25 @@ function buildReasonerRelevantFiles(fs, activeFile, userMessage, pinnedFilePath,
     .map(({ path, excerpt }) => ({ path, excerpt }));
 }
 
+function extractReasonerVisibleSummary(planText) {
+  const text = String(planText || '').trim();
+  if (!text) return 'Preparing targeted implementation and verification.';
+
+  const explicitSummary = text.match(/(?:^|\n)summary\s*:\s*(.+)/i);
+  if (explicitSummary?.[1]) {
+    return explicitSummary[1].trim().slice(0, 240);
+  }
+
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !/^```/.test(line))
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+[.)]\s+/, '').trim());
+
+  const summaryLine = lines.find((line) => /goal|work on|focus|implement|fix|update/i.test(line)) || lines[0];
+  return (summaryLine || 'Preparing targeted implementation and verification.').slice(0, 240);
+}
+
 function assessWebsiteCoreCompletion(fs) {
   const paths = Object.keys(fs || {});
   const hasPath = (re) => paths.some((p) => re.test(p));
@@ -3426,6 +3445,7 @@ ${finalCode}
       let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
       let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
       let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
+      let deepseekPlanSummary = typeof resumeState?.deepseekPlanSummary === 'string' ? resumeState.deepseekPlanSummary : '';
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
 
@@ -3495,7 +3515,7 @@ ${finalCode}
               ...history,
               {
                 role: 'user',
-                content: 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a visible numbered execution plan only. Required format: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
+                content: 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. After that, include the full execution contract with: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
               },
             ],
             context,
@@ -3506,31 +3526,15 @@ ${finalCode}
           const analysisText = typeof analysis?.content === 'string' && analysis.content.trim()
             ? analysis.content.trim()
             : 'No analysis returned.';
-
-          const planMessage = {
-            id: makeMessageId('assistant'),
-            role: 'assistant',
-            content: `DeepSeek Reasoner Plan\n\n${analysisText}`,
-            agent: activeAgent,
-            agentName: `${AGENT_REGISTRY[activeAgent]?.name || 'Agent'} Reasoner`,
-            mode: 'plan',
-            timestamp: Date.now(),
-            toolCalls: [],
-            steps: allSteps.slice(),
-          };
-
-          setMessages(prev => [...prev.filter(m => !m._progress), planMessage]);
-          setConversations(prev => prev.map(c => c.id === activeConvoId
-            ? { ...c, messages: [...c.messages.filter(m => !m._progress), planMessage] }
-            : c));
-          await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+          deepseekPlanSummary = extractReasonerVisibleSummary(analysisText);
+          allSteps.push(`🧠 Plan summary: ${deepseekPlanSummary}`);
 
           history = [
             ...history,
-            { role: 'assistant', content: `[DeepSeek Reasoner plan]\n${analysisText}` },
+            { role: 'assistant', content: `[DeepSeek Reasoner execution contract]\n${analysisText}` },
             {
               role: 'user',
-              content: 'Use the printed DeepSeek Reasoner plan above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the plan requires unless direct code evidence or verification disproves the plan. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
+              content: 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
             },
           ].slice(-22);
           history = packChatHistory(history, activeFile, userMessage, 20);
@@ -4182,7 +4186,7 @@ ${finalCode}
               const progressMsg = prev.find(m => m._progress && m.agent === activeAgent);
               const msg = {
                 role: 'assistant', _progress: true,
-                content: `Working (${agentRunState})... (${allToolCalls.length} tool call${allToolCalls.length > 1 ? 's' : ''})`,
+                content: `Working (${agentRunState})... (${allToolCalls.length} tool call${allToolCalls.length > 1 ? 's' : ''})${deepseekPlanSummary ? `\nPlan: ${deepseekPlanSummary}` : ''}`,
                 agent: activeAgent, agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
                 toolCalls: compactToolCalls(allToolCalls, 12), steps: [...allSteps],
                 mode: chatMode, timestamp: Date.now(),
@@ -4257,6 +4261,7 @@ ${finalCode}
               totalWriteSuccesses,
               noWriteRounds,
               deepseekReasonerPrimed,
+              deepseekPlanSummary,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
               commandBlocked: Array.from(commandBlocked),
               activeWorkFile,
@@ -4313,6 +4318,7 @@ ${finalCode}
             totalWriteSuccesses,
             noWriteRounds,
             deepseekReasonerPrimed,
+            deepseekPlanSummary,
             commandFailureCounts: Object.fromEntries(commandFailureCounts),
             commandBlocked: Array.from(commandBlocked),
             activeWorkFile,
