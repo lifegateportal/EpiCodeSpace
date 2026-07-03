@@ -509,16 +509,11 @@ router.post('/chat', async (req, res) => {
     if (!baseConfig) { res.status(400).json({ error: `Unknown agent: ${agent}` }); return; }
 
     let resolvedModel = baseConfig.model;
-    let modelAutoAdjustedFrom: string | null = null;
     if (typeof model === 'string' && model.length > 0) {
       if (model.length > 100 || !ALLOWED_MODELS[agent]?.includes(model)) {
         res.status(400).json({ error: `Invalid model '${model}' for agent '${agent}'` }); return;
       }
       resolvedModel = model;
-    }
-    if (agent === 'deepseek' && safeMode === 'agent' && resolvedModel === 'deepseek-reasoner') {
-      modelAutoAdjustedFrom = resolvedModel;
-      resolvedModel = 'deepseek-chat';
     }
     const config = { ...baseConfig, model: resolvedModel };
     let activeAgent = agent;
@@ -585,7 +580,7 @@ router.post('/chat', async (req, res) => {
       result = await callProvider(activeConfig, activeApiKey!, fallbackSystemPrompt, apiMessages, useTools, providerTools);
     }
 
-    res.status(200).json({ ...result, agent: activeAgent, model: activeConfig.model || activeAgent, fallbackFrom: activeAgent !== agent ? agent : null, fallbackReason, modelAutoAdjustedFrom });
+    res.status(200).json({ ...result, agent: activeAgent, model: activeConfig.model || activeAgent, fallbackFrom: activeAgent !== agent ? agent : null, fallbackReason });
   } catch (err: any) {
     req.log.error({ err }, 'Chat API error');
     const timeoutHint = err?.isTimeout || /failed after retries/i.test(String(err?.message || ''));

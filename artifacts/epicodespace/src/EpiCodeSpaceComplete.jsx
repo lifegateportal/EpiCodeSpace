@@ -3326,16 +3326,19 @@ ${finalCode}
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
       const MAX_ROUNDS_DEFAULT = 20;
       const MAX_ROUNDS_DEEPSEEK = 120;
+      const DEEPSEEK_ANALYSIS_MODEL = 'deepseek-reasoner';
+      const DEEPSEEK_EXECUTION_MODEL = 'deepseek-chat';
       const isDeepSeekAgent = activeAgent === 'deepseek';
       const roundLimit = isDeepSeekAgent ? MAX_ROUNDS_DEEPSEEK : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = chatMode === 'agent' && activeAgent === 'deepseek' && activeModel === 'deepseek-reasoner'
-        ? 'deepseek-chat'
+      const effectiveModel = isDeepSeekAgent && chatMode === 'agent'
+        ? DEEPSEEK_EXECUTION_MODEL
         : activeModel;
-      const MAX_SUPPORT_READ_FILES = 2;
+      const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : 3;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
       let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
       let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
+      let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
 
@@ -3391,6 +3394,43 @@ ${finalCode}
             }
           }
           throw lastErr || new Error('Chat round failed');
+        };
+
+        const runDeepSeekReasonerPreflight = async () => {
+          if (!isDeepSeekAgent || chatMode !== 'agent' || deepseekReasonerPrimed) return;
+
+          allSteps.push('🧠 DeepSeek R1 pre-analysis before tool execution');
+
+          const analysisRequest = {
+            agent: 'deepseek',
+            model: DEEPSEEK_ANALYSIS_MODEL,
+            messages: [
+              ...history,
+              {
+                role: 'user',
+                content: 'Before any tool calls, analyze this task and produce a concise execution brief. Return: 1) the concrete goal, 2) the controlling files or systems most likely involved, 3) the main risks or blockers, and 4) the recommended execution order. Do not call tools, do not claim completion, and do not write code yet.',
+              },
+            ],
+            context,
+            mode: 'ask',
+          };
+
+          const analysis = await requestChatRound(analysisRequest);
+          const analysisText = typeof analysis?.content === 'string' && analysis.content.trim()
+            ? analysis.content.trim()
+            : 'No analysis returned.';
+
+          history = [
+            ...history,
+            { role: 'assistant', content: `[DeepSeek Reasoner pre-analysis]\n${analysisText}` },
+            {
+              role: 'user',
+              content: 'Use the DeepSeek Reasoner pre-analysis above as your planning baseline. Now execute the task with DeepSeek V3 and workspace tools. Keep the scope tight, but update the plan if direct code evidence or verification disproves the initial analysis.',
+            },
+          ].slice(-22);
+          history = packChatHistory(history, activeFile, userMessage, 20);
+          deepseekReasonerPrimed = true;
+          allSteps.push('✅ Reasoner analysis complete; DeepSeek V3 execution unlocked');
         };
 
         const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno)\s/i.test(String(cmd || '').trim());
@@ -3541,6 +3581,8 @@ ${finalCode}
           };
         };
 
+        await runDeepSeekReasonerPreflight();
+
         for (let round = 0; round < roundLimit; round++) {
           const payload = { agent: activeAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
@@ -3675,7 +3717,8 @@ ${finalCode}
             toolResults = [];
             const isWriteTool = (name) => name === 'writeFile' || name === 'editFile' || name === 'patchLines' || name === 'deleteFile' || name === 'searchAndReplace' || name === 'autoFix' || name === 'createComponent';
             const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
-            const enforceDeepSeekWriteAfterRead = activeAgent === 'deepseek' && chatMode === 'agent';
+            const enforceDeepSeekWriteAfterRead = false;
+            const enforceDeepSeekFocusBounds = false;
             let roundReadBudgetSpent = false;
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
 
@@ -3687,7 +3730,7 @@ ${finalCode}
             if (!activeWorkFile && proposedWritePaths.length > 0) {
               activeWorkFile = proposedWritePaths[0];
               supportReadFiles = [];
-              allSteps.push(`🎯 Single-file mode locked to ${activeWorkFile}`);
+              allSteps.push(`🎯 Primary work file: ${activeWorkFile}`);
             }
 
             for (const tc of data.tool_calls) {
@@ -3695,11 +3738,11 @@ ${finalCode}
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
               const activeFileReadBlocked = enforceDeepSeekWriteAfterRead && tc.name === 'readFile' && tcPath === activeFile;
-              const writeOutOfScope = !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
+              const writeOutOfScope = enforceDeepSeekFocusBounds && !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
               const blockedForReadLoop = enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && (writeRequiredBeforeMoreReads || roundReadBudgetSpent);
 
               let readOutOfScope = false;
-              if (!!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile) {
+              if (enforceDeepSeekFocusBounds && !!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile) {
                 if (!supportReadFiles.includes(tcPath) && supportReadFiles.length >= MAX_SUPPORT_READ_FILES) {
                   readOutOfScope = true;
                 }
@@ -3711,7 +3754,7 @@ ${finalCode}
                     ok: false,
                     blocked: true,
                     systemMessage: writeOutOfScope
-                      ? `Single-file write mode is active on ${activeWorkFile}. Finish and verify that file before writing ${tcPath}.`
+                      ? `Stay focused on ${activeWorkFile} unless the task clearly requires writing ${tcPath} next.`
                       : `Support reads are limited to ${MAX_SUPPORT_READ_FILES} files while focused on ${activeWorkFile}.`,
                     error: writeOutOfScope
                       ? `Blocked cross-file write: ${tcPath}`
@@ -4108,6 +4151,7 @@ ${finalCode}
               websiteBuildMode,
               totalWriteSuccesses,
               noWriteRounds,
+              deepseekReasonerPrimed,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
               commandBlocked: Array.from(commandBlocked),
               activeWorkFile,
@@ -4163,6 +4207,7 @@ ${finalCode}
             websiteBuildMode,
             totalWriteSuccesses,
             noWriteRounds,
+            deepseekReasonerPrimed,
             commandFailureCounts: Object.fromEntries(commandFailureCounts),
             commandBlocked: Array.from(commandBlocked),
             activeWorkFile,
