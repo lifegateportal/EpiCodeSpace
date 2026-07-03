@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { logger } from "../lib/logger";
+import { buildSystemPrompt } from "../lib/agentPromptPolicy";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -85,30 +86,6 @@ const AGENT_PERSONAS: Record<string, string> = {
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek V3, a highly capable coding and reasoning assistant — be thorough, direct, and produce complete working code',
 };
-
-function buildBackendArchitectBlock() {
-  return `
-[BACKEND ARCHITECT DIRECTIVE]
-Design and implement backend APIs, database integrations, and third-party service wiring with strict scoping, security, and idempotency.
-
-[BACKEND GUARDRAILS]
-1. Zero hallucination: never invent endpoints, query params, payload schemas, auth flows, or database models. If required docs or code context are missing, stop and request them explicitly.
-2. Scope lock: change only code required for the backend task unless the user explicitly requests adjacent changes.
-3. Fail loud: do not silently skip blockers, ship TODO stubs, or claim completion without working code.
-4. Security first: never hardcode secrets, API keys, tokens, or private base URLs. Use environment variables.
-5. Resiliency: wrap network and mutation paths with explicit error handling. Account for timeouts, 429s, retries, and idempotency where relevant.
-
-[RESPONSE SHAPE]
-When useful, structure the user-visible answer with concise sections such as: Analysis Summary, Dependencies, Environment, Schema & Types, Code, and Testing Strategy.
-Do not expose private chain-of-thought or hidden scratchpad reasoning. Instead, provide a brief analysis summary and concrete decisions.
-
-[IMPLEMENTATION BIAS]
-- Prefer existing schemas, validators, OpenAPI specs, route handlers, and typed clients already present in the workspace.
-- Validate request and response shapes before wiring transport logic.
-- For integrations, be explicit about auth headers, retry behavior, timeout handling, and failure modes.
-- Avoid changing frontend code unless the backend task explicitly requires it.
-`;
-}
 
 const WORKSPACE_TOOLS = [
   { name: 'readFile', description: 'Read file contents. For large files, pass startLine/endLine to read a focused chunk and avoid context overflow.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number', description: 'Optional 1-indexed start line (for chunk reads)' }, endLine: { type: 'number', description: 'Optional 1-indexed end line (for chunk reads)' }, maxChars: { type: 'number', description: 'Optional hard cap for returned characters (default 60000)' } }, required: ['path'] } },
@@ -236,69 +213,6 @@ async function fetchProvider(url: string, init: RequestInit, providerName: strin
   e.cause = lastError;
   e.isTimeout = isAbortError(lastError);
   throw e;
-}
-
-function buildSystemPrompt(agent: string, context: any) {
-  const persona = AGENT_PERSONAS[agent] || AGENT_PERSONAS['epicode-agent'];
-  const filePath = context?.activeFile || 'no file open';
-  const fileCount = context?.files?.length ?? 0;
-  const policyPreview = Object.entries(TOOL_POLICY)
-    .map(([tool, tier]) => `${tool}:${tier}`)
-    .join(', ');
-
-  const deepseekBlock = agent === 'deepseek'
-    ? '\n[DEEPSEEK NOTES]\n- Avoid read loops: gather minimal context then implement.\n- Prefer line-precise edits with patchLines for reliability.\n'
-    : '';
-
-  const backendArchitectBlock = agent === 'backend-architect'
-    ? buildBackendArchitectBlock()
-    : '';
-
-  return `[IDENTITY]
-You are ${persona} operating within EpiCodeSpace.
-${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
-- Active file: ${filePath}
-- Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''}
-
-[OPERATING RULES]
-1. In AGENT mode, use tools to make real changes; avoid prose-only replies for fix/build requests.
-2. The active file is already in context; read additional files only when required.
-3. Keep edits complete and production-ready (no placeholders/TODO stubs).
-4. Match existing style, naming, and framework conventions.
-5. Prefer patchLines for targeted edits, then editFile, then writeFile.
-6. Use a primary-file workflow: choose ONE writable target file, complete implementation + verification there, then move to the next file.
-7. While focused on a primary file, cross-file WRITES are forbidden unless explicitly requested by the user.
-8. Cross-file READS are allowed only for minimal dependency context (small number, then return to the primary file).
-9. Do not rotate across many files in one pass unless the user explicitly asks for a broad refactor.
-
-[MODE BEHAVIOR]
-- ASK: no tool calls.
-- PLAN: read-only tools, produce a concrete numbered plan.
-- AGENT: full tools. Gather context, implement, and verify.
-
-[DEBUG/REPAIR FLOW]
-1. getTerminalOutput (or getProblems)
-2. explainError / analyzeFile
-3. edit via patchLines/editFile/writeFile
-4. runTypecheck / runLint / runTests as applicable
-5. Re-check problems and continue until blocking issue or clean result
-
-[TOOL POLICY]
-- read: inspect only
-- safe_write: direct file edits
-- risky_write: destructive edits
-- command: terminal/package/test/lint/typecheck actions
-Policy map: ${policyPreview}
-
-[VERIFICATION]
-After edits, verify changed files. If error-level issues remain, keep fixing before finalizing.
-
-[DONE CRITERIA]
-Finish and provide a final completion response when ALL are true:
-1. Primary file work is implemented.
-2. Verification shows no error-level issues in touched files.
-3. No new high-severity runtime/build errors in recent terminal/problem checks.
-If blocked, checkpoint progress and provide the narrowest next actionable step.`;
 }
 
 function buildContextMessage(context: any) {
@@ -632,7 +546,11 @@ router.post('/chat', async (req, res) => {
     const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
     const providerTools = getToolsForMode(safeMode);
-    const systemPrompt = buildSystemPrompt(activeAgent, context) + modeInstr;
+    const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
+    const policyPreview = Object.entries(TOOL_POLICY)
+      .map(([tool, tier]) => `${tool}:${tier}`)
+      .join(', ');
+    const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview) + modeInstr;
     const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
@@ -659,7 +577,11 @@ router.post('/chat', async (req, res) => {
       activeConfig = fallback.config;
       activeApiKey = fallback.apiKey;
       fallbackReason = 'provider_auth_error';
-      const fallbackSystemPrompt = buildSystemPrompt(activeAgent, context) + modeInstr;
+      const fallbackPersona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
+      const fallbackPolicyPreview = Object.entries(TOOL_POLICY)
+        .map(([tool, tier]) => `${tool}:${tier}`)
+        .join(', ');
+      const fallbackSystemPrompt = buildSystemPrompt(activeAgent, context, fallbackPersona, fallbackPolicyPreview) + modeInstr;
       result = await callProvider(activeConfig, activeApiKey!, fallbackSystemPrompt, apiMessages, useTools, providerTools);
     }
 
