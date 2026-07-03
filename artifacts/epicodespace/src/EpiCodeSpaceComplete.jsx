@@ -3694,6 +3694,7 @@ ${finalCode}
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
+              const activeFileReadBlocked = enforceDeepSeekWriteAfterRead && tc.name === 'readFile' && tcPath === activeFile;
               const writeOutOfScope = !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
               const blockedForReadLoop = enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && (writeRequiredBeforeMoreReads || roundReadBudgetSpent);
 
@@ -3715,6 +3716,13 @@ ${finalCode}
                     error: writeOutOfScope
                       ? `Blocked cross-file write: ${tcPath}`
                       : `Blocked support read: ${tcPath}`,
+                  }
+                : activeFileReadBlocked
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: 'The active file is already in context with line numbers. Do not call readFile on it again. Write to it with patchLines, editFile, or writeFile.',
+                    error: `Blocked active-file read: ${tcPath}`,
                   }
                 : isConsecutiveDuplicate
                 ? {
@@ -3764,6 +3772,8 @@ ${finalCode}
               const icon = tc.name === 'writeFile' ? '📝' : tc.name === 'editFile' ? '✏️' : tc.name === 'deleteFile' ? '🗑️' : tc.name === 'readFile' ? '📖' : tc.name === 'searchCode' ? '🔍' : tc.name === 'analyzeFile' ? '🔬' : tc.name === 'runCommand' ? '💻' : '📋';
               const resultSummary = isConsecutiveDuplicate
                 ? '⚠️ duplicate blocked'
+                : activeFileReadBlocked
+                  ? '🚫 blocked (active file already in context)'
                 : isOutOfScope
                   ? `🚫 blocked (focus ${activeWorkFile})`
                 : tc.name === 'analyzeFile' && result.ok

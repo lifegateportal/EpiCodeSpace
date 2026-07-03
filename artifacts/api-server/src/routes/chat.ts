@@ -226,11 +226,11 @@ function buildContextMessage(context: any) {
   if (context.activeFile) parts.push(`Currently editing: ${context.activeFile}`);
   if (context.activeContent) {
     const raw = context.activeContent;
-    const LIMIT = 8000;
+    const LIMIT = 40000;
     const truncated = raw.length > LIMIT;
     const slice = truncated ? raw.slice(0, LIMIT) : raw;
     const numbered = slice.split('\n').map((l: string, i: number) => `${String(i + 1).padStart(4, ' ')} │ ${l}`).join('\n');
-    const suffix = truncated ? '\n...(file truncated — use readFile for the rest)' : '';
+    const suffix = truncated ? '\n...(active file truncated for context budget — do NOT reread it wholesale; work from this context or make a targeted edit)' : '';
     parts.push(`File contents (line numbers shown — use patchLines to edit by line range):\n\`\`\`\n${numbered}${suffix}\n\`\`\`\n⚠ This file is already in your context. Do NOT call readFile for it — use patchLines, editFile, or writeFile to make changes immediately.`);
   }
   if (context.files?.length) parts.push(`Workspace files: ${context.files.map((f: any) => `${f.path} (${f.language}, ${f.lines} lines)`).join(', ')}`);
