@@ -3675,6 +3675,9 @@ ${finalCode}
             toolResults = [];
             const isWriteTool = (name) => name === 'writeFile' || name === 'editFile' || name === 'patchLines' || name === 'deleteFile' || name === 'searchAndReplace' || name === 'autoFix' || name === 'createComponent';
             const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
+            const enforceDeepSeekWriteAfterRead = activeAgent === 'deepseek' && chatMode === 'agent';
+            let roundReadBudgetSpent = false;
+            let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
 
             const proposedWritePaths = data.tool_calls
               .filter((tc) => isWriteTool(tc.name))
@@ -3692,6 +3695,7 @@ ${finalCode}
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
               const writeOutOfScope = !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
+              const blockedForReadLoop = enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && (writeRequiredBeforeMoreReads || roundReadBudgetSpent);
 
               let readOutOfScope = false;
               if (!!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile) {
@@ -3718,11 +3722,30 @@ ${finalCode}
                     duplicate: true,
                     systemMessage: 'You just read this file, please proceed with the data provided',
                   }
+                : blockedForReadLoop
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: writeRequiredBeforeMoreReads
+                      ? 'Read-only progress already happened in the prior round. Your next successful tool call must be a file write in the active work file.'
+                      : 'DeepSeek read budget exhausted for this round. Your next successful tool call must be patchLines, editFile, writeFile, autoFix, or createComponent.',
+                    error: writeRequiredBeforeMoreReads
+                      ? 'Blocked read: file write required before more reads'
+                      : 'Blocked read: consecutive reads in one round are not allowed',
+                  }
                 : await executeToolCall(tc.name, tc.arguments, currentFS);
 
               if (!isOutOfScope && !!activeWorkFile && isReadTool(tc.name) && !!tcPath && tcPath !== activeWorkFile && !supportReadFiles.includes(tcPath)) {
                 supportReadFiles.push(tcPath);
                 allSteps.push(`📎 support read ${supportReadFiles.length}/${MAX_SUPPORT_READ_FILES}: ${tcPath}`);
+              }
+
+              if (enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && result?.ok) {
+                roundReadBudgetSpent = true;
+              }
+
+              if (isWriteTool(tc.name) && result?.ok) {
+                writeRequiredBeforeMoreReads = false;
               }
 
               if (!isConsecutiveDuplicate) {
