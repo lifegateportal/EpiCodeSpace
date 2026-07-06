@@ -84,6 +84,18 @@ ${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
 7. Cross-file writes are allowed when they are directly required by the requested behavior, affected types, or verification.
 8. Cross-file reads are allowed for minimal dependency context, tests, and verification.
 9. Avoid broad refactors unless the user explicitly asks for them.
+10. Default to fixing the user's app code, routes, handlers, schemas, and integrations before touching workspace infrastructure, terminal transport, preview plumbing, or sync code.
+11. Before the first edit, keep reads narrow: one primary file plus at most two supporting files unless a missing type, failing command, or unresolved call site forces one more read.
+12. Do not reread the active file. Work from the provided context or use patchLines/editFile directly.
+13. Never delete, truncate, recreate, or wipe files/folders to fix an error unless the user explicitly asked for that destructive operation.
+14. If backend wiring is needed, implement the full slice incrementally: contract, handler, integration, validation.
+
+[COMMAND DISCIPLINE]
+1. Use runtime-oriented commands for app work: npm, pnpm, yarn, bun, npx, node, next, vite, tsx, ts-node, nodemon, prisma, drizzle, turbo, and similar project execution commands belong in the runtime path.
+2. Use the shell/terminal path for git, filesystem inspection, and host-level diagnostics.
+3. Never repeat the same failing command without new evidence that changes the outcome.
+4. If a command fails, inspect terminal output or problems, then either adjust once or stop with the blocker.
+5. If runtime is not ready, do not keep retrying the same command. Surface that blocker or choose a startup command only if it is clearly required.
 
 [MODE BEHAVIOR]
 - ASK: no tool calls.

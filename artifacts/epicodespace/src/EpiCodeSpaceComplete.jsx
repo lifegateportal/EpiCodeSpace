@@ -842,6 +842,16 @@ function looksLikeWorkspaceChangeRequest(text) {
   return /(fix|update|change|modify|edit|patch|write|save|create|add|remove|delete|rename|refactor|implement|build|generate|scaffold)/.test(value);
 }
 
+function userExplicitlyRequestedDeletion(text, targetPath = '') {
+  const raw = String(text || '').toLowerCase();
+  const target = String(targetPath || '').toLowerCase();
+  if (!raw) return false;
+  const asksToDelete = /\b(delete|remove|rm|erase|drop|truncate|wipe)\b/.test(raw);
+  if (!asksToDelete) return false;
+  if (!target) return true;
+  return raw.includes(target) || raw.includes(target.split('/').pop() || '');
+}
+
 function looksLikeWebsiteBuildRequest(text) {
   const value = (text || '').toLowerCase();
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
@@ -3542,7 +3552,7 @@ ${finalCode}
           allSteps.push('✅ Reasoner analysis complete; DeepSeek V3 execution unlocked');
         };
 
-        const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno)\s/i.test(String(cmd || '').trim());
+        const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno|next|vite|tsx|ts-node|nodemon|react-scripts|prisma|drizzle(?:-kit)?|turbo|vercel)\b/i.test(String(cmd || '').trim());
         const isLikelyLongRunningCmd = (cmd) => {
           const text = String(cmd || '').toLowerCase();
           return /(\b(run|npm run|pnpm|yarn|bun run)\s+(dev|start|serve|watch)\b|\bnext\s+dev\b|\bvite\b|--watch\b|\btail\s+-f\b)/.test(text);
@@ -3827,7 +3837,7 @@ ${finalCode}
             const isWriteTool = (name) => name === 'writeFile' || name === 'editFile' || name === 'patchLines' || name === 'deleteFile' || name === 'searchAndReplace' || name === 'autoFix' || name === 'createComponent';
             const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
             const enforceDeepSeekWriteAfterRead = false;
-            const enforceDeepSeekFocusBounds = false;
+            const enforceDeepSeekFocusBounds = true;
             let roundReadBudgetSpent = false;
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
 
@@ -3846,7 +3856,8 @@ ${finalCode}
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
-              const activeFileReadBlocked = enforceDeepSeekWriteAfterRead && tc.name === 'readFile' && tcPath === activeFile;
+              const activeFileReadBlocked = tc.name === 'readFile' && tcPath === activeFile;
+              const deleteBlocked = tc.name === 'deleteFile' && !userExplicitlyRequestedDeletion(userMessage, tcPath);
               const writeOutOfScope = enforceDeepSeekFocusBounds && !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
               const blockedForReadLoop = enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && (writeRequiredBeforeMoreReads || roundReadBudgetSpent);
 
@@ -3875,6 +3886,13 @@ ${finalCode}
                     blocked: true,
                     systemMessage: 'The active file is already in context with line numbers. Do not call readFile on it again. Write to it with patchLines, editFile, or writeFile.',
                     error: `Blocked active-file read: ${tcPath}`,
+                  }
+                : deleteBlocked
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: 'Destructive file deletion is blocked unless the user explicitly asked to delete that specific file. Repair in place instead.',
+                    error: `Blocked deleteFile: ${tcPath}`,
                   }
                 : isConsecutiveDuplicate
                 ? {
@@ -3926,6 +3944,8 @@ ${finalCode}
                 ? '⚠️ duplicate blocked'
                 : activeFileReadBlocked
                   ? '🚫 blocked (active file already in context)'
+                : deleteBlocked
+                  ? '🚫 blocked (destructive delete requires explicit user request)'
                 : isOutOfScope
                   ? `🚫 blocked (focus ${activeWorkFile})`
                 : tc.name === 'analyzeFile' && result.ok
@@ -4106,7 +4126,7 @@ ${finalCode}
                     }
                   }
 
-                  if (!runStatus.ok && failCount >= 2) {
+                  if (!runStatus.ok && (runStatus.reason === 'runtime not ready' || failCount >= 2)) {
                     commandBlocked.add(normalized);
                   }
                 } else if (runStatus.ok) {
