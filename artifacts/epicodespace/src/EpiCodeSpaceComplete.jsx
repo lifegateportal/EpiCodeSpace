@@ -1017,6 +1017,27 @@ function extractReasonerVisibleSummary(planText) {
   return (summaryLine || 'Preparing targeted implementation and verification.').slice(0, 240);
 }
 
+function extractMajorPlanSteps(planText, maxSteps = 8) {
+  const text = String(planText || '').trim();
+  if (!text) return [];
+  const lines = text.split('\n').map((line) => line.trim());
+  const numbered = lines
+    .filter((line) => /^\d+[.)]\s+/.test(line))
+    .map((line) => line.replace(/^\d+[.)]\s+/, '').trim())
+    .filter(Boolean);
+  return numbered.slice(0, maxSteps);
+}
+
+function userApprovedNextPlanStep(text) {
+  const value = String(text || '').toLowerCase().trim();
+  return /^(yes|yep|yeah|continue|go ahead|next|proceed|ok|okay)\b/.test(value);
+}
+
+function userRejectedNextPlanStep(text) {
+  const value = String(text || '').toLowerCase().trim();
+  return /^(no|stop|pause|hold|not yet|wait)\b/.test(value);
+}
+
 function formatCommandOutputSnippet(output) {
   const text = String(output || '').trim();
   if (!text) return '';
@@ -3584,12 +3605,69 @@ ${finalCode}
       let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
       let pendingBatchVerification = !!resumeState?.pendingBatchVerification;
       let backendVerificationSatisfied = !!resumeState?.backendVerificationSatisfied;
+      let buildVerified = !!resumeState?.buildVerified;
+      let typecheckVerified = !!resumeState?.typecheckVerified;
+      let planMajorSteps = Array.isArray(resumeState?.planMajorSteps)
+        ? resumeState.planMajorSteps.filter((s) => typeof s === 'string' && s.trim())
+        : [];
+      let planStepIndex = Math.max(0, Number(resumeState?.planStepIndex || 0));
+      let planAwaitingApproval = !!resumeState?.planAwaitingApproval;
       let deepseekPlanSummary = typeof resumeState?.deepseekPlanSummary === 'string' ? resumeState.deepseekPlanSummary : '';
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
 
       if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
+
+      if ((websiteBuildMode || appBuildMode) && planAwaitingApproval) {
+        const approved = userApprovedNextPlanStep(userMessage);
+        const rejected = userRejectedNextPlanStep(userMessage);
+        if (rejected) {
+          const msgId = makeMessageId('assistant');
+          const pauseMsg = {
+            id: msgId,
+            role: 'assistant',
+            content: `Paused at plan step ${Math.max(1, planStepIndex)}/${Math.max(1, planMajorSteps.length)}. Send "continue" when you want me to build the next step.`,
+            agent: activeAgent,
+            agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+            mode: chatMode,
+            timestamp: Date.now(),
+            canContinue: true,
+            resumeState: {
+              ...resumeState,
+              planAwaitingApproval: true,
+              planStepIndex,
+              planMajorSteps,
+            },
+          };
+          setMessages(prev => [...prev.filter(m => !m._progress), pauseMsg]);
+          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), pauseMsg] } : c));
+          return;
+        }
+        if (!approved) {
+          const msgId = makeMessageId('assistant');
+          const askMsg = {
+            id: msgId,
+            role: 'assistant',
+            content: `Step ${Math.max(1, planStepIndex + 1)}/${Math.max(1, planMajorSteps.length)} is queued: ${planMajorSteps[planStepIndex] || 'next major step'}. Reply "continue" to build it, or "pause" to hold.`,
+            agent: activeAgent,
+            agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+            mode: chatMode,
+            timestamp: Date.now(),
+            canContinue: true,
+            resumeState: {
+              ...resumeState,
+              planAwaitingApproval: true,
+              planStepIndex,
+              planMajorSteps,
+            },
+          };
+          setMessages(prev => [...prev.filter(m => !m._progress), askMsg]);
+          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), askMsg] } : c));
+          return;
+        }
+        planAwaitingApproval = false;
+      }
 
       try {
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -3668,6 +3746,11 @@ ${finalCode}
             ? analysis.content.trim()
             : 'No analysis returned.';
           deepseekPlanSummary = extractReasonerVisibleSummary(analysisText);
+          const extractedSteps = extractMajorPlanSteps(analysisText);
+          if (extractedSteps.length > 0) {
+            planMajorSteps = extractedSteps;
+            if (planStepIndex <= 0) planStepIndex = 0;
+          }
           allSteps.push(`🧠 Plan summary: ${deepseekPlanSummary}`);
 
           history = [
@@ -3876,6 +3959,11 @@ ${finalCode}
               batchChangeMode &&
               pendingBatchVerification &&
               summarizeFileChanges(allFileChanges).files.length > 0;
+            const shouldBlockBuildTypecheckFinalize =
+              chatMode === 'agent' &&
+              (websiteBuildMode || appBuildMode) &&
+              summarizeFileChanges(allFileChanges).files.length > 0 &&
+              (!buildVerified || !typecheckVerified);
 
             if (shouldForceToolRetry) {
               history = [
@@ -3911,6 +3999,19 @@ ${finalCode}
                 },
               ].slice(-historySliceLimit);
               allSteps.push('⚠️ Batch-mode finalization blocked until build or verification commands complete.');
+              continue;
+            }
+
+            if (shouldBlockBuildTypecheckFinalize) {
+              const missing = [!buildVerified ? 'runBuild' : null, !typecheckVerified ? 'runTypecheck' : null].filter(Boolean).join(' + ');
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: `Project build progression gate: do not finalize yet. Run ${missing}, inspect getProblems, fix failures, and continue.` ,
+                },
+              ].slice(-historySliceLimit);
+              allSteps.push(`⚠️ Build progression gate: waiting for ${missing}.`);
               continue;
             }
 
@@ -4403,6 +4504,10 @@ ${finalCode}
               }
 
               if (verificationCommandsRequested && commandStatuses.every((s) => s.ok)) {
+                const requestedBuild = data.tool_calls.some((tc) => tc.name === 'runBuild');
+                const requestedTypecheck = data.tool_calls.some((tc) => tc.name === 'runTypecheck');
+                if (requestedBuild) buildVerified = true;
+                if (requestedTypecheck) typecheckVerified = true;
                 setAgentRunState(AGENT_RUN_STATES.VERIFYING);
                 stateTransitions.push({ state: AGENT_RUN_STATES.VERIFYING, at: Date.now() });
                 const verificationIssues = [];
@@ -4444,6 +4549,19 @@ ${finalCode}
                     },
                   ].slice(-historySliceLimit);
                 } else if (changedPaths.length > 0) {
+                  if ((websiteBuildMode || appBuildMode) && (!buildVerified || !typecheckVerified)) {
+                    pendingBatchVerification = true;
+                    const missing = [!buildVerified ? 'runBuild' : null, !typecheckVerified ? 'runTypecheck' : null].filter(Boolean).join(' + ');
+                    history = [
+                      ...history,
+                      {
+                        role: 'user',
+                        content: `Do not finalize yet. Complete verification with ${missing}, inspect getProblems, fix any failures, then continue.`,
+                      },
+                    ].slice(-historySliceLimit);
+                    allSteps.push(`⚠️ Build verification incomplete: waiting for ${missing}.`);
+                    continue;
+                  }
                   if (isBackendArchitectAgent) {
                     backendVerificationSatisfied = true;
                   }
@@ -4461,6 +4579,62 @@ ${finalCode}
                       ].slice(-historySliceLimit);
                       allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
                       continue;
+                    }
+                  }
+                  if ((websiteBuildMode || appBuildMode) && planMajorSteps.length > 0) {
+                    const completedIdx = Math.min(planStepIndex, planMajorSteps.length - 1);
+                    const completedStep = planMajorSteps[completedIdx] || `Step ${completedIdx + 1}`;
+                    const hasNextStep = completedIdx + 1 < planMajorSteps.length;
+                    if (hasNextStep) {
+                      planStepIndex = completedIdx + 1;
+                      planAwaitingApproval = true;
+                      const checkpointMsg = {
+                        id: makeMessageId('assistant'),
+                        role: 'assistant',
+                        content: `Plan progress: completed step ${completedIdx + 1}/${planMajorSteps.length}: ${completedStep}.\n\nDo you want me to build the next step now (${planStepIndex + 1}/${planMajorSteps.length}: ${planMajorSteps[planStepIndex]})? Reply \"continue\" to proceed or \"pause\" to stop here.`,
+                        agent: activeAgent,
+                        agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                        toolCalls: compactToolCalls(allToolCalls, 12),
+                        steps: allSteps,
+                        mode: chatMode,
+                        timestamp: Date.now(),
+                        canContinue: true,
+                        resumeState: {
+                          history: packChatHistory(history, activeFile, userMessage, historyPackLimit),
+                          pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
+                          toolResults: Array.isArray(toolResults)
+                            ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
+                            : [],
+                          lastToolCallSig,
+                          websiteBuildMode,
+                          appBuildMode,
+                          batchChangeMode,
+                          totalWriteSuccesses,
+                          noWriteRounds,
+                          pendingBatchVerification,
+                          backendVerificationSatisfied,
+                          buildVerified,
+                          typecheckVerified,
+                          planMajorSteps,
+                          planStepIndex,
+                          planAwaitingApproval,
+                          deepseekReasonerPrimed,
+                          deepseekPlanSummary,
+                          commandFailureCounts: Object.fromEntries(commandFailureCounts),
+                          commandBlocked: Array.from(commandBlocked),
+                          activeWorkFile,
+                          supportReadFiles,
+                          consecReadOnlyRounds,
+                          stagnationRounds,
+                          allSteps: allSteps.slice(-120),
+                          allToolCalls: allToolCalls.slice(-120),
+                        },
+                      };
+                      setMessages(prev => [...prev.filter(m => !m._progress), checkpointMsg]);
+                      setConversations(prev => prev.map(c => c.id === activeConvoId
+                        ? { ...c, messages: [...c.messages.filter(m => !m._progress), checkpointMsg] }
+                        : c));
+                      return;
                     }
                   }
                   const msgId = makeMessageId('assistant');
@@ -4612,6 +4786,11 @@ ${finalCode}
               noWriteRounds,
               pendingBatchVerification,
               backendVerificationSatisfied,
+              buildVerified,
+              typecheckVerified,
+              planMajorSteps,
+              planStepIndex,
+              planAwaitingApproval,
               deepseekReasonerPrimed,
               deepseekPlanSummary,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
@@ -4676,6 +4855,11 @@ ${finalCode}
             noWriteRounds,
             pendingBatchVerification,
             backendVerificationSatisfied,
+            buildVerified,
+            typecheckVerified,
+            planMajorSteps,
+            planStepIndex,
+            planAwaitingApproval,
             autoResumeAttempts: autoResumeAttempts + 1,
             deepseekReasonerPrimed,
             deepseekPlanSummary,
