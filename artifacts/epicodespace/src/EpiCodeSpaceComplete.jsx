@@ -3615,6 +3615,8 @@ ${finalCode}
       let deepseekPlanSummary = typeof resumeState?.deepseekPlanSummary === 'string' ? resumeState.deepseekPlanSummary : '';
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
+      const commandFamilyFailureCounts = new Map(Object.entries(resumeState?.commandFamilyFailureCounts || {}));
+      const commandFamilyBlocked = new Set(Array.isArray(resumeState?.commandFamilyBlocked) ? resumeState.commandFamilyBlocked : []);
 
       if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
@@ -3782,6 +3784,17 @@ ${finalCode}
         };
         const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const normalizeCommand = (cmd) => String(cmd || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const commandFamily = (cmd) => {
+          const raw = String(cmd || '').trim().toLowerCase();
+          if (!raw) return 'unknown';
+          const firstChunk = raw.split(/&&|\|\||;/)[0].trim().replace(/^\{\s*/, '');
+          const tokens = firstChunk.split(/\s+/).filter(Boolean);
+          if (!tokens.length) return 'unknown';
+          const wrappers = new Set(['sudo', 'env', 'command', 'time', 'nohup']);
+          let i = 0;
+          while (i < tokens.length && wrappers.has(tokens[i])) i += 1;
+          return tokens[i] || tokens[0] || 'unknown';
+        };
         const detectPackageManagerFromFS = (fs) => {
           let pkg = {};
           try { pkg = JSON.parse(fs?.['package.json']?.content || '{}'); } catch { pkg = {}; }
@@ -3848,7 +3861,12 @@ ${finalCode}
 
         const isHardCommandFailure = (status) => {
           const text = `${status?.reason || ''}\n${status?.outputSnippet || ''}`.toLowerCase();
-          return /cd: command not found|no such file or directory|enoent|is not recognized as an internal or external command/.test(text);
+          return /command not found|no such file or directory|enoent|is not recognized as an internal or external command|not found - type 'help'/.test(text);
+        };
+
+        const isMissingBinaryFailure = (status) => {
+          const text = `${status?.reason || ''}\n${status?.outputSnippet || ''}`.toLowerCase();
+          return /command not found|not found - type 'help'|is not recognized as an internal or external command/.test(text);
         };
 
         const dispatchAndWaitForCommand = async (cmd) => {
@@ -4427,13 +4445,16 @@ ${finalCode}
               const verificationCommandsRequested = data.tool_calls.some((tc) => isVerificationCommandTool(tc.name));
               for (const cmd of uniqueCmdsToRun) {
                 const normalized = normalizeCommand(cmd);
+                const family = commandFamily(cmd);
                 let runStatus;
 
-                if (commandBlocked.has(normalized)) {
+                if (commandBlocked.has(normalized) || commandFamilyBlocked.has(family)) {
                   runStatus = {
                     ok: false,
                     blocked: true,
-                    reason: 'blocked after repeated failures; choose a different command',
+                    reason: commandFamilyBlocked.has(family)
+                      ? `blocked command family '${family}' after repeated failures; switch to code edits or a different command family`
+                      : 'blocked after repeated failures; choose a different command',
                   };
                 } else {
                   runStatus = await dispatchAndWaitForCommand(cmd);
@@ -4443,31 +4464,47 @@ ${finalCode}
                   const prevFails = Number(commandFailureCounts.get(normalized) || 0);
                   const failCount = prevFails + 1;
                   commandFailureCounts.set(normalized, failCount);
+                  const prevFamilyFails = Number(commandFamilyFailureCounts.get(family) || 0);
+                  const familyFailCount = prevFamilyFails + 1;
+                  commandFamilyFailureCounts.set(family, familyFailCount);
                   const hardFailure = isHardCommandFailure(runStatus);
+                  const missingBinary = isMissingBinaryFailure(runStatus);
 
-                  const alternatives = hardFailure
+                  const alternatives = (hardFailure || missingBinary)
                     ? []
                     : buildCommandAlternatives(cmd, runStatus, currentFS)
-                      .filter((alt) => !commandBlocked.has(normalizeCommand(alt)));
-                  if (!hardFailure && alternatives.length > 0) {
+                      .filter((alt) => {
+                        const altNorm = normalizeCommand(alt);
+                        const altFamily = commandFamily(alt);
+                        return !commandBlocked.has(altNorm) && !commandFamilyBlocked.has(altFamily);
+                      });
+                  if (!(hardFailure || missingBinary) && alternatives.length > 0) {
                     allSteps.push(`🧭 **command**(\`${cmd}\`) failed; trying fallback \`${alternatives[0]}\``);
                     const altStatus = await dispatchAndWaitForCommand(alternatives[0]);
                     if (altStatus.ok) {
                       runStatus = { ...altStatus, fallbackFrom: cmd, command: alternatives[0] };
                       commandFailureCounts.delete(normalized);
+                      commandFamilyFailureCounts.delete(family);
                     } else {
                       const altNorm = normalizeCommand(alternatives[0]);
+                      const altFamily = commandFamily(alternatives[0]);
                       const altFails = Number(commandFailureCounts.get(altNorm) || 0) + 1;
                       commandFailureCounts.set(altNorm, altFails);
+                      const altFamilyFails = Number(commandFamilyFailureCounts.get(altFamily) || 0) + 1;
+                      commandFamilyFailureCounts.set(altFamily, altFamilyFails);
                     }
                   }
 
-                  if (!runStatus.ok && (hardFailure || runStatus.reason === 'runtime not ready' || failCount >= 2)) {
+                  if (!runStatus.ok && (hardFailure || missingBinary || runStatus.reason === 'runtime not ready' || failCount >= 2)) {
                     commandBlocked.add(normalized);
+                  }
+                  if (hardFailure || missingBinary || familyFailCount >= 2) {
+                    commandFamilyBlocked.add(family);
                   }
                 } else if (runStatus.ok) {
                   commandFailureCounts.delete(normalized);
                   commandBlocked.delete(normalized);
+                  commandFamilyFailureCounts.delete(family);
                 }
 
                 commandStatuses.push({ cmd, ...runStatus });
@@ -4487,6 +4524,17 @@ ${finalCode}
                   const outputSnippet = formatCommandOutputSnippet(runStatus.outputSnippet);
                   allSteps.push(`❌ **command**(\`${cmd}\`) → ${runStatus.reason || 'failed to dispatch'}${outputSnippet ? `\n\`\`\`\n${outputSnippet}\n\`\`\`` : ''}`);
                 }
+              }
+
+              const familyBlockedText = Array.from(commandFamilyBlocked).slice(-4).join(', ');
+              if (familyBlockedText) {
+                history = [
+                  ...history,
+                  {
+                    role: 'user',
+                    content: `Command retry guard engaged. Stop repeating blocked command families (${familyBlockedText}). If terminal tooling is unavailable, update code/config instead and surface one clear blocker.`,
+                  },
+                ].slice(-historySliceLimit);
               }
 
               const blockers = commandStatuses.filter((s) => !s.ok && (s.timeout || s.reason === 'runtime not ready'));
@@ -4622,6 +4670,8 @@ ${finalCode}
                           deepseekPlanSummary,
                           commandFailureCounts: Object.fromEntries(commandFailureCounts),
                           commandBlocked: Array.from(commandBlocked),
+                          commandFamilyFailureCounts: Object.fromEntries(commandFamilyFailureCounts),
+                          commandFamilyBlocked: Array.from(commandFamilyBlocked),
                           activeWorkFile,
                           supportReadFiles,
                           consecReadOnlyRounds,
@@ -4795,6 +4845,8 @@ ${finalCode}
               deepseekPlanSummary,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
               commandBlocked: Array.from(commandBlocked),
+              commandFamilyFailureCounts: Object.fromEntries(commandFamilyFailureCounts),
+              commandFamilyBlocked: Array.from(commandFamilyBlocked),
               activeWorkFile,
               supportReadFiles,
               consecReadOnlyRounds,
@@ -4865,6 +4917,8 @@ ${finalCode}
             deepseekPlanSummary,
             commandFailureCounts: Object.fromEntries(commandFailureCounts),
             commandBlocked: Array.from(commandBlocked),
+            commandFamilyFailureCounts: Object.fromEntries(commandFamilyFailureCounts),
+            commandFamilyBlocked: Array.from(commandFamilyBlocked),
             activeWorkFile,
             supportReadFiles,
             consecReadOnlyRounds,
