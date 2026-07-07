@@ -3564,13 +3564,12 @@ ${finalCode}
               if (!data.retryable || attempt === MAX_ATTEMPTS - 1) throw e;
 
               allSteps.push(`🔁 Upstream retry ${attempt + 1}/${MAX_ATTEMPTS - 1} after ${data.code || 'error'}`);
-              await sleep(500 * (2 ** attempt));
+              await sleep(Math.min(4000, 700 * (2 ** attempt)));
             } catch (err) {
               lastErr = err;
               if (attempt === MAX_ATTEMPTS - 1) throw err;
-              await sleep(500 * (2 ** attempt));
-            }
               await sleep(Math.min(4000, 700 * (2 ** attempt)));
+            }
           }
           throw lastErr || new Error('Chat round failed');
         };
@@ -3614,7 +3613,14 @@ ${finalCode}
           allSteps.push('✅ Reasoner analysis complete; DeepSeek V3 execution unlocked');
         };
 
-        const isRuntimeCmd = (cmd) => /^(npm|npx|node|yarn|pnpm|bun|deno|next|vite|tsx|ts-node|nodemon|react-scripts|prisma|drizzle(?:-kit)?|turbo|vercel)\b/i.test(String(cmd || '').trim());
+        const RUNTIME_CMD_RE = /^(npm|npx|node|yarn|pnpm|bun|deno|next|vite|tsx|ts-node|nodemon|react-scripts|prisma|drizzle(?:-kit)?|turbo|vercel)\b/i;
+        const isRuntimeCmd = (cmd) => {
+          const raw = String(cmd || '').trim();
+          if (!raw) return false;
+          if (RUNTIME_CMD_RE.test(raw)) return true;
+          const parts = raw.split(/&&|\|\|/).map((p) => p.trim()).filter(Boolean);
+          return parts.some((p) => RUNTIME_CMD_RE.test(p));
+        };
         const isLikelyLongRunningCmd = (cmd) => {
           const text = String(cmd || '').toLowerCase();
           return /(\b(run|npm run|pnpm|yarn|bun run)\s+(dev|start|serve|watch)\b|\bnext\s+dev\b|\bvite\b|--watch\b|\btail\s+-f\b)/.test(text);
@@ -3683,6 +3689,11 @@ ${finalCode}
             deduped.push(c);
           }
           return deduped;
+        };
+
+        const isHardCommandFailure = (status) => {
+          const text = `${status?.reason || ''}\n${status?.outputSnippet || ''}`.toLowerCase();
+          return /cd: command not found|no such file or directory|enoent|is not recognized as an internal or external command/.test(text);
         };
 
         const dispatchAndWaitForCommand = async (cmd) => {
@@ -4213,10 +4224,13 @@ ${finalCode}
                   const prevFails = Number(commandFailureCounts.get(normalized) || 0);
                   const failCount = prevFails + 1;
                   commandFailureCounts.set(normalized, failCount);
+                  const hardFailure = isHardCommandFailure(runStatus);
 
-                  const alternatives = buildCommandAlternatives(cmd, runStatus, currentFS)
-                    .filter((alt) => !commandBlocked.has(normalizeCommand(alt)));
-                  if (alternatives.length > 0) {
+                  const alternatives = hardFailure
+                    ? []
+                    : buildCommandAlternatives(cmd, runStatus, currentFS)
+                      .filter((alt) => !commandBlocked.has(normalizeCommand(alt)));
+                  if (!hardFailure && alternatives.length > 0) {
                     allSteps.push(`🧭 **command**(\`${cmd}\`) failed; trying fallback \`${alternatives[0]}\``);
                     const altStatus = await dispatchAndWaitForCommand(alternatives[0]);
                     if (altStatus.ok) {
@@ -4229,7 +4243,7 @@ ${finalCode}
                     }
                   }
 
-                  if (!runStatus.ok && (runStatus.reason === 'runtime not ready' || failCount >= 2)) {
+                  if (!runStatus.ok && (hardFailure || runStatus.reason === 'runtime not ready' || failCount >= 2)) {
                     commandBlocked.add(normalized);
                   }
                 } else if (runStatus.ok) {
