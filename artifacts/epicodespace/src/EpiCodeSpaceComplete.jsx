@@ -3770,14 +3770,6 @@ ${finalCode}
           allSteps.push(`✅ Reasoner analysis complete; ${isBackendArchitectAgent ? 'Backend Architect' : 'DeepSeek V3'} execution unlocked`);
         };
 
-        const RUNTIME_CMD_RE = /^(npm|npx|node|yarn|pnpm|bun|deno|next|vite|tsx|ts-node|nodemon|react-scripts|prisma|drizzle(?:-kit)?|turbo|vercel)\b/i;
-        const isRuntimeCmd = (cmd) => {
-          const raw = String(cmd || '').trim();
-          if (!raw) return false;
-          if (RUNTIME_CMD_RE.test(raw)) return true;
-          const parts = raw.split(/&&|\|\|/).map((p) => p.trim()).filter(Boolean);
-          return parts.some((p) => RUNTIME_CMD_RE.test(p));
-        };
         const isLikelyLongRunningCmd = (cmd) => {
           const text = String(cmd || '').toLowerCase();
           return /(\b(run|npm run|pnpm|yarn|bun run)\s+(dev|start|serve|watch)\b|\bnext\s+dev\b|\bvite\b|--watch\b|\btail\s+-f\b)/.test(text);
@@ -3873,14 +3865,7 @@ ${finalCode}
           const raw = String(cmd || '').trim();
           if (!raw) return { ok: false, route: 'none', reason: 'empty command' };
 
-          // Simulated terminal commands are synchronous in this app.
-          if (!isRuntimeCmd(raw)) {
-            setTerminalState('open');
-            setActiveTerminalTab('terminal');
-            handleTerminalCommandRef.current?.(raw);
-            return { ok: true, route: 'terminal', waited: false, status: 0 };
-          }
-
+          // Always execute agent-issued commands in the Runtime terminal.
           setTerminalState('open');
           setActiveTerminalTab('runtime');
 
@@ -3889,8 +3874,12 @@ ${finalCode}
             const activeRuntimeHandle = wcTermRefs.current.get(activeRuntimeTerminalIdRef.current);
             const sent = activeRuntimeHandle?.sendCommand(raw);
             if (sent === false) {
-              handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
-              return { ok: false, route: 'runtime', waited: false, reason: 'runtime not ready' };
+              return {
+                ok: false,
+                route: 'runtime',
+                waited: false,
+                reason: 'runtime not ready; start the runtime container first',
+              };
             }
             return { ok: true, route: 'runtime', waited: false, longRunning: true };
           }
@@ -3902,8 +3891,12 @@ ${finalCode}
           const sent = activeRuntimeHandle?.sendCommand(wrapped);
 
           if (sent === false) {
-            handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
-            return { ok: false, route: 'runtime', waited: false, reason: 'runtime not ready' };
+            return {
+              ok: false,
+              route: 'runtime',
+              waited: false,
+              reason: 'runtime not ready; start the runtime container first',
+            };
           }
 
           const timeoutMs = 8 * 60 * 1000;
