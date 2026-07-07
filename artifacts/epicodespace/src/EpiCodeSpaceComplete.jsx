@@ -834,6 +834,13 @@ function packChatHistory(messages, activeFile, userMessage, maxItems = 20) {
   return sorted;
 }
 
+function historyLimitsForAgent(agentId, mode) {
+  if (mode !== 'agent') return { pack: 20, slice: 22 };
+  if (agentId === 'backend-architect') return { pack: 40, slice: 48 };
+  if (agentId === 'deepseek') return { pack: 28, slice: 32 };
+  return { pack: 20, slice: 22 };
+}
+
 function makeMessageId(prefix = 'msg') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -3470,9 +3477,17 @@ ${finalCode}
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
-    if (activeAgent === 'deepseek' && chatMode === 'agent' && shouldPrimeDeepSeekReasoner(userMessage)) {
-      context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath);
+    const shouldAttachReasonerContext =
+      chatMode === 'agent' &&
+      (activeAgent === 'backend-architect' || (activeAgent === 'deepseek' && shouldPrimeDeepSeekReasoner(userMessage)));
+    if (shouldAttachReasonerContext) {
+      const maxFiles = activeAgent === 'backend-architect' ? 12 : REASONER_CONTEXT_FILE_LIMIT;
+      context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath, maxFiles);
     }
+
+    const historyLimits = historyLimitsForAgent(activeAgent, chatMode);
+    const historyPackLimit = historyLimits.pack;
+    const historySliceLimit = historyLimits.slice;
 
     const convo = conversations.find(c => c.id === activeConvoId);
     const resumeMsg = resumeFromMessageId
@@ -3490,7 +3505,7 @@ ${finalCode}
       ? [...resumeState.history, { role: 'user', content: apiUserContent }]
       : [...(convo?.messages || []), { ...userMsg, content: apiUserContent }]
           .filter(m => m.role === 'user' || m.role === 'assistant')
-          .slice(-20)
+          .slice(-historyPackLimit)
           .map(m => ({ role: m.role, content: m.content }));
 
     if (activeAgent === 'deepseek' && resumeState) {
@@ -3500,9 +3515,9 @@ ${finalCode}
           role: 'user',
           content: 'Resume mode: continue from previous tool state. Do NOT restart by reading files again. Your next action must be a write tool unless blocked.',
         },
-      ].slice(-22);
+      ].slice(-historySliceLimit);
     }
-    history = packChatHistory(history, activeFile, userMessage, 20);
+    history = packChatHistory(history, activeFile, userMessage, historyPackLimit);
 
     (async () => {
       let allSteps = [];
@@ -3522,24 +3537,29 @@ ${finalCode}
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
       const MAX_ROUNDS_DEFAULT = 20;
       const MAX_ROUNDS_DEEPSEEK = 120;
+      const MAX_ROUNDS_BACKEND = 80;
       const DEEPSEEK_ANALYSIS_MODEL = 'deepseek-reasoner';
       const DEEPSEEK_EXECUTION_MODEL = 'deepseek-chat';
       const isDeepSeekAgent = activeAgent === 'deepseek';
-      const roundLimit = isDeepSeekAgent ? MAX_ROUNDS_DEEPSEEK : MAX_ROUNDS_DEFAULT;
+      const isBackendArchitectAgent = activeAgent === 'backend-architect';
+      const needsReasonerPreflight = chatMode === 'agent' && (isDeepSeekAgent || isBackendArchitectAgent);
+      const roundLimit = isDeepSeekAgent
+        ? MAX_ROUNDS_DEEPSEEK
+        : isBackendArchitectAgent
+          ? MAX_ROUNDS_BACKEND
+          : MAX_ROUNDS_DEFAULT;
       const effectiveModel = isDeepSeekAgent && chatMode === 'agent'
         ? DEEPSEEK_EXECUTION_MODEL
         : activeModel;
-      const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : 3;
+      const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
       let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
       let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
       let autoResumeAttempts = Number(resumeState?.autoResumeAttempts || 0);
       let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
-        let pendingBatchVerification = !!resumeState?.pendingBatchVerification;
-              if (shouldPrimeDeepSeekReasoner(userMessage)) {
-                await runDeepSeekReasonerPreflight();
-              }
+      let pendingBatchVerification = !!resumeState?.pendingBatchVerification;
+      let backendVerificationSatisfied = !!resumeState?.backendVerificationSatisfied;
       let deepseekPlanSummary = typeof resumeState?.deepseekPlanSummary === 'string' ? resumeState.deepseekPlanSummary : '';
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
@@ -3599,9 +3619,9 @@ ${finalCode}
         };
 
         const runDeepSeekReasonerPreflight = async () => {
-          if (!isDeepSeekAgent || chatMode !== 'agent' || deepseekReasonerPrimed) return;
+          if (!needsReasonerPreflight || deepseekReasonerPrimed) return;
 
-          allSteps.push('🧠 DeepSeek R1 pre-analysis before tool execution');
+          allSteps.push('🧠 DeepSeek R1 pre-analysis before backend execution');
 
           const analysisRequest = {
             agent: 'deepseek',
@@ -3610,7 +3630,9 @@ ${finalCode}
               ...history,
               {
                 role: 'user',
-                content: 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. After that, include the full execution contract with: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
+                content: isBackendArchitectAgent
+                  ? 'This is a backend-architect execution. Before any tool calls, analyze this task using the active file plus every relevant file bundle in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. Then include: 1) Goal, 2) API/data contracts, 3) Relevant files and why, 4) Risks/blockers, 5) Numbered implementation steps, 6) Verification steps (must include runBuild and runTypecheck first), 7) Stop condition. Do not call tools, do not write code, and do not claim completion.'
+                  : 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. After that, include the full execution contract with: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
               },
             ],
             context,
@@ -3629,12 +3651,14 @@ ${finalCode}
             { role: 'assistant', content: `[DeepSeek Reasoner execution contract]\n${analysisText}` },
             {
               role: 'user',
-              content: 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
+              content: isBackendArchitectAgent
+                ? 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with Backend Architect and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. Do not finalize backend work until runBuild and runTypecheck have executed successfully, plus any additional verification needed by the contract.'
+                : 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
             },
-          ].slice(-22);
-          history = packChatHistory(history, activeFile, userMessage, 20);
+          ].slice(-historySliceLimit);
+          history = packChatHistory(history, activeFile, userMessage, historyPackLimit);
           deepseekReasonerPrimed = true;
-          allSteps.push('✅ Reasoner analysis complete; DeepSeek V3 execution unlocked');
+          allSteps.push(`✅ Reasoner analysis complete; ${isBackendArchitectAgent ? 'Backend Architect' : 'DeepSeek V3'} execution unlocked`);
         };
 
         const RUNTIME_CMD_RE = /^(npm|npx|node|yarn|pnpm|bun|deno|next|vite|tsx|ts-node|nodemon|react-scripts|prisma|drizzle(?:-kit)?|turbo|vercel)\b/i;
@@ -3834,7 +3858,7 @@ ${finalCode}
                   role: 'user',
                   content: 'System reminder: The user asked for a workspace change. Do not answer with prose only. Use workspace tools now: first inspect with readFile/listFiles/searchCode as needed, then apply edits with editFile/writeFile.',
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               allSteps.push('⚠️ Plain-text reply in agent mode; retrying once with forced tool-use reminder.');
               continue;
             }
@@ -3847,7 +3871,7 @@ ${finalCode}
                   role: 'user',
                   content: `Continue building the website. Do not finalize yet. Remaining core aspects to implement: ${missingText}. Use tools to complete these now.`,
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               allSteps.push(`⚠️ Website build not complete yet (score ${websiteStatus?.score || 0}/5). Continuing implementation.`);
               continue;
             }
@@ -3859,7 +3883,7 @@ ${finalCode}
                   role: 'user',
                   content: 'Batch mode still has unverified changes. Do not finalize yet. Run runBuild first, then runTypecheck/runLint/runTests if needed, inspect the results, fix any failures, and only then conclude.',
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               allSteps.push('⚠️ Batch-mode finalization blocked until build or verification commands complete.');
               continue;
             }
@@ -3876,7 +3900,7 @@ ${finalCode}
                   role: 'user',
                   content: 'Progress policy: stop looping on analysis/commands. Apply concrete file edits now and verify them. Do not return prose-only until at least one meaningful write is completed.',
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               allSteps.push('⚠️ Low-write progress detected; forcing concrete edits before final response.');
               continue;
             }
@@ -4095,7 +4119,7 @@ ${finalCode}
                   role: 'user',
                   content: 'Progress gate: too many tool calls without concrete edits. Stop command retries and read loops. Perform file writes now (editFile/writeFile/patchLines), then verify.',
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               allSteps.push(`⚠️ Progress gate triggered: ${allToolCalls.length} calls with ${totalWriteSuccesses} file write(s). Forcing write-first behavior.`);
             }
 
@@ -4131,7 +4155,7 @@ ${finalCode}
                       role: 'user',
                       content: 'Batch mode is active. Keep applying related multi-file patches without verifying after each file. When the patch batch is complete, runBuild first, then runTypecheck/runLint/runTests if needed.',
                     },
-                  ].slice(-22);
+                  ].slice(-historySliceLimit);
                 }
                 pendingBatchVerification = true;
                 allSteps.push(`🧩 Batch mode: deferred verification across ${changedPathsInRound.length} changed file(s).`);
@@ -4166,13 +4190,24 @@ ${finalCode}
                       role: 'user',
                       content: `Post-edit verification found remaining errors. Fix these before finalizing: ${issueText}. Use write tools now.`,
                     },
-                  ].slice(-22);
+                  ].slice(-historySliceLimit);
                 } else if (verificationIssues.length === 0 && changedPathsInRound.length > 0 && !activeWorkFile) {
                   const runtimeCheck = await executeToolCall('getProblems', { lines: 120 }, currentFS);
                   const runtimeErrors = runtimeCheck?.ok
                     ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
                     : 0;
                   if (runtimeErrors === 0) {
+                    if (isBackendArchitectAgent && !backendVerificationSatisfied) {
+                      history = [
+                        ...history,
+                        {
+                          role: 'user',
+                          content: 'Backend completion gate: run runBuild and runTypecheck now, inspect getProblems, fix any failures, and only then finalize.',
+                        },
+                      ].slice(-historySliceLimit);
+                      allSteps.push('🛡️ Backend gate: analyzer checks are clean, but command verification has not completed yet.');
+                      continue;
+                    }
                     if (websiteBuildMode) {
                       const websiteStatus = assessWebsiteCoreCompletion(currentFS);
                       if (!websiteStatus.complete) {
@@ -4183,7 +4218,7 @@ ${finalCode}
                             role: 'user',
                             content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
                           },
-                        ].slice(-22);
+                        ].slice(-historySliceLimit);
                         allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
                         continue;
                       }
@@ -4305,7 +4340,7 @@ ${finalCode}
                     role: 'user',
                     content: `System command barrier: do not proceed to new tool calls until command execution is resolved. Blocked commands: ${blockerText}`,
                   },
-                ].slice(-22);
+                ].slice(-historySliceLimit);
               }
 
               if (verificationCommandsRequested && commandStatuses.every((s) => s.ok)) {
@@ -4339,7 +4374,7 @@ ${finalCode}
                       role: 'user',
                       content: `Post-build verification found remaining file errors. Fix these before finalizing: ${issueText}.`,
                     },
-                  ].slice(-22);
+                  ].slice(-historySliceLimit);
                 } else if (runtimeErrors > 0) {
                   pendingBatchVerification = true;
                   history = [
@@ -4348,8 +4383,11 @@ ${finalCode}
                       role: 'user',
                       content: 'Build or terminal verification still shows runtime/build errors. Read the problems, fix them, and rerun verification before finalizing.',
                     },
-                  ].slice(-22);
+                  ].slice(-historySliceLimit);
                 } else if (changedPaths.length > 0) {
+                  if (isBackendArchitectAgent) {
+                    backendVerificationSatisfied = true;
+                  }
                   pendingBatchVerification = false;
                   if (websiteBuildMode) {
                     const websiteStatus = assessWebsiteCoreCompletion(currentFS);
@@ -4361,7 +4399,7 @@ ${finalCode}
                           role: 'user',
                           content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
                         },
-                      ].slice(-22);
+                      ].slice(-historySliceLimit);
                       allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
                       continue;
                     }
@@ -4416,14 +4454,14 @@ ${finalCode}
                   role: 'user',
                   content: 'System steering: No interruption. Finish one concrete file outcome now. Do not branch to new files. Implement, verify, and conclude.',
                 },
-              ].slice(-22);
+              ].slice(-historySliceLimit);
               // Reset so this steering can take effect without repetitive spam.
               stagnationRounds = 0;
             }
 
             if (consecReadOnlyRounds >= 3) {
               const msg = `🚨 You are stuck in a read loop (${consecReadOnlyRounds} read-only rounds). Use available context and perform a concrete change now (patchLines/editFile/writeFile), or runBuild/runTests/runLint/runTypecheck if verification is the blocker.`;
-              history = [...history, { role: 'user', content: msg }].slice(-22);
+              history = [...history, { role: 'user', content: msg }].slice(-historySliceLimit);
               allSteps.push(`⚠️ Read-loop (${consecReadOnlyRounds} read-only rounds) — forcing write on next round.`);
             }
             // ─────────────────────────────────────────────────────────────────
@@ -4500,7 +4538,7 @@ ${finalCode}
             },
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
             resumeState: {
-              history: packChatHistory(history, activeFile, userMessage, 20),
+              history: packChatHistory(history, activeFile, userMessage, historyPackLimit),
               pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
               toolResults: Array.isArray(toolResults)
                 ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
@@ -4511,6 +4549,7 @@ ${finalCode}
               totalWriteSuccesses,
               noWriteRounds,
               pendingBatchVerification,
+              backendVerificationSatisfied,
               deepseekReasonerPrimed,
               deepseekPlanSummary,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
@@ -4562,7 +4601,7 @@ ${finalCode}
           changedMinus: summary.totalMinus,
           canContinue: false,
           resumeState: {
-            history: packChatHistory(history, activeFile, userMessage, 20),
+            history: packChatHistory(history, activeFile, userMessage, historyPackLimit),
             pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
             toolResults: Array.isArray(toolResults)
               ? toolResults.map((tr) => ({ ...tr, result: compactToolResultPayload(tr.result) }))
@@ -4573,6 +4612,7 @@ ${finalCode}
             totalWriteSuccesses,
             noWriteRounds,
             pendingBatchVerification,
+            backendVerificationSatisfied,
             autoResumeAttempts: autoResumeAttempts + 1,
             deepseekReasonerPrimed,
             deepseekPlanSummary,

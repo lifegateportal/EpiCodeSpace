@@ -16,6 +16,16 @@ const OPENAI_MODELS = [
   { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant (if available)' },
 ];
 
+const BACKEND_OPENAI_MODELS = [
+  { id: 'gpt-5',        name: 'GPT-5',         tier: 'premium',  description: 'Best for backend architecture and integration-heavy work' },
+  { id: 'gpt-4.1',      name: 'GPT-4.1',      tier: 'standard', description: 'Strong large-context coding fallback' },
+  { id: 'o3',           name: 'o3',            tier: 'premium',  description: 'Deep reasoning fallback for hard backend debugging' },
+  { id: 'gpt-4o',       name: 'GPT-4o',       tier: 'standard', description: 'Reliable general fallback' },
+  { id: 'gpt-4o-mini',  name: 'GPT-4o mini',  tier: 'fast',     description: 'Cheap + fast fallback' },
+  { id: 'o3-mini',      name: 'o3 mini',       tier: 'fast',     description: 'Quick reasoning fallback' },
+  { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant (if available)' },
+];
+
 const CLAUDE_MODELS = [
   { id: 'claude-opus-4-5',              name: 'Claude Opus 4.5',    tier: 'premium',  description: 'Frontier Anthropic flagship (2026)' },
   { id: 'claude-sonnet-4-5',            name: 'Claude Sonnet 4.5',  tier: 'standard', description: 'Balanced flagship (2026)' },
@@ -53,7 +63,7 @@ export const AGENT_REGISTRY = {
     color: 'text-cyan-400',
     description: 'Strict backend API, database, and integration specialist',
     capabilities: ['architecture', 'debug', 'review', 'docs', 'code_gen'],
-    models: OPENAI_MODELS,
+    models: BACKEND_OPENAI_MODELS,
   },
   claude: {
     id: 'claude',

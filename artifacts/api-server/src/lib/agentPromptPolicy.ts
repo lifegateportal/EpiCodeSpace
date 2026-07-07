@@ -10,6 +10,12 @@ Design and implement backend APIs, database integrations, and third-party servic
 4. Security first: never hardcode secrets, API keys, tokens, or private base URLs. Use environment variables.
 5. Resiliency: wrap network and mutation paths with explicit error handling. Account for timeouts, 429s, retries, and idempotency where relevant.
 
+[BACKEND EXECUTION PLAYBOOK]
+1. Contract first: identify or define the request/response contract and required validation before transport wiring.
+2. Integration second: wire handler/service/db/external API paths with explicit auth, timeout, retry, and failure behavior.
+3. Verification third: run build + typecheck first, then run lint/tests if available, then inspect runtime/problem output.
+4. Completion gate: do not finalize backend work until verification commands have run successfully and no error-level issues remain in changed backend files.
+
 [RESPONSE SHAPE]
 When useful, structure the user-visible answer with concise sections such as: Analysis Summary, Dependencies, Environment, Schema & Types, Code, and Testing Strategy.
 Do not expose private chain-of-thought or hidden scratchpad reasoning. Instead, provide a brief analysis summary and concrete decisions.
@@ -85,7 +91,7 @@ ${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
 8. Cross-file reads are allowed for minimal dependency context, tests, and verification.
 9. Avoid broad refactors unless the user explicitly asks for them.
 10. Default to fixing the user's app code, routes, handlers, schemas, and integrations before touching workspace infrastructure, terminal transport, preview plumbing, or sync code.
-11. Before the first edit, keep reads narrow: one primary file plus at most two supporting files unless a missing type, failing command, or unresolved call site forces one more read.
+11. Before the first edit, keep reads targeted. For backend-architect tasks, allow an adaptive read budget up to 10 supporting files when needed for route+schema+service+integration+verification continuity.
 12. Do not reread the active file. Work from the provided context or use patchLines/editFile directly.
 13. Never delete, truncate, recreate, or wipe files/folders to fix an error unless the user explicitly asked for that destructive operation.
 14. If backend wiring is needed, implement the full slice incrementally: contract, handler, integration, validation.
@@ -126,5 +132,6 @@ Finish and provide a final completion response when ALL are true:
 1. Primary file work is implemented.
 2. Verification shows no error-level issues in touched files.
 3. No new high-severity runtime/build errors in recent terminal/problem checks.
+4. For backend-architect tasks: at least one verification command (runBuild/runTypecheck/runLint/runTests) executed successfully in this run.
 If blocked, checkpoint progress and provide the narrowest next actionable step.`;
 }

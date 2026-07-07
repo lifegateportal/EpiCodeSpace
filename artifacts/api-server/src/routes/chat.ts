@@ -48,7 +48,7 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
   'backend-architect': {
     url: 'https://api.openai.com/v1/chat/completions',
     envKey: 'OPENAI_API_KEY',
-    model: 'gpt-4.1',
+    model: 'gpt-5',
     transform: 'openai',
   },
   claude: {
@@ -308,6 +308,12 @@ function packMessagesForProvider(messages: any[], context: any, maxMessages = 22
   return Array.from(new Set(selected)).sort((a, b) => a - b).map((idx) => messages[idx]);
 }
 
+function historyWindowForAgent(agent: string, mode: string) {
+  if (mode !== 'agent') return 22;
+  if (agent === 'backend-architect') return 40;
+  return 22;
+}
+
 function findLastIndex(arr: any[], pred: (x: any) => boolean) {
   for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i;
   return -1;
@@ -493,7 +499,7 @@ function resolveApiKey(envKey: string) {
 }
 
 function getDeepSeekFallback(currentAgent: string, currentConfig: any, pendingToolCalls: any[]) {
-  if (currentAgent === 'deepseek') return null;
+  if (currentAgent === 'deepseek' || currentAgent === 'backend-architect') return null;
   const fallbackBase = PROVIDER_CONFIG.deepseek;
   const fallbackKey = resolveApiKey(fallbackBase.envKey);
   if (!fallbackKey) return null;
@@ -509,7 +515,7 @@ router.post('/chat', async (req, res) => {
     const { agent, model, messages, context, mode = 'ask', toolResults, pendingToolCalls } = req.body;
     if (!agent || !messages?.length) { res.status(400).json({ error: 'Missing agent or messages' }); return; }
     if (typeof agent !== 'string' || agent.length > 64) { res.status(400).json({ error: 'Invalid agent' }); return; }
-    if (!Array.isArray(messages) || messages.length > 100) { res.status(400).json({ error: 'Invalid messages' }); return; }
+    if (!Array.isArray(messages) || messages.length > 120) { res.status(400).json({ error: 'Invalid messages' }); return; }
     const validModes = ['ask', 'agent', 'plan'];
     const safeMode = validModes.includes(mode) ? mode : 'ask';
 
@@ -530,6 +536,15 @@ router.post('/chat', async (req, res) => {
     let fallbackReason: string | null = null;
 
     if (!activeApiKey) {
+      if (agent === 'backend-architect') {
+        res.status(500).json({
+          error: `Backend Architect requires ${config.envKey}. Silent provider fallback is disabled for backend safety.`,
+          missingKey: config.envKey,
+          acceptedKeys: keyAliases(config.envKey),
+          detectedProviderKeys: heuristicKeyNames(config.envKey),
+        });
+        return;
+      }
       const fallback = getDeepSeekFallback(agent, config, pendingToolCalls);
       if (!fallback) {
         res.status(500).json({
@@ -557,7 +572,7 @@ router.post('/chat', async (req, res) => {
     const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
-    apiMessages = packMessagesForProvider(apiMessages, context);
+    apiMessages = packMessagesForProvider(apiMessages, context, historyWindowForAgent(activeAgent, safeMode));
     if (contextStr) {
       const lastUserIdx = apiMessages.length - 1;
       if (lastUserIdx >= 0 && apiMessages[lastUserIdx].role === 'user') {
@@ -572,7 +587,7 @@ router.post('/chat', async (req, res) => {
     try {
       result = await callProvider(activeConfig, activeApiKey!, systemPrompt, apiMessages, useTools, providerTools);
     } catch (err: any) {
-      const canFallback = activeAgent !== 'deepseek' && isAuthOrKeyError(err);
+      const canFallback = activeAgent !== 'deepseek' && activeAgent !== 'backend-architect' && isAuthOrKeyError(err);
       if (!canFallback) throw err;
       const fallback = getDeepSeekFallback(activeAgent, activeConfig, pendingToolCalls);
       if (!fallback) throw err;
