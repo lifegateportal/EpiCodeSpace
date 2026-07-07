@@ -61,6 +61,12 @@ You are operating as a high-precision coding agent inside a tool-calling workspa
 `;
 }
 
+export const MODE_INSTRUCTIONS: Record<string, string> = {
+  ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
+  agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. For project-wide fixes, batch related edits across the affected files before running build/typecheck/lint/test verification.",
+  plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
+};
+
 export function buildSystemPrompt(
   agent: string,
   context: any,

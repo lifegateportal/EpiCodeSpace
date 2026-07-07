@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { logger } from "../lib/logger";
-import { buildSystemPrompt } from "../lib/agentPromptPolicy";
+import { buildSystemPrompt, MODE_INSTRUCTIONS } from "../lib/agentPromptPolicy";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const router = Router();
+const CANONICAL_GUIDANCE_FILE = '.cursorrules.md';
 
 function loadEnvFile(filePath: string) {
   let raw = '';
@@ -151,12 +152,6 @@ const WRITE_TOOLS = new Set([
   'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand', 'runBuild', 'runTests', 'runLint', 'runTypecheck',
 ]);
 
-const MODE_INSTRUCTIONS: Record<string, string> = {
-  ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. For project-wide fixes, batch related edits across the affected files before running build/typecheck/lint/test verification.",
-  plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
-};
-
 function shouldUseToolsForMode(mode: string) {
   return mode === 'agent' || mode === 'plan';
 }
@@ -220,7 +215,8 @@ async function fetchProvider(url: string, init: RequestInit, providerName: strin
 function buildContextMessage(context: any) {
   if (!context) return '';
   const parts: string[] = [];
-  if (context.pinnedRules?.content) {
+  const pinnedPath = String(context?.pinnedRules?.path || '').trim();
+  if (context.pinnedRules?.content && pinnedPath === CANONICAL_GUIDANCE_FILE) {
     const p = context.pinnedRules;
     const t = p.content.length > 12000 ? p.content.slice(0, 12000) + '\n...(truncated)' : p.content;
     parts.push(`Pinned guidance (${p.path || 'rules'}):\n\`\`\`\n${t}\n\`\`\``);

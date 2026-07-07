@@ -1212,6 +1212,7 @@ const PINNED_RULES_KEY = 'epicodespace_pinned_rules_v1';
 const LITE_MODE_KEY = 'epicodespace_lite_mode_v1';
 const LAST_BACKUP_AT_KEY = 'epicodespace_last_backup_at_v1';
 const CHAT_QUIET_MODE_KEY = 'epicodespace_chat_quiet_mode_v1';
+const CANONICAL_GUIDANCE_FILE = '.cursorrules.md';
 
 /* ─── Main Component ────────────────────────────────────────────────────────── */
 function EpiCodeSpaceApp() {
@@ -3315,10 +3316,10 @@ ${finalCode}
   }, [getLatest, replaceAll, handleMarkChangeSet]);
 
   const handlePinActiveFile = useCallback(() => {
-    if (!activeFile || !fileSystem[activeFile]) return;
-    setPinnedFilePath(activeFile);
+    if (!fileSystem[CANONICAL_GUIDANCE_FILE]) return;
+    setPinnedFilePath(CANONICAL_GUIDANCE_FILE);
     setPinnedFileOpen(true);
-  }, [activeFile, fileSystem]);
+  }, [fileSystem]);
 
   const pendingChangeSets = useMemo(() => {
     return messages
@@ -3358,7 +3359,7 @@ ${finalCode}
   }, [pendingChangeSets, selectedChangeMsgId]);
 
   useEffect(() => {
-    const priority = [pinnedFilePath, '.cursorrules', 'copilot-instructions.md'].filter(Boolean);
+    const priority = [pinnedFilePath, CANONICAL_GUIDANCE_FILE].filter(Boolean);
     const next = priority.find((p) => !!fileSystem[p]);
     if (next && next !== pinnedFilePath) {
       setPinnedFilePath(next);
@@ -3470,10 +3471,10 @@ ${finalCode}
       context.terminalOutput = recentOutput;
     }
 
-    const pinnedEntry = pinnedFilePath ? fileSystem[pinnedFilePath] : null;
+    const pinnedEntry = pinnedFilePath === CANONICAL_GUIDANCE_FILE ? fileSystem[pinnedFilePath] : null;
     if (pinnedEntry && typeof pinnedEntry.content === 'string' && pinnedEntry.content.trim()) {
       context.pinnedRules = {
-        path: pinnedFilePath,
+        path: CANONICAL_GUIDANCE_FILE,
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
