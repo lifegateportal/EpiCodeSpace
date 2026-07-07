@@ -2520,7 +2520,7 @@ ${finalCode}
     if (fuzzy > 1) return { ok: false, error: `oldText is ambiguous (${fuzzy} fuzzy matches). Add more context lines.` };
     return {
       ok: false,
-      error: `oldText not found. Whitespace/quote differences are likely.\n→ USE patchLines INSTEAD: call patchLines(path, startLine, endLine, newContent) — it always works.\n→ OR use writeFile with the complete fixed file content.\nDo NOT call readFile again — you already have the content.`,
+      error: `oldText not found. Whitespace/quote differences are likely.\n→ USE patchLines INSTEAD: call patchLines(path, startLine, endLine, newContent) — it always works.\n→ OR refine oldText with more surrounding context for editFile.\nDo NOT call readFile again — you already have the content.`,
     };
   };
 
@@ -2591,6 +2591,8 @@ ${finalCode}
       }
       case 'writeFile': {
         if (!args.path || typeof args.path !== 'string') return { ok: false, error: 'writeFile: path is required' };
+        const existing = currentFS[args.path];
+        const existingContent = existing?.content ?? '';
         const existingLang = currentFS[args.path]?.language;
         const lang = existingLang || (
           args.path.endsWith('.jsx') || args.path.endsWith('.js') ? 'javascript'
@@ -2600,6 +2602,28 @@ ${finalCode}
           : args.path.endsWith('.md') ? 'markdown'
           : args.path.endsWith('.html') ? 'html' : 'text');
         const safeContent = args.content ?? '';
+
+        // Guardrail: prevent accidental truncation when an existing file is rewritten
+        // with partial model output. Require patchLines/editFile for large edits.
+        if (existing && typeof existingContent === 'string') {
+          const oldLines = existingContent.split('\n').length;
+          const newLines = safeContent.split('\n').length;
+          if (!safeContent.trim()) {
+            return {
+              ok: false,
+              blocked: true,
+              error: `Blocked writeFile on existing file: ${args.path}. Empty overwrite would erase file content. Use patchLines/editFile for targeted changes.`,
+            };
+          }
+          if (oldLines >= 80 && newLines < Math.floor(oldLines * 0.6)) {
+            return {
+              ok: false,
+              blocked: true,
+              error: `Blocked writeFile on existing file: ${args.path}. New content appears truncated (${newLines}/${oldLines} lines). Use patchLines/editFile instead of whole-file overwrite.`,
+            };
+          }
+        }
+
         return { ok: true, action: 'write', path: args.path, language: lang, content: safeContent, lines: safeContent.split('\n').length };
       }
       case 'editFile': {
