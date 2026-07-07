@@ -97,6 +97,7 @@ const WORKSPACE_TOOLS = [
   { name: 'searchCode', description: 'Search for a text pattern across all workspace files.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } },
   { name: 'analyzeFile', description: 'Run static analysis on a file.', parameters: { type: 'object', properties: { path: { type: 'string' } } } },
   { name: 'runCommand', description: 'Run a shell command. Routing is automatic: app/runtime commands such as npm, pnpm, yarn, bun, npx, node, next, vite, tsx, ts-node, nodemon, prisma, drizzle, and similar project execution commands go to the Runtime; git/system inspection commands go to the Terminal. Do not repeat an identical failed command without a concrete reason.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Shell command to run. For package installs prefer npmInstall. For app startup or backend work, prefer the actual package/runtime command.' } }, required: ['command'] } },
+  { name: 'runBuild', description: 'Run the project build command using the detected package manager. Use this for end-of-batch verification when the user wants to confirm the project still builds from chat.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit build command override, e.g. "pnpm run build".' } } } },
   { name: 'runTests', description: 'Run the project test command using the detected package manager (pnpm/yarn/npm). Use after code changes and before finalizing fixes.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit test command override, e.g. "pnpm test -- --runInBand".' } } } },
   { name: 'runLint', description: 'Run the project lint command using the detected package manager. Use to validate style and static checks after edits.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit lint command override.' } } } },
   { name: 'runTypecheck', description: 'Run TypeScript typechecking if available. Prefer this after TS/JS refactors to catch regressions.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Optional explicit typecheck command override.' } } } },
@@ -132,6 +133,7 @@ const TOOL_POLICY: Record<string, 'read' | 'safe_write' | 'risky_write' | 'comma
   deleteFile: 'risky_write',
   npmInstall: 'command',
   runCommand: 'command',
+  runBuild: 'command',
   runTests: 'command',
   runLint: 'command',
   runTypecheck: 'command',
@@ -146,12 +148,12 @@ const READ_ONLY_TOOLS = new Set([
 // Tools that mutate the workspace
 const WRITE_TOOLS = new Set([
   'writeFile', 'editFile', 'patchLines', 'deleteFile',
-  'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand', 'runTests', 'runLint', 'runTypecheck',
+  'searchAndReplace', 'autoFix', 'createComponent', 'npmInstall', 'runCommand', 'runBuild', 'runTests', 'runLint', 'runTypecheck',
 ]);
 
 const MODE_INSTRUCTIONS: Record<string, string> = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
-  agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. Prefer completing at least one concrete write action within the next 2-3 tool calls.",
+  agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. For project-wide fixes, batch related edits across the affected files before running build/typecheck/lint/test verification.",
   plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
 };
 
@@ -406,7 +408,7 @@ function appendToolResults(apiMessages: any[], toolResults: any[], pendingToolCa
   const roundHasWrite = pendingToolCalls.some(tc => WRITE_TOOLS.has(tc.name));
   const roundAllRead  = pendingToolCalls.length > 0 && !roundHasWrite;
   const writeConstraint = roundAllRead
-    ? '⚠ You spent the last round only reading. Use current context to make concrete progress now: prefer patchLines/editFile/writeFile, or runTests/runLint/runTypecheck when verification is the blocker.'
+    ? '⚠ You spent the last round only reading. Use current context to make concrete progress now: prefer patchLines/editFile/writeFile, or runBuild/runTests/runLint/runTypecheck when verification is the blocker.'
     : null;
 
   // Combine both messages; prefer dedupeMessage first, append write constraint if present

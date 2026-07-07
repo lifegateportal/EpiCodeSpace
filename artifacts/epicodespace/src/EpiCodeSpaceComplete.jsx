@@ -748,6 +748,7 @@ const TOOL_POLICY = {
   deleteFile: 'risky_write',
   runCommand: 'command',
   npmInstall: 'command',
+  runBuild: 'command',
   runTests: 'command',
   runLint: 'command',
   runTypecheck: 'command',
@@ -842,6 +843,11 @@ function looksLikeWorkspaceChangeRequest(text) {
   return /(fix|update|change|modify|edit|patch|write|save|create|add|remove|delete|rename|refactor|implement|build|generate|scaffold)/.test(value);
 }
 
+function looksLikeBatchChangeRequest(text) {
+  const value = (text || '').toLowerCase();
+  return /(across (the|my)? project|across (all|multiple) files|project-wide|project wide|globally|global fix|everywhere|bulk|whole project|entire project|multi-file|multiple files|all files)/.test(value);
+}
+
 function userExplicitlyRequestedDeletion(text, targetPath = '') {
   const raw = String(text || '').toLowerCase();
   const target = String(targetPath || '').toLowerCase();
@@ -855,6 +861,12 @@ function userExplicitlyRequestedDeletion(text, targetPath = '') {
 function looksLikeWebsiteBuildRequest(text) {
   const value = (text || '').toLowerCase();
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
+}
+
+function shouldPrimeDeepSeekReasoner(text) {
+  const value = (text || '').toLowerCase();
+  if (looksLikeBatchChangeRequest(value)) return false;
+  return value.length > 220 || /(architecture|migrate|investigate|analyze|reason|complex|cross-cutting|system-wide|deep dive|plan)/.test(value);
 }
 
 const REASONER_CONTEXT_FILE_LIMIT = 8;
@@ -2511,10 +2523,18 @@ ${finalCode}
     };
 
     const pmRun = (pm, script) => {
-      if (pm === 'pnpm') return `pnpm ${script}`;
-      if (pm === 'yarn') return `yarn ${script}`;
+      if (pm === 'pnpm') return `pnpm run ${script}`;
+      if (pm === 'yarn') return `yarn run ${script}`;
       if (pm === 'bun') return `bun run ${script}`;
       return `npm run ${script}`;
+    };
+
+    const formatCommandOutputSnippet = (output) => {
+      const text = String(output || '').trim();
+      if (!text) return '';
+      const lines = text.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+      const tail = lines.slice(-6).join('\n');
+      return tail.length > 500 ? `${tail.slice(0, 500)}…` : tail;
     };
 
     switch (name) {
@@ -2633,6 +2653,12 @@ ${finalCode}
         const override = sanitizeShellCommand(args.command);
         const cmd = override || pmRun(pm, 'typecheck');
         return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched typecheck (${pm}): ${cmd}` };
+      }
+      case 'runBuild': {
+        const pm = detectPackageManager();
+        const override = sanitizeShellCommand(args.command);
+        const cmd = override || pmRun(pm, 'build');
+        return { ok: true, action: 'runCommand', command: cmd, note: `Dispatched build (${pm}): ${cmd}` };
       }
       case 'getProjectStructure': {
         const allPaths = Object.keys(currentFS).sort();
@@ -3071,7 +3097,7 @@ ${finalCode}
         cmdsToRun.push(tc.arguments.command);
       } else if (tc.name === 'npmInstall' && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
-      } else if ((tc.name === 'runTests' || tc.name === 'runLint' || tc.name === 'runTypecheck') && r.action === 'runCommand') {
+      } else if ((tc.name === 'runBuild' || tc.name === 'runTests' || tc.name === 'runLint' || tc.name === 'runTypecheck') && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
       } else if (tc.name === 'getGitStatus' && r.action === 'runCommand') {
         cmdsToRun.push(r.command);
@@ -3393,7 +3419,7 @@ ${finalCode}
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
-    if (activeAgent === 'deepseek' && chatMode === 'agent') {
+    if (activeAgent === 'deepseek' && chatMode === 'agent' && shouldPrimeDeepSeekReasoner(userMessage)) {
       context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath);
     }
 
@@ -3405,6 +3431,9 @@ ${finalCode}
     const websiteBuildMode = (typeof resumeState?.websiteBuildMode === 'boolean')
       ? resumeState.websiteBuildMode
       : looksLikeWebsiteBuildRequest(userMessage);
+    const batchChangeMode = (typeof resumeState?.batchChangeMode === 'boolean')
+      ? resumeState.batchChangeMode
+      : looksLikeBatchChangeRequest(userMessage);
 
     let history = resumeState?.history
       ? [...resumeState.history, { role: 'user', content: apiUserContent }]
@@ -3455,6 +3484,10 @@ ${finalCode}
       let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
       let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
       let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
+        let pendingBatchVerification = !!resumeState?.pendingBatchVerification;
+              if (shouldPrimeDeepSeekReasoner(userMessage)) {
+                await runDeepSeekReasonerPreflight();
+              }
       let deepseekPlanSummary = typeof resumeState?.deepseekPlanSummary === 'string' ? resumeState.deepseekPlanSummary : '';
       const commandFailureCounts = new Map(Object.entries(resumeState?.commandFailureCounts || {}));
       const commandBlocked = new Set(Array.isArray(resumeState?.commandBlocked) ? resumeState.commandBlocked : []);
@@ -3724,6 +3757,11 @@ ${finalCode}
               chatMode === 'agent' &&
               websiteBuildMode &&
               !websiteStatus?.complete;
+            const shouldBlockBatchFinalize =
+              chatMode === 'agent' &&
+              batchChangeMode &&
+              pendingBatchVerification &&
+              summarizeFileChanges(allFileChanges).files.length > 0;
 
             if (shouldForceToolRetry) {
               history = [
@@ -3747,6 +3785,18 @@ ${finalCode}
                 },
               ].slice(-22);
               allSteps.push(`⚠️ Website build not complete yet (score ${websiteStatus?.score || 0}/5). Continuing implementation.`);
+              continue;
+            }
+
+            if (shouldBlockBatchFinalize) {
+              history = [
+                ...history,
+                {
+                  role: 'user',
+                  content: 'Batch mode still has unverified changes. Do not finalize yet. Run runBuild first, then runTypecheck/runLint/runTests if needed, inspect the results, fix any failures, and only then conclude.',
+                },
+              ].slice(-22);
+              allSteps.push('⚠️ Batch-mode finalization blocked until build or verification commands complete.');
               continue;
             }
 
@@ -3835,18 +3885,20 @@ ${finalCode}
             // Execute each tool call locally (sequential so lastToolCallSig stays accurate)
             toolResults = [];
             const isWriteTool = (name) => name === 'writeFile' || name === 'editFile' || name === 'patchLines' || name === 'deleteFile' || name === 'searchAndReplace' || name === 'autoFix' || name === 'createComponent';
+            const isVerificationCommandTool = (name) => name === 'runBuild' || name === 'runTypecheck' || name === 'runLint' || name === 'runTests';
             const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
             const enforceDeepSeekWriteAfterRead = false;
-            const enforceDeepSeekFocusBounds = true;
+            const enforceDeepSeekFocusBounds = !batchChangeMode;
             let roundReadBudgetSpent = false;
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
+            let changedPathsInRound = [];
 
             const proposedWritePaths = data.tool_calls
               .filter((tc) => isWriteTool(tc.name))
               .map((tc) => toolCallPath(tc))
               .filter((p) => typeof p === 'string' && p.length > 0);
 
-            if (!activeWorkFile && proposedWritePaths.length > 0) {
+            if (!batchChangeMode && !activeWorkFile && proposedWritePaths.length > 0) {
               activeWorkFile = proposedWritePaths[0];
               supportReadFiles = [];
               allSteps.push(`🎯 Primary work file: ${activeWorkFile}`);
@@ -3998,6 +4050,7 @@ ${finalCode}
             });
             if (changed) {
               currentFS = newFS;
+              changedPathsInRound = Array.from(new Set(changeItems.map((c) => c.path)));
               replaceAll(newFS);
               data.tool_calls.forEach(tc => {
                 if (tc.name === 'writeFile') {
@@ -4006,85 +4059,97 @@ ${finalCode}
                 }
               });
 
-              // Mandatory post-edit verification pass before finalizing.
-              setAgentRunState(AGENT_RUN_STATES.VERIFYING);
-              stateTransitions.push({ state: AGENT_RUN_STATES.VERIFYING, at: Date.now() });
-              const changedPaths = Array.from(new Set(changeItems.map((c) => c.path)));
-              const verificationIssues = [];
-              for (const path of changedPaths) {
-                const check = await executeToolCall('analyzeFile', { path }, currentFS);
-                if (check?.ok) {
-                  const errorCount = (check.issues || []).filter((i) => i.type === 'error').length;
-                  if (errorCount > 0) verificationIssues.push({ path, errorCount, summary: check.summary });
-                  allSteps.push(`✅ **verify**(${path}) → ${check.issueCount ?? 0} issue(s), ${errorCount} error(s)`);
+              if (batchChangeMode) {
+                if (!pendingBatchVerification) {
+                  history = [
+                    ...history,
+                    {
+                      role: 'user',
+                      content: 'Batch mode is active. Keep applying related multi-file patches without verifying after each file. When the patch batch is complete, runBuild first, then runTypecheck/runLint/runTests if needed.',
+                    },
+                  ].slice(-22);
                 }
-              }
-              if (activeWorkFile && changedPaths.includes(activeWorkFile)) {
-                const lockedFileHasErrors = verificationIssues.some((v) => v.path === activeWorkFile && v.errorCount > 0);
-                if (!lockedFileHasErrors) {
-                  allSteps.push(`✅ Single-file step complete: ${activeWorkFile}`);
-                  activeWorkFile = null;
-                  supportReadFiles = [];
+                pendingBatchVerification = true;
+                allSteps.push(`🧩 Batch mode: deferred verification across ${changedPathsInRound.length} changed file(s).`);
+              } else {
+                setAgentRunState(AGENT_RUN_STATES.VERIFYING);
+                stateTransitions.push({ state: AGENT_RUN_STATES.VERIFYING, at: Date.now() });
+                const verificationIssues = [];
+                for (const path of changedPathsInRound) {
+                  const check = await executeToolCall('analyzeFile', { path }, currentFS);
+                  if (check?.ok) {
+                    const errorCount = (check.issues || []).filter((i) => i.type === 'error').length;
+                    if (errorCount > 0) verificationIssues.push({ path, errorCount, summary: check.summary });
+                    allSteps.push(`✅ **verify**(${path}) → ${check.issueCount ?? 0} issue(s), ${errorCount} error(s)`);
+                  }
                 }
-              }
-              if (verificationIssues.length > 0 && verificationFailures < 2) {
-                verificationFailures++;
-                const issueText = verificationIssues
-                  .map((v) => `${v.path}: ${v.errorCount} error(s) [${v.summary}]`)
-                  .join('; ');
-                history = [
-                  ...history,
-                  {
-                    role: 'user',
-                    content: `Post-edit verification found remaining errors. Fix these before finalizing: ${issueText}. Use write tools now.`,
-                  },
-                ].slice(-22);
-              } else if (verificationIssues.length === 0 && changedPaths.length > 0 && !activeWorkFile) {
-                const runtimeCheck = await executeToolCall('getProblems', { lines: 120 }, currentFS);
-                const runtimeErrors = runtimeCheck?.ok
-                  ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
-                  : 0;
-                if (runtimeErrors === 0) {
-                  if (websiteBuildMode) {
-                    const websiteStatus = assessWebsiteCoreCompletion(currentFS);
-                    if (!websiteStatus.complete) {
-                      const missingText = websiteStatus.missing.join(', ') || 'core website aspects';
-                      history = [
-                        ...history,
-                        {
-                          role: 'user',
-                          content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
-                        },
-                      ].slice(-22);
-                      allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
-                      continue;
+                if (activeWorkFile && changedPathsInRound.includes(activeWorkFile)) {
+                  const lockedFileHasErrors = verificationIssues.some((v) => v.path === activeWorkFile && v.errorCount > 0);
+                  if (!lockedFileHasErrors) {
+                    allSteps.push(`✅ Single-file step complete: ${activeWorkFile}`);
+                    activeWorkFile = null;
+                    supportReadFiles = [];
+                  }
+                }
+                if (verificationIssues.length > 0 && verificationFailures < 2) {
+                  verificationFailures++;
+                  const issueText = verificationIssues
+                    .map((v) => `${v.path}: ${v.errorCount} error(s) [${v.summary}]`)
+                    .join('; ');
+                  history = [
+                    ...history,
+                    {
+                      role: 'user',
+                      content: `Post-edit verification found remaining errors. Fix these before finalizing: ${issueText}. Use write tools now.`,
+                    },
+                  ].slice(-22);
+                } else if (verificationIssues.length === 0 && changedPathsInRound.length > 0 && !activeWorkFile) {
+                  const runtimeCheck = await executeToolCall('getProblems', { lines: 120 }, currentFS);
+                  const runtimeErrors = runtimeCheck?.ok
+                    ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
+                    : 0;
+                  if (runtimeErrors === 0) {
+                    if (websiteBuildMode) {
+                      const websiteStatus = assessWebsiteCoreCompletion(currentFS);
+                      if (!websiteStatus.complete) {
+                        const missingText = websiteStatus.missing.join(', ') || 'core website aspects';
+                        history = [
+                          ...history,
+                          {
+                            role: 'user',
+                            content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
+                          },
+                        ].slice(-22);
+                        allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
+                        continue;
+                      }
                     }
+                    const msgId = makeMessageId('assistant');
+                    const summary = summarizeFileChanges(allFileChanges);
+                    const recap = buildExecutionRecap(allToolCalls, summary);
+                    if (summary.files.length > 0) {
+                      changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+                    }
+                    const assistantMsg = {
+                      id: msgId,
+                      role: 'assistant',
+                      content: `✅ Project roundup complete. Implemented and verified ${summary.files.length} file(s) with no analyzer/runtime errors detected in the latest checks.${recap ? `\n\n---\n\n${recap}` : ''}`,
+                      agent: activeAgent,
+                      agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                      toolCalls: compactToolCalls(allToolCalls, 12),
+                      steps: allSteps,
+                      mode: chatMode,
+                      timestamp: Date.now(),
+                      changedFiles: summary.files,
+                      changedPlus: summary.totalPlus,
+                      changedMinus: summary.totalMinus,
+                    };
+                    setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+                    setConversations(prev => prev.map(c => c.id === activeConvoId
+                      ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
+                      : c));
+                    return;
                   }
-                  const msgId = makeMessageId('assistant');
-                  const summary = summarizeFileChanges(allFileChanges);
-                  const recap = buildExecutionRecap(allToolCalls, summary);
-                  if (summary.files.length > 0) {
-                    changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
-                  }
-                  const assistantMsg = {
-                    id: msgId,
-                    role: 'assistant',
-                    content: `✅ Project roundup complete. Implemented and verified ${summary.files.length} file(s) with no analyzer/runtime errors detected in the latest checks.${recap ? `\n\n---\n\n${recap}` : ''}`,
-                    agent: activeAgent,
-                    agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
-                    toolCalls: compactToolCalls(allToolCalls, 12),
-                    steps: allSteps,
-                    mode: chatMode,
-                    timestamp: Date.now(),
-                    changedFiles: summary.files,
-                    changedPlus: summary.totalPlus,
-                    changedMinus: summary.totalMinus,
-                  };
-                  setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
-                  setConversations(prev => prev.map(c => c.id === activeConvoId
-                    ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
-                    : c));
-                  return;
                 }
               }
             }
@@ -4092,6 +4157,7 @@ ${finalCode}
             // (for finite runtime commands) before the next tool-call round.
             if (cmdsToRun.length > 0) {
               const commandStatuses = [];
+              const verificationCommandsRequested = data.tool_calls.some((tc) => isVerificationCommandTool(tc.name));
               for (const cmd of cmdsToRun) {
                 const normalized = normalizeCommand(cmd);
                 let runStatus;
@@ -4137,17 +4203,19 @@ ${finalCode}
                 commandStatuses.push({ cmd, ...runStatus });
                 if (runStatus.ok) {
                   const shownCmd = runStatus.command || cmd;
+                  const outputSnippet = formatCommandOutputSnippet(runStatus.outputSnippet);
                   if (runStatus.longRunning) {
                     allSteps.push(`🧵 **command**(\`${shownCmd}\`) → started (long-running)`);
                   } else if (runStatus.waited) {
-                    allSteps.push(`⏳ **command**(\`${shownCmd}\`) → finished (exit ${runStatus.status ?? 0})`);
+                    allSteps.push(`⏳ **command**(\`${shownCmd}\`) → finished (exit ${runStatus.status ?? 0})${outputSnippet ? `\n\`\`\`\n${outputSnippet}\n\`\`\`` : ''}`);
                   } else {
                     allSteps.push(`✅ **command**(\`${shownCmd}\`) → finished`);
                   }
                 } else if (runStatus.timeout) {
                   allSteps.push(`⏱️ **command**(\`${cmd}\`) → timeout waiting for completion`);
                 } else {
-                  allSteps.push(`❌ **command**(\`${cmd}\`) → ${runStatus.reason || 'failed to dispatch'}`);
+                  const outputSnippet = formatCommandOutputSnippet(runStatus.outputSnippet);
+                  allSteps.push(`❌ **command**(\`${cmd}\`) → ${runStatus.reason || 'failed to dispatch'}${outputSnippet ? `\n\`\`\`\n${outputSnippet}\n\`\`\`` : ''}`);
                 }
               }
 
@@ -4163,6 +4231,92 @@ ${finalCode}
                     content: `System command barrier: do not proceed to new tool calls until command execution is resolved. Blocked commands: ${blockerText}`,
                   },
                 ].slice(-22);
+              }
+
+              if (verificationCommandsRequested && commandStatuses.every((s) => s.ok)) {
+                setAgentRunState(AGENT_RUN_STATES.VERIFYING);
+                stateTransitions.push({ state: AGENT_RUN_STATES.VERIFYING, at: Date.now() });
+                const verificationIssues = [];
+                const changedPaths = Array.from(allFileChanges.keys());
+                for (const path of changedPaths) {
+                  const check = await executeToolCall('analyzeFile', { path }, currentFS);
+                  if (check?.ok) {
+                    const errorCount = (check.issues || []).filter((i) => i.type === 'error').length;
+                    if (errorCount > 0) verificationIssues.push({ path, errorCount, summary: check.summary });
+                    allSteps.push(`✅ **verify**(${path}) → ${check.issueCount ?? 0} issue(s), ${errorCount} error(s)`);
+                  }
+                }
+
+                const runtimeCheck = await executeToolCall('getProblems', { lines: 120 }, currentFS);
+                const runtimeErrors = runtimeCheck?.ok
+                  ? (runtimeCheck.problems || []).filter((p) => p.severity === 'error').length
+                  : 0;
+
+                if (verificationIssues.length > 0 && verificationFailures < 2) {
+                  pendingBatchVerification = true;
+                  verificationFailures++;
+                  const issueText = verificationIssues
+                    .map((v) => `${v.path}: ${v.errorCount} error(s) [${v.summary}]`)
+                    .join('; ');
+                  history = [
+                    ...history,
+                    {
+                      role: 'user',
+                      content: `Post-build verification found remaining file errors. Fix these before finalizing: ${issueText}.`,
+                    },
+                  ].slice(-22);
+                } else if (runtimeErrors > 0) {
+                  pendingBatchVerification = true;
+                  history = [
+                    ...history,
+                    {
+                      role: 'user',
+                      content: 'Build or terminal verification still shows runtime/build errors. Read the problems, fix them, and rerun verification before finalizing.',
+                    },
+                  ].slice(-22);
+                } else if (changedPaths.length > 0) {
+                  pendingBatchVerification = false;
+                  if (websiteBuildMode) {
+                    const websiteStatus = assessWebsiteCoreCompletion(currentFS);
+                    if (!websiteStatus.complete) {
+                      const missingText = websiteStatus.missing.join(', ') || 'core website aspects';
+                      history = [
+                        ...history,
+                        {
+                          role: 'user',
+                          content: `Keep going. Website build is still in progress. Implement remaining core aspects: ${missingText}. Continue until these are complete.`,
+                        },
+                      ].slice(-22);
+                      allSteps.push(`🏗️ Website workflow continuing (${websiteStatus.score}/5 complete).`);
+                      continue;
+                    }
+                  }
+                  const msgId = makeMessageId('assistant');
+                  const summary = summarizeFileChanges(allFileChanges);
+                  const recap = buildExecutionRecap(allToolCalls, summary);
+                  if (summary.files.length > 0) {
+                    changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
+                  }
+                  const assistantMsg = {
+                    id: msgId,
+                    role: 'assistant',
+                    content: `✅ Project roundup complete. Implemented ${summary.files.length} file(s) and verified the batch with command execution and follow-up checks.${recap ? `\n\n---\n\n${recap}` : ''}`,
+                    agent: activeAgent,
+                    agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                    toolCalls: compactToolCalls(allToolCalls, 12),
+                    steps: allSteps,
+                    mode: chatMode,
+                    timestamp: Date.now(),
+                    changedFiles: summary.files,
+                    changedPlus: summary.totalPlus,
+                    changedMinus: summary.totalMinus,
+                  };
+                  setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+                  setConversations(prev => prev.map(c => c.id === activeConvoId
+                    ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
+                    : c));
+                  return;
+                }
               }
             }
 
@@ -4193,7 +4347,7 @@ ${finalCode}
             }
 
             if (consecReadOnlyRounds >= 3) {
-              const msg = `🚨 You are stuck in a read loop (${consecReadOnlyRounds} read-only rounds). Use available context and perform a concrete change now (patchLines/editFile/writeFile), or runTests/runLint/runTypecheck if verification is the blocker.`;
+              const msg = `🚨 You are stuck in a read loop (${consecReadOnlyRounds} read-only rounds). Use available context and perform a concrete change now (patchLines/editFile/writeFile), or runBuild/runTests/runLint/runTypecheck if verification is the blocker.`;
               history = [...history, { role: 'user', content: msg }].slice(-22);
               allSteps.push(`⚠️ Read-loop (${consecReadOnlyRounds} read-only rounds) — forcing write on next round.`);
             }
@@ -4278,8 +4432,10 @@ ${finalCode}
                 : [],
               lastToolCallSig,
               websiteBuildMode,
+              batchChangeMode,
               totalWriteSuccesses,
               noWriteRounds,
+              pendingBatchVerification,
               deepseekReasonerPrimed,
               deepseekPlanSummary,
               commandFailureCounts: Object.fromEntries(commandFailureCounts),
