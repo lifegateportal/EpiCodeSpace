@@ -4185,9 +4185,17 @@ ${finalCode}
             // Run terminal commands requested by agent and wait for completion
             // (for finite runtime commands) before the next tool-call round.
             if (cmdsToRun.length > 0) {
+              const uniqueCmdsToRun = [];
+              const seenCmds = new Set();
+              for (const cmd of cmdsToRun) {
+                const key = normalizeCommand(cmd);
+                if (seenCmds.has(key)) continue;
+                seenCmds.add(key);
+                uniqueCmdsToRun.push(cmd);
+              }
               const commandStatuses = [];
               const verificationCommandsRequested = data.tool_calls.some((tc) => isVerificationCommandTool(tc.name));
-              for (const cmd of cmdsToRun) {
+              for (const cmd of uniqueCmdsToRun) {
                 const normalized = normalizeCommand(cmd);
                 let runStatus;
 
@@ -4541,20 +4549,9 @@ ${finalCode}
           },
         };
         setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
-
-          if (shouldAutoResume) {
-            const delayMs = 1200 * (autoResumeAttempts + 1);
-            setTimeout(() => {
-              handleAgentSubmit(
-                { preventDefault: () => {} },
-                'Resume automatically from the last stable step. Continue the task without repeating already exhausted upstream retries or re-reading already inspected files.',
-                { resumeFromMessageId: msgId }
-              );
-            }, delayMs);
-          }
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] } : c));
 
-        if (err?.retryable && autoResumeAttempts < 2) {
+        if (shouldAutoResume) {
           const delayMs = 1200 * (autoResumeAttempts + 1);
           setTimeout(() => {
             handleAgentSubmit(
