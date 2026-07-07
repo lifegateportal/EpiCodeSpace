@@ -865,6 +865,12 @@ function userExplicitlyRequestedDeletion(text, targetPath = '') {
   return raw.includes(target) || raw.includes(target.split('/').pop() || '');
 }
 
+function userExplicitlyApprovedDestructiveSweep(text) {
+  const raw = String(text || '').toLowerCase();
+  if (!raw) return false;
+  return /(approve|approved|confirm|confirmed|yes|proceed).*(sweep|bulk|mass).*(delete|remove|replace|wipe|truncate)|\b(delete all files|remove all files|mass delete approved|approved bulk replace)\b/.test(raw);
+}
+
 function looksLikeWebsiteBuildRequest(text) {
   const value = (text || '').toLowerCase();
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
@@ -4000,6 +4006,7 @@ ${finalCode}
             let roundReadBudgetSpent = false;
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
             let changedPathsInRound = [];
+            let roundDeleteAttempts = 0;
 
             const proposedWritePaths = data.tool_calls
               .filter((tc) => isWriteTool(tc.name))
@@ -4016,8 +4023,13 @@ ${finalCode}
               const signature = toolCallSignature(tc.name, tc.arguments);
               const isConsecutiveDuplicate = signature === lastToolCallSig;
               const tcPath = toolCallPath(tc);
+              if (tc.name === 'deleteFile') roundDeleteAttempts += 1;
               const activeFileReadBlocked = tc.name === 'readFile' && tcPath === activeFile;
               const deleteBlocked = tc.name === 'deleteFile' && !userExplicitlyRequestedDeletion(userMessage, tcPath);
+              const destructiveSweepApproved = userExplicitlyApprovedDestructiveSweep(userMessage);
+              const multiDeleteSweepBlocked = tc.name === 'deleteFile' && roundDeleteAttempts > 1 && !destructiveSweepApproved;
+              const workspaceReplaceBlocked = tc.name === 'searchAndReplace' && !tc.arguments?.targetFile && !destructiveSweepApproved;
+              const destructiveReplaceBlocked = tc.name === 'searchAndReplace' && !tc.arguments?.targetFile && String(tc.arguments?.replacement ?? '') === '' && !destructiveSweepApproved;
               const writeOutOfScope = enforceDeepSeekFocusBounds && !!activeWorkFile && isWriteTool(tc.name) && !!tcPath && tcPath !== activeWorkFile;
               const blockedForReadLoop = enforceDeepSeekWriteAfterRead && isReadTool(tc.name) && (writeRequiredBeforeMoreReads || roundReadBudgetSpent);
 
@@ -4053,6 +4065,27 @@ ${finalCode}
                     blocked: true,
                     systemMessage: 'Destructive file deletion is blocked unless the user explicitly asked to delete that specific file. Repair in place instead.',
                     error: `Blocked deleteFile: ${tcPath}`,
+                  }
+                : multiDeleteSweepBlocked
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: 'Bulk delete sweep blocked. Explicit destructive sweep approval is required before deleting multiple files in one round.',
+                    error: 'Blocked multi-file delete sweep',
+                  }
+                : destructiveReplaceBlocked
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: 'Workspace-wide removal replace blocked. Empty replacement across multiple files requires explicit destructive sweep approval.',
+                    error: 'Blocked destructive searchAndReplace sweep',
+                  }
+                : workspaceReplaceBlocked
+                ? {
+                    ok: false,
+                    blocked: true,
+                    systemMessage: 'Workspace-wide searchAndReplace is blocked by default. Scope it to a targetFile or provide explicit destructive sweep approval.',
+                    error: 'Blocked workspace-wide searchAndReplace',
                   }
                 : isConsecutiveDuplicate
                 ? {
@@ -4106,6 +4139,12 @@ ${finalCode}
                   ? '🚫 blocked (active file already in context)'
                 : deleteBlocked
                   ? '🚫 blocked (destructive delete requires explicit user request)'
+                : multiDeleteSweepBlocked
+                  ? '🚫 blocked (multi-file delete sweep requires explicit approval)'
+                : destructiveReplaceBlocked
+                  ? '🚫 blocked (destructive workspace replace requires explicit approval)'
+                : workspaceReplaceBlocked
+                  ? '🚫 blocked (workspace-wide replace requires explicit approval)'
                 : isOutOfScope
                   ? `🚫 blocked (focus ${activeWorkFile})`
                 : tc.name === 'analyzeFile' && result.ok
