@@ -999,6 +999,14 @@ function extractReasonerVisibleSummary(planText) {
   return (summaryLine || 'Preparing targeted implementation and verification.').slice(0, 240);
 }
 
+function formatCommandOutputSnippet(output) {
+  const text = String(output || '').trim();
+  if (!text) return '';
+  const lines = text.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+  const tail = lines.slice(-6).join('\n');
+  return tail.length > 500 ? `${tail.slice(0, 500)}...` : tail;
+}
+
 function assessWebsiteCoreCompletion(fs) {
   const paths = Object.keys(fs || {});
   const hasPath = (re) => paths.some((p) => re.test(p));
@@ -2554,14 +2562,6 @@ ${finalCode}
       if (pm === 'yarn') return `yarn run ${script}`;
       if (pm === 'bun') return `bun run ${script}`;
       return `npm run ${script}`;
-    };
-
-    const formatCommandOutputSnippet = (output) => {
-      const text = String(output || '').trim();
-      if (!text) return '';
-      const lines = text.split('\n').map((line) => line.trimEnd()).filter(Boolean);
-      const tail = lines.slice(-6).join('\n');
-      return tail.length > 500 ? `${tail.slice(0, 500)}…` : tail;
     };
 
     switch (name) {
@@ -4477,7 +4477,6 @@ ${finalCode}
               allToolCalls: allToolCalls.slice(-120),
             },
             canContinue: true,
-                    canContinue: !err?.retryable,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
@@ -4497,12 +4496,15 @@ ${finalCode}
         if (summary.files.length > 0) {
           changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
         }
+        const shouldAutoResume = !!err?.retryable && autoResumeAttempts < 2;
         const assistantMsg = {
           id: msgId,
           role: 'assistant',
-          content: (err?.retryable
-            ? `⚠️ Upstream retries exhausted (${err.code || 'UPSTREAM_ERROR'}). Progress is checkpointed; click Continue to resume from the exact step.`
-            : `⚠️ API error: ${err?.message || 'Unknown error'}. Progress is checkpointed. Click Continue to retry from the last stable step.`) + (recap ? `\n\n---\n\n${recap}` : ''),
+          content: (shouldAutoResume
+            ? `Temporary upstream issue (${err.code || 'UPSTREAM_ERROR'}). Retrying automatically...`
+            : err?.retryable
+              ? `Temporary upstream issue (${err.code || 'UPSTREAM_ERROR'}). Please try again in a moment.`
+              : `API error: ${err?.message || 'Unknown error'}.`) + (recap ? `\n\n---\n\n${recap}` : ''),
           agent: activeAgent,
           agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
           toolCalls: compactToolCalls(allToolCalls, 12),
@@ -4512,7 +4514,7 @@ ${finalCode}
           changedFiles: summary.files,
           changedPlus: summary.totalPlus,
           changedMinus: summary.totalMinus,
-          canContinue: true,
+          canContinue: false,
           resumeState: {
             history: packChatHistory(history, activeFile, userMessage, 20),
             pendingToolCalls: Array.isArray(pendingToolCalls) ? pendingToolCalls : [],
@@ -4521,8 +4523,11 @@ ${finalCode}
               : [],
             lastToolCallSig,
             websiteBuildMode,
+            batchChangeMode,
             totalWriteSuccesses,
             noWriteRounds,
+            pendingBatchVerification,
+            autoResumeAttempts: autoResumeAttempts + 1,
             deepseekReasonerPrimed,
             deepseekPlanSummary,
             commandFailureCounts: Object.fromEntries(commandFailureCounts),
@@ -4536,6 +4541,17 @@ ${finalCode}
           },
         };
         setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+
+          if (shouldAutoResume) {
+            const delayMs = 1200 * (autoResumeAttempts + 1);
+            setTimeout(() => {
+              handleAgentSubmit(
+                { preventDefault: () => {} },
+                'Resume automatically from the last stable step. Continue the task without repeating already exhausted upstream retries or re-reading already inspected files.',
+                { resumeFromMessageId: msgId }
+              );
+            }, delayMs);
+          }
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] } : c));
 
         if (err?.retryable && autoResumeAttempts < 2) {
