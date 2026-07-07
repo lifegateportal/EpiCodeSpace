@@ -863,9 +863,36 @@ function looksLikeWebsiteBuildRequest(text) {
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
 }
 
+function looksLikePastedErrorBlock(text) {
+  const value = String(text || '');
+  if (value.length < 1800) return false;
+  const lines = value.split('\n');
+  if (lines.length < 18) return false;
+  return /(error|exception|failed|traceback|stack|cannot|undefined|syntaxerror|typeerror|referenceerror|ts\d+:|at\s+.+:\d+:\d+)/i.test(value);
+}
+
+function normalizeLargeErrorBlock(text) {
+  const raw = String(text || '').replace(/\0/g, '');
+  if (!looksLikePastedErrorBlock(raw)) return raw;
+  const lines = raw.split('\n');
+  const head = lines.slice(0, 24).join('\n');
+  const tail = lines.slice(-40).join('\n');
+  return [
+    'Analyze and fix this pasted error/log block.',
+    'Focus on the root cause and the first actionable fix. Do not quote the entire log back.',
+    '',
+    '[Error block start excerpt]',
+    head,
+    '',
+    '[Error block end excerpt]',
+    tail,
+  ].join('\n');
+}
+
 function shouldPrimeDeepSeekReasoner(text) {
   const value = (text || '').toLowerCase();
   if (looksLikeBatchChangeRequest(value)) return false;
+  if (looksLikePastedErrorBlock(value)) return false;
   return value.length > 220 || /(architecture|migrate|investigate|analyze|reason|complex|cross-cutting|system-wide|deep dive|plan)/.test(value);
 }
 
@@ -3379,7 +3406,7 @@ ${finalCode}
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
     // Expand slash commands for API (display keeps original)
-    const expandedMessage = expandSlashCommand(userMessage, activeFile);
+    const expandedMessage = normalizeLargeErrorBlock(expandSlashCommand(userMessage, activeFile));
     const apiUserContent = toModelUserContent(expandedMessage, chatImage, activeAgent);
     const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
     const userMsg = { id: makeMessageId('user'), role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
@@ -3483,6 +3510,7 @@ ${finalCode}
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
       let totalWriteSuccesses = Number(resumeState?.totalWriteSuccesses || 0);
       let noWriteRounds = Number(resumeState?.noWriteRounds || 0);
+      let autoResumeAttempts = Number(resumeState?.autoResumeAttempts || 0);
       let deepseekReasonerPrimed = !!resumeState?.deepseekReasonerPrimed;
         let pendingBatchVerification = !!resumeState?.pendingBatchVerification;
               if (shouldPrimeDeepSeekReasoner(userMessage)) {
@@ -3499,7 +3527,7 @@ ${finalCode}
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         const requestChatRound = async (payload) => {
-          const MAX_ATTEMPTS = 3;
+          const MAX_ATTEMPTS = 4;
           let lastErr = null;
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             try {
@@ -3542,6 +3570,7 @@ ${finalCode}
               if (attempt === MAX_ATTEMPTS - 1) throw err;
               await sleep(500 * (2 ** attempt));
             }
+              await sleep(Math.min(4000, 700 * (2 ** attempt)));
           }
           throw lastErr || new Error('Chat round failed');
         };
@@ -4448,6 +4477,7 @@ ${finalCode}
               allToolCalls: allToolCalls.slice(-120),
             },
             canContinue: true,
+                    canContinue: !err?.retryable,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
@@ -4507,6 +4537,17 @@ ${finalCode}
         };
         setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
         setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] } : c));
+
+        if (err?.retryable && autoResumeAttempts < 2) {
+          const delayMs = 1200 * (autoResumeAttempts + 1);
+          setTimeout(() => {
+            handleAgentSubmit(
+              { preventDefault: () => {} },
+              'Resume automatically from the last stable step. Continue the task without repeating already exhausted upstream retries or re-reading already inspected files.',
+              { resumeFromMessageId: msgId }
+            );
+          }, delayMs);
+        }
       } finally {
         setIsTyping(false);
         setAgentRunState(AGENT_RUN_STATES.IDLE);
