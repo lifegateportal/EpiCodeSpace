@@ -30,7 +30,13 @@ import {
  * Ref:    sendCommand(cmd) → bool, isReady() → bool
  */
 const ServerTerminal = forwardRef(function ServerTerminal(
-  { files, sink, onServerUrl, onOutput },
+  {
+    files,
+    sink,
+    onServerUrl,
+    onOutput,
+    sessionStorageKey = 'epicodespace.terminalSessionId',
+  },
   ref,
 ) {
   const hostRef = useRef(null);
@@ -159,7 +165,9 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
     ws.onopen = () => {
       const flat = buildFilesMap();
-      const storedSessionId = sessionStorage.getItem('epicodespace.terminalSessionId');
+      const storedSessionId = sessionStorageKey
+        ? sessionStorage.getItem(sessionStorageKey)
+        : null;
       ws.send(JSON.stringify({
         type: 'sync',
         files: flat,
@@ -184,7 +192,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
           setConnState('ready');
           setProcessRunning(true);
           // Persist session ID so reconnects reuse the same shell
-          if (msg.sessionId) sessionStorage.setItem('epicodespace.terminalSessionId', msg.sessionId);
+          if (msg.sessionId && sessionStorageKey) sessionStorage.setItem(sessionStorageKey, msg.sessionId);
           // Clear "connecting..." line
           termRef.current?.write('\r\x1b[K');
           if (msg.reconnected) {
@@ -299,10 +307,10 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
   const restart = useCallback(() => {
     // Clear stored session so Restart always gives a fresh shell
-    sessionStorage.removeItem('epicodespace.terminalSessionId');
+    if (sessionStorageKey) sessionStorage.removeItem(sessionStorageKey);
     reconnectAttemptsRef.current = 0;
     connect();
-  }, [connect]);
+  }, [connect, sessionStorageKey]);
 
   // ── Copy / Paste ─────────────────────────────────────────────────────────
   const handleCopy = useCallback(async () => {

@@ -1259,6 +1259,9 @@ function EpiCodeSpaceApp() {
   // ── Terminal ──────────────────────────────────────────────────────────────
   const [terminalLines, setTerminalLines] = useState(['ubuntu@epicode:~/workspace (main) $ ']);
   const [terminalInput, setTerminalInput] = useState('');
+  const runtimeTerminalSeqRef = useRef(1);
+  const [runtimeTerminals, setRuntimeTerminals] = useState([{ id: 'runtime-1', label: 'Runtime 1' }]);
+  const [activeRuntimeTerminalId, setActiveRuntimeTerminalId] = useState('runtime-1');
   const [outputLog, setOutputLog] = useState(['EpiCodeSpace output panel ready.']);
   const [debugConsoleLines, setDebugConsoleLines] = useState([{ type: 'info', text: 'Debug console attached.', ts: Date.now() }]);
   const [ports, setPorts] = useState([
@@ -1383,7 +1386,8 @@ function EpiCodeSpaceApp() {
   const handleSaveRef = useRef(null);
   const handleNewFileRef = useRef(null);
   const handleTerminalCommandRef = useRef(null);
-  const wcTermRef = useRef(null); // ref to WebContainerTerminal imperative handle
+  const wcTermRefs = useRef(new Map()); // runtime terminal id -> imperative handle
+  const activeRuntimeTerminalIdRef = useRef('runtime-1');
   const terminalOutputRef = useRef([]); // ring buffer — last 300 lines of terminal output
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
@@ -1402,6 +1406,10 @@ function EpiCodeSpaceApp() {
     window.addEventListener('resize', () => setScreenWidth(window.innerWidth), { signal: ac.signal });
     return () => ac.abort();
   }, []);
+
+  useEffect(() => {
+    activeRuntimeTerminalIdRef.current = activeRuntimeTerminalId;
+  }, [activeRuntimeTerminalId]);
 
   // ── Wire logger → DEBUG CONSOLE panel ────────────────────────────────────
   useEffect(() => {
@@ -3762,7 +3770,8 @@ ${finalCode}
 
           // Keep dev/watch servers running; waiting for completion would block forever.
           if (isLikelyLongRunningCmd(raw)) {
-            const sent = wcTermRef.current?.sendCommand(raw);
+            const activeRuntimeHandle = wcTermRefs.current.get(activeRuntimeTerminalIdRef.current);
+            const sent = activeRuntimeHandle?.sendCommand(raw);
             if (sent === false) {
               handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
               return { ok: false, route: 'runtime', waited: false, reason: 'runtime not ready' };
@@ -3773,7 +3782,8 @@ ${finalCode}
           const marker = `__ECS_AGENT_CMD_DONE_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}__`;
           const wrapped = `{ ${raw}; }; __ecs_status=$?; echo "${marker}:$__ecs_status"`;
           const startIdx = terminalOutputRef.current.length;
-          const sent = wcTermRef.current?.sendCommand(wrapped);
+          const activeRuntimeHandle = wcTermRefs.current.get(activeRuntimeTerminalIdRef.current);
+          const sent = activeRuntimeHandle?.sendCommand(wrapped);
 
           if (sent === false) {
             handleTerminalCommandRef.current?.(`# Runtime not ready — boot the container then run: ${raw}`);
@@ -4754,6 +4764,30 @@ ${finalCode}
     }
   }, []);
 
+  const handleCreateRuntimeTerminal = useCallback(() => {
+    runtimeTerminalSeqRef.current += 1;
+    const nextId = `runtime-${runtimeTerminalSeqRef.current}`;
+    const nextLabel = `Runtime ${runtimeTerminalSeqRef.current}`;
+    setRuntimeTerminals((prev) => [...prev, { id: nextId, label: nextLabel }]);
+    setActiveRuntimeTerminalId(nextId);
+    setTerminalState('open');
+    setActiveTerminalTab('runtime');
+  }, []);
+
+  const handleCloseRuntimeTerminal = useCallback((terminalId) => {
+    setRuntimeTerminals((prev) => {
+      if (prev.length <= 1) return prev;
+      const idx = prev.findIndex((t) => t.id === terminalId);
+      if (idx === -1) return prev;
+      const next = prev.filter((t) => t.id !== terminalId);
+      if (activeRuntimeTerminalIdRef.current === terminalId) {
+        const fallback = next[Math.max(0, idx - 1)]?.id || next[0]?.id || 'runtime-1';
+        setActiveRuntimeTerminalId(fallback);
+      }
+      return next;
+    });
+  }, []);
+
   const handleTerminalCommand = useCallback((cmd) => {
     const prompt = 'ubuntu@epicode:~/workspace (main) $ ';
     const args = cmd.trim().split(/\s+/);
@@ -5066,6 +5100,7 @@ ${finalCode}
     ],
     Terminal: [
       { label: 'New Terminal', shortcut: 'Ctrl+Shift+`', action: () => { setTerminalState('open'); setActiveTerminalTab('terminal'); } },
+      { label: 'New Runtime Terminal', action: handleCreateRuntimeTerminal },
       { label: 'Split Terminal', shortcut: 'Ctrl+Shift+5', disabled: true },
       { type: 'separator' },
       { label: 'Run Active File', action: handleRunActiveFile },
@@ -5084,7 +5119,7 @@ ${finalCode}
       { type: 'separator' },
       { label: 'About EpiCodeSpace', icon: Info, action: () => setShowAbout(true) },
     ],
-  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleSaveSnapshot, handleRestoreLatestSnapshot, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, fileSystem, handleEditorUndo, handleEditorRedo, liteModeEnabled, handleToggleLiteMode]);
+  }), [handleNewFile, handleNewProject, handleImportProject, handleExportProject, handleSave, handleSaveSnapshot, handleRestoreLatestSnapshot, handleTerminalCommand, editorCut, editorCopy, editorPaste, editorSelectAll, handleStartDebug, handleRunBuild, handleRunActiveFile, handleCreateRuntimeTerminal, fileSystem, handleEditorUndo, handleEditorRedo, liteModeEnabled, handleToggleLiteMode]);
 
   // ═════════════════════════════════════════════════════════════════════════
   //  RENDER
@@ -5440,7 +5475,7 @@ ${finalCode}
                   { id: 'problems', label: 'PROBLEMS', badge: allProblems.length > 0 ? allProblems.length : null },
                   { id: 'output', label: 'OUTPUT' },
                   { id: 'terminal', label: 'TERMINAL' },
-                  { id: 'runtime', label: 'RUNTIME' },
+                  { id: 'runtime', label: 'RUNTIME', badge: runtimeTerminals.length > 1 ? runtimeTerminals.length : null },
                   { id: 'preview', label: 'PREVIEW' },
                   { id: 'debug', label: 'DEBUG CONSOLE' },
                   { id: 'ports', label: 'PORTS', badge: ports.filter(p => p.state === 'running').length || null },
@@ -5468,7 +5503,18 @@ ${finalCode}
                   </button>
                 ))}
                 <div className="flex-1 flex justify-end gap-2 pb-2">
-                  <button className="p-1 hover:bg-[#25104a] rounded text-purple-400/60 transition-colors"><Plus size={14} /></button>
+                  <button
+                    className="p-1 hover:bg-[#25104a] rounded text-purple-400/60 transition-colors"
+                    title={activeTerminalTab === 'runtime' ? 'New runtime terminal' : 'New terminal'}
+                    onClick={() => {
+                      if (activeTerminalTab === 'runtime') {
+                        handleCreateRuntimeTerminal();
+                      } else {
+                        setTerminalState('open');
+                        setActiveTerminalTab('terminal');
+                      }
+                    }}
+                  ><Plus size={14} /></button>
                   <button className="p-1 hover:bg-[#25104a] rounded text-purple-400/60 transition-colors" onClick={() => setTerminalState('closed')}><X size={14} /></button>
                 </div>
               </div>
@@ -5553,14 +5599,63 @@ ${finalCode}
                 className={`flex-1 min-h-0 ${activeTerminalTab === 'runtime' ? 'flex flex-col' : 'hidden'}`}
                 aria-hidden={activeTerminalTab !== 'runtime'}
               >
+                <div className="flex items-center gap-1 px-2 py-1 border-b border-fuchsia-500/10 bg-[#0f0620] overflow-x-auto no-scrollbar">
+                  {runtimeTerminals.map((terminal) => {
+                    const isActiveRuntime = activeRuntimeTerminalId === terminal.id;
+                    return (
+                      <div
+                        key={terminal.id}
+                        className={`inline-flex items-center rounded border text-[10px] ${isActiveRuntime ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-100' : 'bg-[#1a0b35] border-fuchsia-500/20 text-purple-300 hover:text-purple-100'}`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setActiveRuntimeTerminalId(terminal.id)}
+                          className="px-2 py-1 whitespace-nowrap"
+                        >
+                          {terminal.label}
+                        </button>
+                        {runtimeTerminals.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleCloseRuntimeTerminal(terminal.id)}
+                            className="px-1.5 py-1 border-l border-current/20 hover:bg-black/20"
+                            title={`Close ${terminal.label}`}
+                            aria-label={`Close ${terminal.label}`}
+                          >
+                            <X size={11} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={handleCreateRuntimeTerminal}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded border border-fuchsia-500/25 text-[10px] text-purple-300 hover:text-purple-100 hover:bg-[#25104a]"
+                    title="Open another runtime terminal"
+                  >
+                    <Plus size={11} /> New
+                  </button>
+                </div>
                 <Suspense fallback={<div className="p-3 text-xs text-purple-400/60">Loading runtime…</div>}>
-                  <WebContainerTerminal
-                    ref={wcTermRef}
-                    files={fileSystem}
-                    sink={{ writeFile, getLatest: () => fileSystem }}
-                    onServerUrl={(url) => setPreviewUrl(url)}
-                    onOutput={onTerminalOutput}
-                  />
+                  {runtimeTerminals.map((terminal) => (
+                    <div
+                      key={terminal.id}
+                      className={`flex-1 min-h-0 ${activeRuntimeTerminalId === terminal.id ? 'flex flex-col' : 'hidden'}`}
+                    >
+                      <WebContainerTerminal
+                        ref={(instance) => {
+                          if (instance) wcTermRefs.current.set(terminal.id, instance);
+                          else wcTermRefs.current.delete(terminal.id);
+                        }}
+                        sessionStorageKey={`epicodespace.terminalSessionId.${terminal.id}`}
+                        files={fileSystem}
+                        sink={{ writeFile, getLatest: () => fileSystem }}
+                        onServerUrl={(url) => setPreviewUrl(url)}
+                        onOutput={onTerminalOutput}
+                      />
+                    </div>
+                  ))}
                 </Suspense>
               </div>
 
