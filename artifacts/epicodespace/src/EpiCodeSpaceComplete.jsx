@@ -870,6 +870,11 @@ function looksLikeWebsiteBuildRequest(text) {
   return /(build|create|make|scaffold|design)\s+.*(website|web\s*app|site|landing\s*page)|\b(website|web\s*app|landing\s*page|homepage|portfolio\s*site)\b/.test(value);
 }
 
+function looksLikeAppBuildRequest(text) {
+  const value = (text || '').toLowerCase();
+  return /(build|create|make|scaffold|ship|continue)\s+.*(app|application|mvp|product)|\b(building an app|building my app|continue building|full stack app|full-stack app|end-to-end app)\b/.test(value);
+}
+
 function looksLikePastedErrorBlock(text) {
   const value = String(text || '');
   if (value.length < 1800) return false;
@@ -3506,9 +3511,13 @@ ${finalCode}
     const websiteBuildMode = (typeof resumeState?.websiteBuildMode === 'boolean')
       ? resumeState.websiteBuildMode
       : looksLikeWebsiteBuildRequest(userMessage);
+    const appBuildMode = (typeof resumeState?.appBuildMode === 'boolean')
+      ? resumeState.appBuildMode
+      : looksLikeAppBuildRequest(userMessage);
+    const forceBatchForBuild = websiteBuildMode || appBuildMode;
     const batchChangeMode = (typeof resumeState?.batchChangeMode === 'boolean')
-      ? resumeState.batchChangeMode
-      : looksLikeBatchChangeRequest(userMessage);
+      ? (resumeState.batchChangeMode || forceBatchForBuild)
+      : (looksLikeBatchChangeRequest(userMessage) || forceBatchForBuild);
 
     let history = resumeState?.history
       ? [...resumeState.history, { role: 'user', content: apiUserContent }]
@@ -4458,12 +4467,14 @@ ${finalCode}
             stagnationRounds = roundMadeProgress ? 0 : stagnationRounds + 1;
 
             if (stagnationRounds >= 4) {
-              allSteps.push(`⚠️ Low-progress detected (${stagnationRounds} rounds). Auto-steering to finish one concrete file outcome.`);
+              allSteps.push(`⚠️ Low-progress detected (${stagnationRounds} rounds). Auto-steering to finish one concrete ${batchChangeMode ? 'batch' : 'file'} outcome.`);
               history = [
                 ...history,
                 {
                   role: 'user',
-                  content: 'System steering: No interruption. Finish one concrete file outcome now. Do not branch to new files. Implement, verify, and conclude.',
+                  content: batchChangeMode
+                    ? 'System steering: No interruption. Continue coordinated multi-file implementation for this app build. Do not stop after one file. Complete a coherent batch, then verify and conclude.'
+                    : 'System steering: No interruption. Finish one concrete file outcome now. Do not branch to new files. Implement, verify, and conclude.',
                 },
               ].slice(-historySliceLimit);
               // Reset so this steering can take effect without repetitive spam.
@@ -4556,6 +4567,7 @@ ${finalCode}
                 : [],
               lastToolCallSig,
               websiteBuildMode,
+              appBuildMode,
               batchChangeMode,
               totalWriteSuccesses,
               noWriteRounds,
@@ -4619,6 +4631,7 @@ ${finalCode}
               : [],
             lastToolCallSig,
             websiteBuildMode,
+            appBuildMode,
             batchChangeMode,
             totalWriteSuccesses,
             noWriteRounds,
