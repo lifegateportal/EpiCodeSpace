@@ -914,6 +914,16 @@ function shouldPrimeDeepSeekReasoner(text) {
   return value.length > 220 || /(architecture|migrate|investigate|analyze|reason|complex|cross-cutting|system-wide|deep dive|plan)/.test(value);
 }
 
+function looksLikeCommandExecutionRequest(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  if (/^(npm|pnpm|yarn|bun|npx|node|tsx|ts-node|fuser|lsof|kill|pkill|curl|wget)\b/.test(value)) return true;
+  if (/\b(runcommand|runbuild|runtypecheck|runlint|runtests|npminstall)\b/.test(value)) return true;
+  if (/\b(runtime terminal|terminal command|run this command|execute this command)\b/.test(value)) return true;
+  if (/`[^`]*\b(npm|pnpm|yarn|bun|npx|node|fuser|lsof|kill|curl)\b[^`]*`/.test(value)) return true;
+  return /\b(run|execute|launch|start)\b.*\b(command|terminal|runtime|build|typecheck|lint|tests?|dev|server)\b/.test(value);
+}
+
 const REASONER_CONTEXT_FILE_LIMIT = 8;
 const REASONER_CONTEXT_FILE_CHARS = 2200;
 
@@ -3518,15 +3528,18 @@ ${finalCode}
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
+    const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
+    const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
     const shouldAttachReasonerContext =
       chatMode === 'agent' &&
-      (activeAgent === 'backend-architect' || (activeAgent === 'deepseek' && shouldPrimeDeepSeekReasoner(userMessage)));
+      (commandPipelineSeed || activeAgent === 'backend-architect' || (activeAgent === 'deepseek' && shouldPrimeDeepSeekReasoner(userMessage)));
     if (shouldAttachReasonerContext) {
       const maxFiles = activeAgent === 'backend-architect' ? 12 : REASONER_CONTEXT_FILE_LIMIT;
       context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath, maxFiles);
     }
 
-    const historyLimits = historyLimitsForAgent(activeAgent, chatMode);
+    const historyAgent = commandPipelineSeed ? 'deepseek' : activeAgent;
+    const historyLimits = historyLimitsForAgent(historyAgent, chatMode);
     const historyPackLimit = historyLimits.pack;
     const historySliceLimit = historyLimits.slice;
 
@@ -3553,7 +3566,7 @@ ${finalCode}
           .slice(-historyPackLimit)
           .map(m => ({ role: m.role, content: m.content }));
 
-    if (activeAgent === 'deepseek' && resumeState) {
+    if ((activeAgent === 'deepseek' || commandPipelineSeed) && resumeState) {
       history = [
         ...history,
         {
@@ -3585,15 +3598,17 @@ ${finalCode}
       const MAX_ROUNDS_BACKEND = 80;
       const DEEPSEEK_ANALYSIS_MODEL = 'deepseek-reasoner';
       const DEEPSEEK_EXECUTION_MODEL = 'deepseek-chat';
-      const isDeepSeekAgent = activeAgent === 'deepseek';
-      const isBackendArchitectAgent = activeAgent === 'backend-architect';
-      const needsReasonerPreflight = chatMode === 'agent' && (isDeepSeekAgent || isBackendArchitectAgent);
+      let commandPipelineMode = commandPipelineSeed;
+      const executionAgent = commandPipelineMode ? 'deepseek' : activeAgent;
+      const isDeepSeekAgent = executionAgent === 'deepseek';
+      const isBackendArchitectAgent = executionAgent === 'backend-architect';
+      const needsReasonerPreflight = chatMode === 'agent' && (commandPipelineMode || isDeepSeekAgent || isBackendArchitectAgent);
       const roundLimit = isDeepSeekAgent
         ? MAX_ROUNDS_DEEPSEEK
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
           : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = isDeepSeekAgent && chatMode === 'agent'
+      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent'
         ? DEEPSEEK_EXECUTION_MODEL
         : activeModel;
       const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
@@ -3675,7 +3690,7 @@ ${finalCode}
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         const requestChatRound = async (payload) => {
-          const MAX_ATTEMPTS = 4;
+          const MAX_ATTEMPTS = commandPipelineMode ? 2 : 4;
           let lastErr = null;
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             try {
@@ -3693,7 +3708,7 @@ ${finalCode}
                 _fetchFn
               );
 
-              if (_autoRoute) {
+              if (_autoRoute && !commandPipelineMode) {
                 payload.agent = _autoRoute.agent;
                 payload.model = _autoRoute.model;
               }
@@ -3725,7 +3740,9 @@ ${finalCode}
         const runDeepSeekReasonerPreflight = async () => {
           if (!needsReasonerPreflight || deepseekReasonerPrimed) return;
 
-          allSteps.push('🧠 DeepSeek R1 pre-analysis before backend execution');
+          allSteps.push(commandPipelineMode
+            ? '🧠 DeepSeek R1 pre-analysis before DeepSeek V3 command execution'
+            : '🧠 DeepSeek R1 pre-analysis before backend execution');
 
           const analysisRequest = {
             agent: 'deepseek',
@@ -3736,6 +3753,8 @@ ${finalCode}
                 role: 'user',
                 content: isBackendArchitectAgent
                   ? 'This is a backend-architect execution. Before any tool calls, analyze this task using the active file plus every relevant file bundle in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. Then include: 1) Goal, 2) API/data contracts, 3) Relevant files and why, 4) Risks/blockers, 5) Numbered implementation steps, 6) Verification steps (must include runBuild and runTypecheck first), 7) Stop condition. Do not call tools, do not write code, and do not claim completion.'
+                  : commandPipelineMode
+                    ? 'This is a command execution request. Before any tool calls, analyze this task using the active file plus relevant context and return a hidden execution contract for DeepSeek V3. Start with one line in the exact format `Summary: ...` using 1 short sentence. Then include: 1) Goal, 2) Required commands and order, 3) Relevant files and why, 4) Risks/blockers, 5) Numbered implementation steps, 6) Verification steps, 7) Stop condition. Do not call tools, do not write code, and do not claim completion.'
                   : 'Before any tool calls, analyze this task using the active file plus every relevant file bundle provided in context. Return a hidden execution contract for the next model pass. Start with one line in the exact format `Summary: ...` using 1 short sentence describing what you will work on. After that, include the full execution contract with: 1) Goal, 2) Relevant files and why, 3) Risks/blockers, 4) Numbered implementation steps, 5) Verification steps, 6) Stop condition. Do not call tools, do not write code, and do not claim completion.',
               },
             ],
@@ -3762,12 +3781,14 @@ ${finalCode}
               role: 'user',
               content: isBackendArchitectAgent
                 ? 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with Backend Architect and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. Do not finalize backend work until runBuild and runTypecheck have executed successfully, plus any additional verification needed by the contract.'
+                : commandPipelineMode
+                  ? 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Do not switch providers or models. Read and modify only what the contract requires unless verification disproves it. Keep execution concise and avoid extra think-only loops.'
                 : 'Use the hidden DeepSeek Reasoner execution contract above as the execution contract. Execute it strictly with DeepSeek V3 and workspace tools. Read and modify only what the contract requires unless direct code evidence or verification disproves it. When every planned implementation and verification step is complete, stop immediately and return the final completion response without adding extra work.',
             },
           ].slice(-historySliceLimit);
           history = packChatHistory(history, activeFile, userMessage, historyPackLimit);
           deepseekReasonerPrimed = true;
-          allSteps.push(`✅ Reasoner analysis complete; ${isBackendArchitectAgent ? 'Backend Architect' : 'DeepSeek V3'} execution unlocked`);
+          allSteps.push(`✅ Reasoner analysis complete; ${(isBackendArchitectAgent && !commandPipelineMode) ? 'Backend Architect' : 'DeepSeek V3'} execution unlocked`);
         };
 
         const isLikelyLongRunningCmd = (cmd) => {
@@ -3976,7 +3997,7 @@ ${finalCode}
         await runDeepSeekReasonerPreflight();
 
         for (let round = 0; round < roundLimit; round++) {
-          const payload = { agent: activeAgent, model: effectiveModel, messages: history, context, mode: chatMode };
+          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
@@ -4681,6 +4702,7 @@ ${finalCode}
                           lastToolCallSig,
                           websiteBuildMode,
                           appBuildMode,
+                          commandPipelineMode,
                           batchChangeMode,
                           totalWriteSuccesses,
                           noWriteRounds,
@@ -4856,6 +4878,7 @@ ${finalCode}
               lastToolCallSig,
               websiteBuildMode,
               appBuildMode,
+              commandPipelineMode,
               batchChangeMode,
               totalWriteSuccesses,
               noWriteRounds,
@@ -4927,6 +4950,7 @@ ${finalCode}
             lastToolCallSig,
             websiteBuildMode,
             appBuildMode,
+            commandPipelineMode,
             batchChangeMode,
             totalWriteSuccesses,
             noWriteRounds,
