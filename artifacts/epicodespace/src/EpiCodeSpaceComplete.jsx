@@ -4066,6 +4066,10 @@ ${finalCode}
             stateTransitions.push({ state: AGENT_RUN_STATES.RESPONDING, at: Date.now() });
             const pseudoToolText = typeof data.content === 'string'
               && /<\/?(read|write|edit|run|command|file|patch)>/i.test(data.content);
+            const proseOnlyInAgentMode =
+              chatMode === 'agent' &&
+              allToolCalls.length === 0 &&
+              !looksLikeWorkspaceChangeRequest(userMessage);
             const shouldForceToolRetry =
               chatMode === 'agent' &&
               round < 2 &&
@@ -4097,6 +4101,31 @@ ${finalCode}
               ].slice(-historySliceLimit);
               allSteps.push('⚠️ Plain-text reply in agent mode; retrying once with forced tool-use reminder.');
               continue;
+            }
+
+            if (proseOnlyInAgentMode || (pseudoToolText && round >= 2)) {
+              const msgId = makeMessageId('assistant');
+              const summary = summarizeFileChanges(allFileChanges);
+              const assistantMsg = {
+                id: msgId,
+                role: 'assistant',
+                content: 'Agent execution failed to produce real tool calls and returned prose-only planning output. I stopped this run to avoid looping. Retry with the same request; the next run will enforce tool execution from the first round.',
+                agent: activeAgent,
+                agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
+                toolCalls: compactToolCalls(allToolCalls, 12),
+                steps: [...allSteps, '🚫 Agent prose-only guard triggered; aborted run to prevent loops.'],
+                mode: chatMode,
+                timestamp: Date.now(),
+                changedFiles: summary.files,
+                changedPlus: summary.totalPlus,
+                changedMinus: summary.totalMinus,
+                canContinue: true,
+              };
+              setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
+              setConversations(prev => prev.map(c => c.id === activeConvoId
+                ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] }
+                : c));
+              return;
             }
 
             if (shouldContinueWebsiteBuild) {
