@@ -911,7 +911,9 @@ function shouldPrimeDeepSeekReasoner(text) {
   const value = (text || '').toLowerCase();
   if (looksLikeBatchChangeRequest(value)) return false;
   if (looksLikePastedErrorBlock(value)) return false;
-  return value.length > 220 || /(architecture|migrate|investigate|analyze|reason|complex|cross-cutting|system-wide|deep dive|plan)/.test(value);
+  if (looksLikeCommandExecutionRequest(value)) return false;
+  if (/(architecture|migrate|investigate|analyze|reason|cross-cutting|system-wide|deep dive|plan first)/.test(value)) return true;
+  return value.length > 500 && /(complex|workflow|audit|project-wide|multiple files|end-to-end|refactor)/.test(value);
 }
 
 function looksLikeCommandExecutionRequest(text) {
@@ -2622,6 +2624,42 @@ ${finalCode}
       return `npm run ${script}`;
     };
 
+    const rewriteCommandForPackageManager = (raw) => {
+      const cmd = String(raw || '').trim();
+      if (!cmd) return cmd;
+      if (/[;&|]/.test(cmd)) return cmd;
+
+      const pm = detectPackageManager();
+      if (pm === 'npm') return cmd;
+
+      if (/^npm\s+install(?:\s+--include=dev)?\s*$/i.test(cmd)) {
+        if (pm === 'pnpm') return 'pnpm install --prod=false';
+        if (pm === 'yarn') return 'yarn install';
+        if (pm === 'bun') return 'bun install';
+      }
+
+      const installMatch = cmd.match(/^npm\s+install(?:\s+--include=dev)?(?:\s+--save-dev)?\s+(.+)$/i);
+      if (installMatch) {
+        const packages = installMatch[1].trim();
+        const wantsDev = /--save-dev/.test(cmd);
+        if (pm === 'pnpm') return `pnpm add${wantsDev ? ' -D' : ''} ${packages}`;
+        if (pm === 'yarn') return `yarn add${wantsDev ? ' -D' : ''} ${packages}`;
+        if (pm === 'bun') return `bun add${wantsDev ? ' -d' : ''} ${packages}`;
+      }
+
+      const runMatch = cmd.match(/^npm\s+run\s+([a-z0-9:_-]+)(.*)$/i);
+      if (runMatch) {
+        return `${pmRun(pm, runMatch[1])}${runMatch[2] || ''}`;
+      }
+
+      const scriptMatch = cmd.match(/^npm\s+(test|start|build|dev|lint)(.*)$/i);
+      if (scriptMatch) {
+        return `${pmRun(pm, scriptMatch[1].toLowerCase())}${scriptMatch[2] || ''}`;
+      }
+
+      return cmd;
+    };
+
     switch (name) {
       case 'readFile': {
         const f = currentFS[args.path];
@@ -2731,7 +2769,8 @@ ${finalCode}
       }
       case 'runCommand': {
         // Require user confirmation before running destructive-looking commands
-        const cmd = sanitizeShellCommand(args.command);
+        const sanitized = sanitizeShellCommand(args.command);
+        const cmd = rewriteCommandForPackageManager(sanitized);
         if (!cmd) return { ok: false, error: 'runCommand: empty or invalid command after sanitization.' };
         const isDestructive = /\brm\b|\brmdir\b|\bdrop\b|\bdelete\b|\bformat\b|>\s*\//.test(cmd);
         if (isDestructive) {
@@ -2742,7 +2781,9 @@ ${finalCode}
           ok: true,
           action: 'runCommand',
           command: cmd,
-          note: `Command dispatched: \`${cmd}\`. Follow immediately with getTerminalOutput or getProblems to verify results.`,
+          note: cmd === sanitized
+            ? `Command dispatched: \`${cmd}\`. Follow immediately with getTerminalOutput or getProblems to verify results.`
+            : `Command dispatched: \`${cmd}\` (normalized from \`${sanitized}\`). Follow immediately with getTerminalOutput or getProblems to verify results.`,
         };
       }
       case 'runTests': {
@@ -3530,9 +3571,10 @@ ${finalCode}
     }
     const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
-    const shouldAttachReasonerContext =
+    const reasonerPreflightRequested =
       chatMode === 'agent' &&
       (commandPipelineSeed || activeAgent === 'backend-architect' || (activeAgent === 'deepseek' && shouldPrimeDeepSeekReasoner(userMessage)));
+    const shouldAttachReasonerContext = reasonerPreflightRequested;
     if (shouldAttachReasonerContext) {
       const maxFiles = activeAgent === 'backend-architect' ? 12 : REASONER_CONTEXT_FILE_LIMIT;
       context.reasonerRelevantFiles = buildReasonerRelevantFiles(fileSystem, activeFile, userMessage, pinnedFilePath, maxFiles);
@@ -3593,16 +3635,16 @@ ${finalCode}
       let verificationFailures = 0;
       const executionStartedAt = Date.now();
       const stateTransitions = [{ state: AGENT_RUN_STATES.PLANNING, at: executionStartedAt }];
-      const MAX_ROUNDS_DEFAULT = 20;
-      const MAX_ROUNDS_DEEPSEEK = 120;
-      const MAX_ROUNDS_BACKEND = 80;
+      const MAX_ROUNDS_DEFAULT = 16;
+      const MAX_ROUNDS_DEEPSEEK = 24;
+      const MAX_ROUNDS_BACKEND = 32;
       const DEEPSEEK_ANALYSIS_MODEL = 'deepseek-reasoner';
       const DEEPSEEK_EXECUTION_MODEL = 'deepseek-chat';
       let commandPipelineMode = commandPipelineSeed;
       const executionAgent = commandPipelineMode ? 'deepseek' : activeAgent;
       const isDeepSeekAgent = executionAgent === 'deepseek';
       const isBackendArchitectAgent = executionAgent === 'backend-architect';
-      const needsReasonerPreflight = chatMode === 'agent' && (commandPipelineMode || isDeepSeekAgent || isBackendArchitectAgent);
+      const needsReasonerPreflight = reasonerPreflightRequested;
       const roundLimit = isDeepSeekAgent
         ? MAX_ROUNDS_DEEPSEEK
         : isBackendArchitectAgent
@@ -3690,7 +3732,7 @@ ${finalCode}
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         const requestChatRound = async (payload) => {
-          const MAX_ATTEMPTS = commandPipelineMode ? 2 : 4;
+          const MAX_ATTEMPTS = 2;
           let lastErr = null;
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             try {

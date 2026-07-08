@@ -162,8 +162,8 @@ function getToolsForMode(mode: string) {
   return WORKSPACE_TOOLS;
 }
 
-const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '90000'));
-const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '3'));
+const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env['AGENT_PROVIDER_TIMEOUT_MS'] ?? '45000'));
+const PROVIDER_MAX_RETRIES = Math.max(0, Number(process.env['AGENT_PROVIDER_RETRIES'] ?? '1'));
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

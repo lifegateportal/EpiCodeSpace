@@ -49,6 +49,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
   const reconnectTimerRef   = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const manualStopRef       = useRef(false);
+  const syncedFilesRef      = useRef(new Map());
 
   const [connState, setConnState]       = useState('idle'); // idle|connecting|reconnecting|ready|dead
   const [connError, setConnError]       = useState(null);
@@ -141,6 +142,18 @@ const ServerTerminal = forwardRef(function ServerTerminal(
     return out;
   }, [files, sink]);
 
+  const diffFilesMap = useCallback((flat) => {
+    const changed = {};
+    for (const [path, content] of Object.entries(flat)) {
+      if (syncedFilesRef.current.get(path) !== content) changed[path] = content;
+    }
+    return changed;
+  }, []);
+
+  const markFilesSynced = useCallback((flat) => {
+    syncedFilesRef.current = new Map(Object.entries(flat));
+  }, []);
+
   // ── Connect ─────────────────────────────────────────────────────────────
   const connect = useCallback(() => {
     // Cancel any pending reconnect
@@ -168,6 +181,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
       const storedSessionId = sessionStorageKey
         ? sessionStorage.getItem(sessionStorageKey)
         : null;
+      markFilesSynced(flat);
       ws.send(JSON.stringify({
         type: 'sync',
         files: flat,
@@ -264,7 +278,7 @@ const ServerTerminal = forwardRef(function ServerTerminal(
 
     // Show a subtle "connecting" indicator (single line, will be overwritten on ready)
     termRef.current?.write('\x1b[2m# connecting…\x1b[0m');
-  }, [buildFilesMap, onOutput, onServerUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [buildFilesMap, markFilesSynced, onOutput, onServerUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep connectRef in sync
   useEffect(() => { connectRef.current = connect; }, [connect]);
@@ -294,11 +308,18 @@ const ServerTerminal = forwardRef(function ServerTerminal(
     const ws = wsRef.current;
     if (ws?.readyState !== WebSocket.OPEN) return;
     const flat = buildFilesMap();
-    for (const [p, content] of Object.entries(flat)) {
+    const changed = diffFilesMap(flat);
+    const changedEntries = Object.entries(changed);
+    if (changedEntries.length === 0) {
+      termRef.current?.writeln('\x1b[2m\r\n# no file changes to sync\x1b[0m');
+      return;
+    }
+    for (const [p, content] of changedEntries) {
       ws.send(JSON.stringify({ type: 'writeFile', path: p, content }));
     }
-    termRef.current?.writeln(`\x1b[2m\r\n# synced ${Object.keys(flat).length} files\x1b[0m`);
-  }, [buildFilesMap]);
+    markFilesSynced(flat);
+    termRef.current?.writeln(`\x1b[2m\r\n# synced ${changedEntries.length} changed file${changedEntries.length === 1 ? '' : 's'}\x1b[0m`);
+  }, [buildFilesMap, diffFilesMap, markFilesSynced]);
 
   // ── Kill / Restart ───────────────────────────────────────────────────────
   const killProcess = useCallback(() => {
