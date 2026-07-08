@@ -1426,6 +1426,7 @@ function EpiCodeSpaceApp() {
   const terminalOutputRef = useRef([]); // ring buffer — last 300 lines of terminal output
   // AbortController for the active chat fetch loop — aborted on new submission or unmount
   const chatAbortRef = useRef(null);
+  const agentSubmitRef = useRef(null);
   const autoDevStartedRef = useRef(false);
   const autoDevProcessRef = useRef(null);
   const autoDevRetryAfterRef = useRef(0);
@@ -3313,8 +3314,9 @@ ${finalCode}
     setChatInput(steering);
     // Use a microtask so state settles before the submit fires
     Promise.resolve().then(() => {
-      chatAbortRef.current = new AbortController();
-      setIsTyping(true);
+      setIsTyping(false);
+      setAgentRunState(AGENT_RUN_STATES.IDLE);
+      agentSubmitRef.current?.({ preventDefault: () => {} }, steering);
     });
   }, [steerInput, activeAgent, activeConvoId, handleStop]);
 
@@ -3692,6 +3694,8 @@ ${finalCode}
           };
           setMessages(prev => [...prev.filter(m => !m._progress), pauseMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), pauseMsg] } : c));
+          setIsTyping(false);
+          setAgentRunState(AGENT_RUN_STATES.IDLE);
           return;
         }
         if (!approved) {
@@ -3714,6 +3718,8 @@ ${finalCode}
           };
           setMessages(prev => [...prev.filter(m => !m._progress), askMsg]);
           setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), askMsg] } : c));
+          setIsTyping(false);
+          setAgentRunState(AGENT_RUN_STATES.IDLE);
           return;
         }
         planAwaitingApproval = false;
@@ -5031,6 +5037,10 @@ ${finalCode}
       }
     })();
   }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState, chatQuietMode]);
+
+  useEffect(() => {
+    agentSubmitRef.current = handleAgentSubmit;
+  }, [handleAgentSubmit]);
 
   const handleNewConversation = useCallback(() => {
     convoCountRef.current += 1;
