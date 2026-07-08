@@ -907,15 +907,6 @@ function normalizeLargeErrorBlock(text) {
   ].join('\n');
 }
 
-function shouldPrimeDeepSeekReasoner(text) {
-  const value = (text || '').toLowerCase();
-  if (looksLikeBatchChangeRequest(value)) return false;
-  if (looksLikePastedErrorBlock(value)) return false;
-  if (looksLikeCommandExecutionRequest(value)) return false;
-  if (/(architecture|migrate|investigate|analyze|reason|cross-cutting|system-wide|deep dive|plan first)/.test(value)) return true;
-  return value.length > 500 && /(complex|workflow|audit|project-wide|multiple files|end-to-end|refactor)/.test(value);
-}
-
 function looksLikeCommandExecutionRequest(text) {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
@@ -3573,7 +3564,7 @@ ${finalCode}
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
     const reasonerPreflightRequested =
       chatMode === 'agent' &&
-      (commandPipelineSeed || activeAgent === 'backend-architect' || (activeAgent === 'deepseek' && shouldPrimeDeepSeekReasoner(userMessage)));
+      (commandPipelineSeed || activeAgent === 'backend-architect' || activeAgent === 'deepseek');
     const shouldAttachReasonerContext = reasonerPreflightRequested;
     if (shouldAttachReasonerContext) {
       const maxFiles = activeAgent === 'backend-architect' ? 12 : REASONER_CONTEXT_FILE_LIMIT;
