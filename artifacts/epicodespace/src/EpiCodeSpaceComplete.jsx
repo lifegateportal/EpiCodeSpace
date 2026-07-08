@@ -881,15 +881,6 @@ function looksLikeAppBuildRequest(text) {
   return /(build|create|make|scaffold|ship|continue)\s+.*(app|application|mvp|product)|\b(building an app|building my app|continue building|full stack app|full-stack app|end-to-end app)\b/.test(value);
 }
 
-function looksLikeLightweightChatPrompt(text) {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  if (value.length > 80) return false;
-  if (looksLikeWorkspaceChangeRequest(value)) return false;
-  if (looksLikeCommandExecutionRequest(value)) return false;
-  return /^(hi|hello|hey|yo|sup|hola|gm|good\s+(morning|afternoon|evening)|how are you|what'?s up|thanks|thank you|ok|okay)\b/.test(value);
-}
-
 function looksLikePastedErrorBlock(text) {
   const value = String(text || '');
   if (value.length < 1800) return false;
@@ -3576,12 +3567,10 @@ ${finalCode}
       ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
       : null;
     const resumeState = resumeMsg?.resumeState || null;
-    const lightweightPrompt = !resumeFromMessageId && looksLikeLightweightChatPrompt(userMessage);
-    const effectiveMode = (chatMode === 'agent' && lightweightPrompt) ? 'ask' : chatMode;
-    const commandPipelineRequested = effectiveMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
+    const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
     const reasonerPreflightRequested =
-      effectiveMode === 'agent' &&
+      chatMode === 'agent' &&
       (commandPipelineSeed || activeAgent === 'backend-architect' || activeAgent === 'deepseek');
     const shouldAttachReasonerContext = reasonerPreflightRequested;
     if (shouldAttachReasonerContext) {
@@ -3590,7 +3579,7 @@ ${finalCode}
     }
 
     const historyAgent = commandPipelineSeed ? 'deepseek' : activeAgent;
-    const historyLimits = historyLimitsForAgent(historyAgent, effectiveMode);
+    const historyLimits = historyLimitsForAgent(historyAgent, chatMode);
     const historyPackLimit = historyLimits.pack;
     const historySliceLimit = historyLimits.slice;
 
@@ -3654,7 +3643,7 @@ ${finalCode}
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
           : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && effectiveMode === 'agent'
+      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent'
         ? DEEPSEEK_EXECUTION_MODEL
         : activeModel;
       const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
@@ -3682,7 +3671,7 @@ ${finalCode}
       if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
 
-      if (effectiveMode === 'agent' && (websiteBuildMode || appBuildMode) && planAwaitingApproval) {
+      if ((websiteBuildMode || appBuildMode) && planAwaitingApproval) {
         const approved = userApprovedNextPlanStep(userMessage);
         const rejected = userRejectedNextPlanStep(userMessage);
         if (rejected) {
@@ -4047,7 +4036,7 @@ ${finalCode}
         await runDeepSeekReasonerPreflight();
 
         for (let round = 0; round < roundLimit; round++) {
-          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: effectiveMode };
+          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
@@ -4058,11 +4047,13 @@ ${finalCode}
           if (data.type === 'text') {
             setAgentRunState(AGENT_RUN_STATES.RESPONDING);
             stateTransitions.push({ state: AGENT_RUN_STATES.RESPONDING, at: Date.now() });
+            const pseudoToolText = typeof data.content === 'string'
+              && /<\/?(read|write|edit|run|command|file|patch)>/i.test(data.content);
             const shouldForceToolRetry =
               chatMode === 'agent' &&
-              round === 0 &&
+              round < 2 &&
               allToolCalls.length === 0 &&
-              looksLikeWorkspaceChangeRequest(userMessage);
+              (looksLikeWorkspaceChangeRequest(userMessage) || pseudoToolText);
             const websiteStatus = websiteBuildMode ? assessWebsiteCoreCompletion(currentFS) : null;
             const shouldContinueWebsiteBuild =
               chatMode === 'agent' &&
