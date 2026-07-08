@@ -4068,7 +4068,7 @@ ${finalCode}
               && /<\/?(read|write|edit|run|command|file|patch)>/i.test(data.content);
             const shouldForceToolRetry =
               chatMode === 'agent' &&
-              round < 2 &&
+              round < 3 &&
               allToolCalls.length === 0 &&
               (looksLikeWorkspaceChangeRequest(userMessage) || pseudoToolText);
             const websiteStatus = websiteBuildMode ? assessWebsiteCoreCompletion(currentFS) : null;
@@ -4088,28 +4088,39 @@ ${finalCode}
               (!buildVerified || !typecheckVerified);
 
             if (shouldForceToolRetry) {
-              history = [
-                ...history,
-                {
-                  role: 'user',
-                  content: 'System reminder: The user asked for a workspace change. Do not answer with prose only. Use workspace tools now: first inspect with readFile/listFiles/searchCode as needed, then apply edits with editFile/writeFile.',
-                },
-              ].slice(-historySliceLimit);
-              allSteps.push('⚠️ Plain-text reply in agent mode; retrying once with forced tool-use reminder.');
+              if (pseudoToolText) {
+                allSteps.push(`⚠️ Detected pseudo-tool narration (fake <read>/<write> tags) with no real tool calls; forcing retry ${round + 1}/3.`);
+                history = [
+                  ...history,
+                  {
+                    role: 'user',
+                    content: 'Do NOT write fake tool descriptions like <readFile> or <invoke> tags. Use real tools only: readFile, editFile, writeFile, runCommand, etc. Execute real tools now or explain what you need.',
+                  },
+                ].slice(-historySliceLimit);
+              } else {
+                allSteps.push('⚠️ Plain-text reply in agent mode; retrying with forced tool-use reminder.');
+                history = [
+                  ...history,
+                  {
+                    role: 'user',
+                    content: 'System reminder: The user asked for a workspace change. Do not answer with prose only. Use workspace tools now: first inspect with readFile/listFiles/searchCode as needed, then apply edits with editFile/writeFile.',
+                  },
+                ].slice(-historySliceLimit);
+              }
               continue;
             }
 
-            if (pseudoToolText && round >= 2) {
+            if (pseudoToolText && round >= 3) {
               const msgId = makeMessageId('assistant');
               const summary = summarizeFileChanges(allFileChanges);
               const assistantMsg = {
                 id: msgId,
                 role: 'assistant',
-                content: 'Agent execution returned pseudo-tool narration instead of real tool calls. I stopped this run to avoid looping. Retry with the same request; the next run will enforce real tool execution from the first round.',
+                content: 'Agent failed: repeated fake tool narration instead of real tool execution. This run is blocked to prevent loops. Submit your request again and the agent will enforce real tool calls only.',
                 agent: activeAgent,
                 agentName: AGENT_REGISTRY[activeAgent]?.name || 'Agent',
                 toolCalls: compactToolCalls(allToolCalls, 12),
-                steps: [...allSteps, '🚫 Agent pseudo-tool guard triggered; aborted run to prevent loops.'],
+                steps: [...allSteps, '🚫 Fake tool narration guard: 3 attempts blocked; execution aborted.'],
                 mode: chatMode,
                 timestamp: Date.now(),
                 changedFiles: summary.files,
