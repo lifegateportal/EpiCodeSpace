@@ -3723,7 +3723,7 @@ ${finalCode}
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         const requestChatRound = async (payload) => {
-          const MAX_ATTEMPTS = 2;
+          const MAX_ATTEMPTS = (commandPipelineMode || executionAgent === 'deepseek' || isBackendArchitectAgent) ? 1 : 2;
           let lastErr = null;
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             try {
@@ -4874,7 +4874,7 @@ ${finalCode}
             changeStatus: summary.files.length > 0 ? 'pending' : undefined,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), assistantMsg]);
-          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
+          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), assistantMsg] } : c));
           return;
         }
 
@@ -4938,7 +4938,7 @@ ${finalCode}
             canContinue: true,
           };
           setMessages(prev => [...prev.filter(m => !m._progress), finalMsg]);
-          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages, finalMsg] } : c));
+          setConversations(prev => prev.map(c => c.id === activeConvoId ? { ...c, messages: [...c.messages.filter(m => !m._progress), finalMsg] } : c));
         }
       } catch (err) {
         // AbortError is a deliberate user stop — don't show the fallback.
@@ -4955,7 +4955,10 @@ ${finalCode}
         if (summary.files.length > 0) {
           changeLedgerRef.current.set(msgId, Array.from(allFileChanges.values()));
         }
-        const shouldAutoResume = !!err?.retryable && autoResumeAttempts < 2;
+        const shouldAutoResume = !!err?.retryable
+          && autoResumeAttempts < 1
+          && !commandPipelineMode
+          && activeAgent !== 'deepseek';
         const assistantMsg = {
           id: msgId,
           role: 'assistant',
