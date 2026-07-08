@@ -883,15 +883,32 @@ function looksLikeAppBuildRequest(text) {
 
 function looksLikePastedErrorBlock(text) {
   const value = String(text || '');
-  if (value.length < 1800) return false;
+  if (value.length < 600) return false;
   const lines = value.split('\n');
-  if (lines.length < 18) return false;
+  if (lines.length < 8) return false;
   return /(error|exception|failed|traceback|stack|cannot|undefined|syntaxerror|typeerror|referenceerror|ts\d+:|at\s+.+:\d+:\d+)/i.test(value);
 }
 
+function decodePotentiallyEncodedLogBlock(text) {
+  const input = String(text || '').replace(/\0/g, '');
+  if (!/%[0-9a-f]{2}/i.test(input)) return input;
+  const safe = input
+    .replace(/\+/g, '%20')
+    .replace(/%(?![0-9A-Fa-f]{2})/g, '%25');
+  try {
+    return decodeURIComponent(safe);
+  } catch {
+    return input;
+  }
+}
+
 function normalizeLargeErrorBlock(text) {
-  const raw = String(text || '').replace(/\0/g, '');
-  if (!looksLikePastedErrorBlock(raw)) return raw;
+  const decoded = decodePotentiallyEncodedLogBlock(text);
+  const raw = String(decoded || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n');
+
+  const hasCompilerSignal = /(module not found|can't resolve|compiled .*modules|compiling\s+\/_|\/_error|\/_not-found|get\s+\/\s+500|nextjs\.org\/docs\/messages\/module-not-found|ts\d+:|syntaxerror|typeerror|referenceerror)/i.test(raw);
+  if (!looksLikePastedErrorBlock(raw) && !(hasCompilerSignal && raw.length > 280)) return raw;
+
   const lines = raw.split('\n');
   const head = lines.slice(0, 24).join('\n');
   const tail = lines.slice(-40).join('\n');
