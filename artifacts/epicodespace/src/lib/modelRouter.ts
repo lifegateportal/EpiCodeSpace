@@ -5,7 +5,7 @@
  *   - Massive context / long text dumps  → Gemini Flash (large window, cheap)
  *   - Default                            → DeepSeek V3 (fast, smart, tool-calling)
  *
- * Fallback order when a routed model fails: gemini-2.5-flash → gpt-4o-mini
+ * No fallback chain: Auto selects one route and fails fast if that route errors.
  */
 
 export const AUTO_MODEL_ID = '__auto__';
@@ -28,22 +28,6 @@ export function resolveAutoRoute(prompt: string): AutoRoute {
   return { agent: 'deepseek', model: 'deepseek-chat' };
 }
 
-/** Ordered fallback chain used when the initial Auto model fails. */
-const FALLBACK_CHAIN: AutoRoute[] = [
-  { agent: 'gemini',        model: 'gemini-2.5-flash' },
-  { agent: 'epicode-agent', model: 'gpt-4o-mini' },
-];
-
-function nextFallback(current: AutoRoute): AutoRoute | null {
-  // If current is already gemini-flash, jump straight to gpt-4o-mini
-  const idx = FALLBACK_CHAIN.findIndex(
-    r => r.agent === current.agent && r.model === current.model
-  );
-  if (idx === -1) return FALLBACK_CHAIN[0]; // first fallback
-  if (idx < FALLBACK_CHAIN.length - 1) return FALLBACK_CHAIN[idx + 1];
-  return null; // exhausted
-}
-
 export interface ChatPayload {
   agent: string;
   model: string;
@@ -59,7 +43,7 @@ type FetchFn = (payload: ChatPayload, signal?: AbortSignal) => Promise<Response>
 /**
  * Wraps a fetch call with automatic fallback when in Auto mode.
  * If `payload.model` is not AUTO_MODEL_ID, it dispatches as-is.
- * Otherwise it resolves the route, tries it, and retries with fallbacks on failure.
+ * Otherwise it resolves one route and executes it without fallback chaining.
  */
 export async function autoFetch(
   payload: ChatPayload,
@@ -72,28 +56,14 @@ export async function autoFetch(
     return { response: res, usedRoute: null };
   }
 
-  let route = resolveAutoRoute(prompt);
-  let lastError: unknown = null;
-
-  // Try initial route + each fallback
-  for (let attempt = 0; attempt < FALLBACK_CHAIN.length + 1; attempt++) {
-    try {
-      const attempt_payload: ChatPayload = { ...payload, agent: route.agent, model: route.model };
-      const res = await fetchFn(attempt_payload, signal);
-      if (res.ok) return { response: res, usedRoute: route };
-      // Non-2xx counts as failure — try fallback
-      lastError = new Error(`HTTP ${res.status}`);
-    } catch (err: unknown) {
-      // Abort signals should not trigger fallback
-      if (err instanceof DOMException && err.name === 'AbortError') throw err;
-      lastError = err;
-    }
-
-    const next = nextFallback(route);
-    if (!next) break;
-    route = next;
+  const route = resolveAutoRoute(prompt);
+  try {
+    const routedPayload: ChatPayload = { ...payload, agent: route.agent, model: route.model };
+    const response = await fetchFn(routedPayload, signal);
+    return { response, usedRoute: route };
+  } catch (err: unknown) {
+    // Preserve cancellation behavior for upstream callers.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    throw err ?? new Error('Auto routing failed.');
   }
-
-  // All routes exhausted — throw the last error
-  throw lastError ?? new Error('Auto routing: all fallback models failed.');
 }
