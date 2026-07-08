@@ -881,6 +881,15 @@ function looksLikeAppBuildRequest(text) {
   return /(build|create|make|scaffold|ship|continue)\s+.*(app|application|mvp|product)|\b(building an app|building my app|continue building|full stack app|full-stack app|end-to-end app)\b/.test(value);
 }
 
+function looksLikeLightweightChatPrompt(text) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  if (value.length > 80) return false;
+  if (looksLikeWorkspaceChangeRequest(value)) return false;
+  if (looksLikeCommandExecutionRequest(value)) return false;
+  return /^(hi|hello|hey|yo|sup|hola|gm|good\s+(morning|afternoon|evening)|how are you|what'?s up|thanks|thank you|ok|okay)\b/.test(value);
+}
+
 function looksLikePastedErrorBlock(text) {
   const value = String(text || '');
   if (value.length < 1800) return false;
@@ -3562,10 +3571,17 @@ ${finalCode}
         content: pinnedEntry.content.slice(0, 12000),
       };
     }
-    const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
+    const convo = conversations.find(c => c.id === activeConvoId);
+    const resumeMsg = resumeFromMessageId
+      ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
+      : null;
+    const resumeState = resumeMsg?.resumeState || null;
+    const lightweightPrompt = !resumeFromMessageId && looksLikeLightweightChatPrompt(userMessage);
+    const effectiveMode = (chatMode === 'agent' && lightweightPrompt) ? 'ask' : chatMode;
+    const commandPipelineRequested = effectiveMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
     const reasonerPreflightRequested =
-      chatMode === 'agent' &&
+      effectiveMode === 'agent' &&
       (commandPipelineSeed || activeAgent === 'backend-architect' || activeAgent === 'deepseek');
     const shouldAttachReasonerContext = reasonerPreflightRequested;
     if (shouldAttachReasonerContext) {
@@ -3574,15 +3590,10 @@ ${finalCode}
     }
 
     const historyAgent = commandPipelineSeed ? 'deepseek' : activeAgent;
-    const historyLimits = historyLimitsForAgent(historyAgent, chatMode);
+    const historyLimits = historyLimitsForAgent(historyAgent, effectiveMode);
     const historyPackLimit = historyLimits.pack;
     const historySliceLimit = historyLimits.slice;
 
-    const convo = conversations.find(c => c.id === activeConvoId);
-    const resumeMsg = resumeFromMessageId
-      ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
-      : null;
-    const resumeState = resumeMsg?.resumeState || null;
     const websiteBuildMode = (typeof resumeState?.websiteBuildMode === 'boolean')
       ? resumeState.websiteBuildMode
       : looksLikeWebsiteBuildRequest(userMessage);
@@ -3643,7 +3654,7 @@ ${finalCode}
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
           : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent'
+      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && effectiveMode === 'agent'
         ? DEEPSEEK_EXECUTION_MODEL
         : activeModel;
       const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
@@ -3671,7 +3682,7 @@ ${finalCode}
       if (Array.isArray(resumeState?.allSteps)) allSteps = [...resumeState.allSteps];
       if (Array.isArray(resumeState?.allToolCalls)) allToolCalls = [...resumeState.allToolCalls];
 
-      if ((websiteBuildMode || appBuildMode) && planAwaitingApproval) {
+      if (effectiveMode === 'agent' && (websiteBuildMode || appBuildMode) && planAwaitingApproval) {
         const approved = userApprovedNextPlanStep(userMessage);
         const rejected = userRejectedNextPlanStep(userMessage);
         if (rejected) {
@@ -4036,7 +4047,7 @@ ${finalCode}
         await runDeepSeekReasonerPreflight();
 
         for (let round = 0; round < roundLimit; round++) {
-          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: chatMode };
+          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: effectiveMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
