@@ -3779,13 +3779,45 @@ ${finalCode}
         const commandFamily = (cmd) => {
           const raw = String(cmd || '').trim().toLowerCase();
           if (!raw) return 'unknown';
-          const firstChunk = raw.split(/&&|\|\||;/)[0].trim().replace(/^\{\s*/, '');
-          const tokens = firstChunk.split(/\s+/).filter(Boolean);
+          const cleaned = raw.replace(/[(){}]/g, ' ');
+          const tokens = cleaned.split(/\s+/).filter(Boolean);
           if (!tokens.length) return 'unknown';
-          const wrappers = new Set(['sudo', 'env', 'command', 'time', 'nohup']);
-          let i = 0;
-          while (i < tokens.length && wrappers.has(tokens[i])) i += 1;
-          return tokens[i] || tokens[0] || 'unknown';
+          const wrappers = new Set(['sudo', 'env', 'command', 'time', 'nohup', 'builtin']);
+          const shellKeywords = new Set([
+            'if', 'then', 'fi', 'else', 'elif',
+            'for', 'in', 'do', 'done',
+            'while', 'until', 'case', 'esac',
+            'function', 'select', 'coproc', 'let',
+          ]);
+          const skipTokens = new Set(['[', ']', '[[', ']]', 'test', '!', ':']);
+
+          const isExecutableToken = (t) => {
+            if (!t) return false;
+            if (t.startsWith('-')) return false;
+            if (t.includes('=')) return false;
+            if (shellKeywords.has(t) || skipTokens.has(t)) return false;
+            if (wrappers.has(t)) return false;
+            return /^[a-z0-9_./+-]+$/.test(t);
+          };
+
+          for (let i = 0; i < tokens.length; i += 1) {
+            const t = tokens[i];
+            // Handle "command -v <bin>" wrapper patterns.
+            if (t === 'command' && tokens[i + 1] === '-v' && isExecutableToken(tokens[i + 2])) {
+              return tokens[i + 2];
+            }
+
+            if (!isExecutableToken(t)) continue;
+
+            // Group common port/process control utilities into one family to avoid thrash.
+            if (t === 'fuser' || t === 'lsof' || t === 'kill' || t === 'pkill' || t === 'netstat' || t === 'ss') {
+              return 'port-process';
+            }
+
+            return t;
+          }
+
+          return 'unknown';
         };
         const detectPackageManagerFromFS = (fs) => {
           let pkg = {};
