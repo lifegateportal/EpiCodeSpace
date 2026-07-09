@@ -1,43 +1,11 @@
 import { Router } from "express";
 import { logger } from "../lib/logger";
 import { buildSystemPrompt, MODE_INSTRUCTIONS } from "../lib/agentPromptPolicy";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 
 const router = Router();
 const CANONICAL_GUIDANCE_FILE = '.cursorrules.md';
 
-function loadEnvFile(filePath: string) {
-  let raw = '';
-  try {
-    raw = readFileSync(filePath, 'utf8');
-  } catch {
-    return;
-  }
-
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-
-    const key = trimmed.slice(0, eq).trim();
-    if (!key || process.env[key]) continue;
-
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
-
-// Load local env files if present. Existing process env always takes precedence.
-const envCandidates = [
-  path.resolve(process.cwd(), '.env.local'),
-  path.resolve(process.cwd(), '.env'),
-];
-for (const p of envCandidates) loadEnvFile(p);
+// Note: Environment variables are now loaded in index.ts before this module is imported
 
 const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: string; transform: string }> = {
   'epicode-agent': {
