@@ -381,8 +381,20 @@ function appendToolResults(apiMessages: any[], toolResults: any[], pendingToolCa
     ? '⚠ You spent the last round only reading. Use current context to make concrete progress now: prefer patchLines/editFile/writeFile, or runBuild/runTests/runLint/runTypecheck when verification is the blocker.'
     : null;
 
+  // Detect multi-step work without proper completion markers
+  // Look back at recent assistant messages for task/step patterns
+  const recentAssistantMessages = apiMessages.filter(m => m.role === 'assistant' || m._geminiRole === 'model').slice(-3);
+  const hasTaskNumbers = recentAssistantMessages.some(m => {
+    const text = String(m.content || m._geminiParts?.[0]?.text || '');
+    return /(?:task|step)\s*[123456]/i.test(text) && !/✅|complete|done|finished/i.test(text);
+  });
+  
+  const taskProgressReminder = hasTaskNumbers && roundHasWrite
+    ? '📋 Multi-step work detected: Mark EACH task complete immediately when done (e.g., "✅ Task 1 complete. Starting task 2..."). Do NOT jump to task 3 before finishing task 2.'
+    : null;
+
   // Combine both messages; prefer dedupeMessage first, append write constraint if present
-  const systemMsg = [dedupeMessage, writeConstraint].filter(Boolean).join('\n\n') || null;
+  const systemMsg = [dedupeMessage, writeConstraint, taskProgressReminder].filter(Boolean).join('\n\n') || null;
 
   if (transform === 'openai') {
     apiMessages.push({ role: 'assistant', content: null, tool_calls: pendingToolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) });
