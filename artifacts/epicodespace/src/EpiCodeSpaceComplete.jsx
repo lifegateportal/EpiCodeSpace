@@ -2576,20 +2576,65 @@ ${finalCode}
   // ── Patch utility: exact-match swap with ambiguity detection ───────────
   const applyPatch = (content, oldText, newText) => {
     if (!oldText) return { ok: false, error: 'oldText must not be empty' };
+    
     // 1. Exact match
     const exact = content.split(oldText).length - 1;
     if (exact === 1) return { ok: true, content: content.replace(oldText, newText ?? '') };
     if (exact > 1) return { ok: false, error: `oldText is ambiguous — found ${exact} occurrences. Add more surrounding lines to make it unique.` };
-    // 2. Fuzzy: normalize \r\n and trim trailing whitespace per line
-    const norm = (s) => s.replace(/\r\n/g, '\n').split('\n').map(l => l.trimEnd()).join('\n');
-    const nc = norm(content);
-    const no = norm(oldText);
-    const fuzzy = nc.split(no).length - 1;
-    if (fuzzy === 1) return { ok: true, content: nc.replace(no, norm(newText ?? '')) };
-    if (fuzzy > 1) return { ok: false, error: `oldText is ambiguous (${fuzzy} fuzzy matches). Add more context lines.` };
+    
+    // 2. Enhanced fuzzy matching with progressive normalization levels
+    // Level A: normalize line endings + trailing whitespace
+    const normA = (s) => s.replace(/\r\n/g, '\n').split('\n').map(l => l.trimEnd()).join('\n');
+    const ncA = normA(content);
+    const noA = normA(oldText);
+    const fuzzyA = ncA.split(noA).length - 1;
+    if (fuzzyA === 1) return { ok: true, content: ncA.replace(noA, normA(newText ?? '')) };
+    if (fuzzyA > 1) return { ok: false, error: `oldText is ambiguous (${fuzzyA} matches after normalizing line endings). Add more context lines.` };
+    
+    // Level B: normalize all whitespace (tabs ↔ spaces, multiple spaces → single)
+    const normB = (s) => {
+      return s
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(l => l.trimEnd().replace(/\t/g, '  ').replace(/ {2,}/g, '  '))
+        .join('\n');
+    };
+    const ncB = normB(content);
+    const noB = normB(oldText);
+    const fuzzyB = ncB.split(noB).length - 1;
+    if (fuzzyB === 1) return { ok: true, content: ncB.replace(noB, normB(newText ?? '')) };
+    if (fuzzyB > 1) return { ok: false, error: `oldText is ambiguous (${fuzzyB} matches after normalizing whitespace). Add more context lines.` };
+    
+    // Level C: aggressive normalization - collapse all whitespace, normalize quotes
+    const normC = (s) => {
+      return s
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map(l => {
+          // Normalize indentation to single spaces
+          const trimmed = l.trimStart();
+          const indent = l.length - trimmed.length;
+          const normalizedIndent = ' '.repeat(Math.floor(indent / 2));
+          // Normalize quotes (smart quotes → straight quotes)
+          const normalized = trimmed
+            .replace(/[""]/g, '"')
+            .replace(/['']/g, "'")
+            .replace(/\t/g, '  ')
+            .trimEnd();
+          return normalizedIndent + normalized;
+        })
+        .join('\n');
+    };
+    const ncC = normC(content);
+    const noC = normC(oldText);
+    const fuzzyC = ncC.split(noC).length - 1;
+    if (fuzzyC === 1) return { ok: true, content: ncC.replace(noC, normC(newText ?? '')) };
+    if (fuzzyC > 1) return { ok: false, error: `oldText is ambiguous (${fuzzyC} matches even with aggressive normalization). Add more context lines.` };
+    
+    // All fuzzy matching failed
     return {
       ok: false,
-      error: `oldText not found. Whitespace/quote differences are likely.\n→ USE patchLines INSTEAD: call patchLines(path, startLine, endLine, newContent) — it always works.\n→ OR refine oldText with more surrounding context for editFile.\nDo NOT call readFile again — you already have the content.`,
+      error: `oldText not found. Whitespace/quote/indentation differences are likely.\n→ USE patchLines INSTEAD: call patchLines(path, startLine, endLine, newContent) — it always works.\n→ OR refine oldText with more surrounding context for editFile.\nDo NOT call readFile again — you already have the content.`,
     };
   };
 
