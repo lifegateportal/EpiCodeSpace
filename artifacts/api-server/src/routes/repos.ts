@@ -78,6 +78,11 @@ function sanitizeSegment(raw: string, fallback: string): string {
   return value || fallback;
 }
 
+function routeParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] || '';
+  return value || '';
+}
+
 function repoMetaKey(owner: string, slug: string): string {
   return `${PREFIX}${owner}/${slug}/meta.json`;
 }
@@ -90,10 +95,68 @@ function makeRevisionId(): string {
   return `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function firstHeaderValue(value: string | undefined): string {
+  return String(value || '')
+    .split(',')[0]
+    .trim();
+}
+
+function hostFromUrlString(value: string): string {
+  if (!value) return '';
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '';
+  }
+}
+
+function isLocalOrPrivateHost(host: string): boolean {
+  const raw = String(host || '').trim().toLowerCase();
+  if (!raw) return true;
+  const hostname = raw.replace(/^\[/, '').replace(/\]$/, '').split(':')[0];
+  if (hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.')) return true;
+  if (hostname.startsWith('10.')) return true;
+  if (hostname.startsWith('192.168.')) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return true;
+  return false;
+}
+
 function publicBase(req: Request): string {
   const explicit = process.env.EPICODESPACE_PUBLIC_URL || process.env.APP_PUBLIC_URL;
   if (explicit) return explicit.replace(/\/$/, '');
-  return `${req.protocol}://${req.get('host') || 'localhost'}`;
+
+  const forwardedHost = firstHeaderValue(req.get('x-forwarded-host'));
+  const forwardedProto = firstHeaderValue(req.get('x-forwarded-proto')) || req.protocol;
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  const requestHost = req.get('host') || 'localhost';
+  if (!isLocalOrPrivateHost(requestHost)) {
+    return `${req.protocol}://${requestHost}`;
+  }
+
+  const origin = firstHeaderValue(req.get('origin'));
+  const originHost = hostFromUrlString(origin);
+  if (origin && originHost && !isLocalOrPrivateHost(originHost)) {
+    try {
+      return new URL(origin).origin;
+    } catch {
+      // ignore malformed origin fallback
+    }
+  }
+
+  const referer = firstHeaderValue(req.get('referer'));
+  const refererHost = hostFromUrlString(referer);
+  if (referer && refererHost && !isLocalOrPrivateHost(refererHost)) {
+    try {
+      return new URL(referer).origin;
+    } catch {
+      // ignore malformed referer fallback
+    }
+  }
+
+  return `${req.protocol}://${requestHost}`;
 }
 
 function repoPublicUrl(req: Request, owner: string, slug: string): string {
@@ -273,8 +336,8 @@ router.get('/repos/:owner/:slug', async (req: Request, res: Response) => {
     return;
   }
 
-  const owner = sanitizeSegment(req.params.owner, 'owner');
-  const slug = sanitizeSegment(req.params.slug, 'project');
+  const owner = sanitizeSegment(routeParam(req.params.owner), 'owner');
+  const slug = sanitizeSegment(routeParam(req.params.slug), 'project');
 
   try {
     const meta = await readJson<RepoMeta>(client, repoMetaKey(owner, slug));
@@ -295,8 +358,8 @@ router.post('/repos/:owner/:slug/revisions', async (req: Request, res: Response)
     return;
   }
 
-  const owner = sanitizeSegment(req.params.owner, 'owner');
-  const slug = sanitizeSegment(req.params.slug, 'project');
+  const owner = sanitizeSegment(routeParam(req.params.owner), 'owner');
+  const slug = sanitizeSegment(routeParam(req.params.slug), 'project');
 
   const body = req.body as {
     files?: Record<string, unknown>;
@@ -367,8 +430,8 @@ router.get('/repos/:owner/:slug/latest', async (req: Request, res: Response) => 
     return;
   }
 
-  const owner = sanitizeSegment(req.params.owner, 'owner');
-  const slug = sanitizeSegment(req.params.slug, 'project');
+  const owner = sanitizeSegment(routeParam(req.params.owner), 'owner');
+  const slug = sanitizeSegment(routeParam(req.params.slug), 'project');
 
   try {
     const meta = await readJson<RepoMeta>(client, repoMetaKey(owner, slug));
@@ -402,9 +465,9 @@ router.get('/repos/:owner/:slug/revisions/:revisionId', async (req: Request, res
     return;
   }
 
-  const owner = sanitizeSegment(req.params.owner, 'owner');
-  const slug = sanitizeSegment(req.params.slug, 'project');
-  const revisionId = sanitizeSegment(req.params.revisionId, 'revision');
+  const owner = sanitizeSegment(routeParam(req.params.owner), 'owner');
+  const slug = sanitizeSegment(routeParam(req.params.slug), 'project');
+  const revisionId = sanitizeSegment(routeParam(req.params.revisionId), 'revision');
 
   try {
     const meta = await readJson<RepoMeta>(client, repoMetaKey(owner, slug));

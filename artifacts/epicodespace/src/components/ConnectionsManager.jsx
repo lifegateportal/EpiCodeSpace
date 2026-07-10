@@ -641,7 +641,15 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
       .replace(/^-+|-+$/g, '');
     return fallback || 'project';
   });
-  const [visibility, setVisibility] = useState('private');
+  const [visibility, setVisibility] = useState(() => {
+    try {
+      const saved = localStorage.getItem('epicodespace_repo_visibility_v1');
+      if (saved === 'private' || saved === 'unlisted' || saved === 'public') return saved;
+    } catch {
+      // ignore storage access failures
+    }
+    return 'private';
+  });
   const [repoInput, setRepoInput] = useState(projectRepoUrl || '');
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(null); // 'checking'|'creating'|'saving'|'loading'
@@ -668,6 +676,14 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
     })();
     return () => { cancelled = true; };
   }, [open]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('epicodespace_repo_visibility_v1', visibility);
+    } catch {
+      // ignore storage access failures
+    }
+  }, [visibility]);
 
   const setOk = (msg) => setStatus({ ok: true, msg });
   const setErr = (msg) => setStatus({ ok: false, msg });
