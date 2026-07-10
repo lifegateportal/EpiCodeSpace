@@ -881,6 +881,19 @@ function looksLikeAppBuildRequest(text) {
   return /(build|create|make|scaffold|ship|continue)\s+.*(app|application|mvp|product)|\b(building an app|building my app|continue building|full stack app|full-stack app|end-to-end app)\b/.test(value);
 }
 
+function looksLikeProjectScaffoldRequest(text) {
+  const value = (text || '').toLowerCase();
+  // Explicit scaffold keywords: "build entire", "scaffold project", "create complete", "build from scratch"
+  if (/(build|scaffold|create)\s+(entire|complete|full|whole)\s+(project|app|website|application)/.test(value)) return true;
+  if (/(build|create|make)\s+.*(from scratch|ground up|start to finish)/.test(value)) return true;
+  if (/scaffold\s+(project|app|website|mvp|application)/.test(value)) return true;
+  // Large project indicators: mention of multiple files/components
+  if (/\b(\d+|multiple|many|several)\s+(files?|components?|pages?|routes?)/.test(value)) return true;
+  // Auto-build keywords
+  if (/(auto.?build|batch.?build|continuous.?build|don't stop|without stopping|keep building)/.test(value)) return true;
+  return false;
+}
+
 function looksLikePastedErrorBlock(text) {
   const value = String(text || '');
   if (value.length < 600) return false;
@@ -3645,13 +3658,17 @@ ${finalCode}
     const historyPackLimit = historyLimits.pack;
     const historySliceLimit = historyLimits.slice;
 
+    const scaffoldModeRequested = looksLikeProjectScaffoldRequest(userMessage);
     const websiteBuildMode = (typeof resumeState?.websiteBuildMode === 'boolean')
       ? resumeState.websiteBuildMode
-      : looksLikeWebsiteBuildRequest(userMessage);
+      : (looksLikeWebsiteBuildRequest(userMessage) || scaffoldModeRequested);
     const appBuildMode = (typeof resumeState?.appBuildMode === 'boolean')
       ? resumeState.appBuildMode
-      : looksLikeAppBuildRequest(userMessage);
-    const forceBatchForBuild = websiteBuildMode || appBuildMode;
+      : (looksLikeAppBuildRequest(userMessage) || scaffoldModeRequested);
+    const scaffoldMode = (typeof resumeState?.scaffoldMode === 'boolean')
+      ? resumeState.scaffoldMode
+      : scaffoldModeRequested;
+    const forceBatchForBuild = websiteBuildMode || appBuildMode || scaffoldMode;
     const batchChangeMode = (typeof resumeState?.batchChangeMode === 'boolean')
       ? (resumeState.batchChangeMode || forceBatchForBuild)
       : (looksLikeBatchChangeRequest(userMessage) || forceBatchForBuild);
@@ -3693,6 +3710,7 @@ ${finalCode}
       const MAX_ROUNDS_DEFAULT = 16;
       const MAX_ROUNDS_DEEPSEEK = 24;
       const MAX_ROUNDS_BACKEND = 32;
+      const MAX_ROUNDS_SCAFFOLD = 60; // Much higher for scaffolding mode
       const DEEPSEEK_ANALYSIS_MODEL = 'deepseek-reasoner';
       const DEEPSEEK_EXECUTION_MODEL = 'deepseek-chat';
       let commandPipelineMode = commandPipelineSeed;
@@ -3700,7 +3718,9 @@ ${finalCode}
       const isDeepSeekAgent = executionAgent === 'deepseek';
       const isBackendArchitectAgent = executionAgent === 'backend-architect';
       const needsReasonerPreflight = reasonerPreflightRequested;
-      const roundLimit = isDeepSeekAgent
+      const roundLimit = scaffoldMode
+        ? MAX_ROUNDS_SCAFFOLD
+        : isDeepSeekAgent
         ? MAX_ROUNDS_DEEPSEEK
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
@@ -3719,6 +3739,10 @@ ${finalCode}
       let backendVerificationSatisfied = !!resumeState?.backendVerificationSatisfied;
       let buildVerified = !!resumeState?.buildVerified;
       let typecheckVerified = !!resumeState?.typecheckVerified;
+      let scaffoldEstimatedFiles = Number(resumeState?.scaffoldEstimatedFiles || 0);
+      let scaffoldBatchFilesBuilt = Number(resumeState?.scaffoldBatchFilesBuilt || 0);
+      let scaffoldTotalFilesBuilt = Number(resumeState?.scaffoldTotalFilesBuilt || 0);
+      const SCAFFOLD_BATCH_SIZE = 5; // Minimum files per batch before checkpoint
       let planMajorSteps = Array.isArray(resumeState?.planMajorSteps)
         ? resumeState.planMajorSteps.filter((s) => typeof s === 'string' && s.trim())
         : [];
@@ -4098,7 +4122,7 @@ ${finalCode}
         await runDeepSeekReasonerPreflight();
 
         for (let round = 0; round < roundLimit; round++) {
-          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: chatMode };
+          const payload = { agent: executionAgent, model: effectiveModel, messages: history, context, mode: scaffoldMode ? 'scaffold' : chatMode };
           if (toolResults && pendingToolCalls) {
             payload.toolResults = toolResults;
             payload.pendingToolCalls = pendingToolCalls;
@@ -4306,7 +4330,7 @@ ${finalCode}
             const isVerificationCommandTool = (name) => name === 'runBuild' || name === 'runTypecheck' || name === 'runLint' || name === 'runTests';
             const isReadTool = (name) => name === 'readFile' || name === 'analyzeFile' || name === 'searchCode' || name === 'getProjectStructure' || name === 'listFiles';
             const enforceDeepSeekWriteAfterRead = false;
-            const enforceDeepSeekFocusBounds = !batchChangeMode;
+            const enforceDeepSeekFocusBounds = !batchChangeMode && !scaffoldMode;
             let roundReadBudgetSpent = false;
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
             let changedPathsInRound = [];
@@ -4488,6 +4512,42 @@ ${finalCode}
 
             // Apply filesystem mutations
             const { newFS, changed, cmdsToRun, changeItems } = applyToolMutations(data.tool_calls, toolResults, currentFS);
+            
+            // Track scaffold mode batch progress
+            if (scaffoldMode && changed) {
+              const newFilesInRound = changeItems.filter(item => item.action === 'create').length;
+              scaffoldBatchFilesBuilt += newFilesInRound;
+              scaffoldTotalFilesBuilt += newFilesInRound;
+              
+              // Check if we hit batch size threshold
+              if (scaffoldBatchFilesBuilt >= SCAFFOLD_BATCH_SIZE) {
+                const progressPercent = scaffoldEstimatedFiles > 0 
+                  ? Math.round((scaffoldTotalFilesBuilt / scaffoldEstimatedFiles) * 100)
+                  : 0;
+                
+                allSteps.push(`📦 Scaffold batch complete: ${scaffoldBatchFilesBuilt} files built (${scaffoldTotalFilesBuilt}/${scaffoldEstimatedFiles || '?'} total, ${progressPercent}% done)`);
+                
+                // Auto-continue if less than 50% complete, checkpoint if >50%
+                if (scaffoldEstimatedFiles > 0 && progressPercent >= 50) {
+                  // Checkpoint: let agent summarize and ask user
+                  scaffoldBatchFilesBuilt = 0; // Reset batch counter
+                  allSteps.push(`✅ Scaffold checkpoint: >50% complete. Summarizing and prompting user for next batch.`);
+                } else if (scaffoldEstimatedFiles > 0) {
+                  // Auto-continue: still <50% complete
+                  scaffoldBatchFilesBuilt = 0; // Reset batch counter
+                  history = [
+                    ...history,
+                    {
+                      role: 'user',
+                      content: `Scaffold batch ${Math.ceil(scaffoldTotalFilesBuilt / SCAFFOLD_BATCH_SIZE)} complete (${scaffoldTotalFilesBuilt}/${scaffoldEstimatedFiles} files, ${progressPercent}% done). Auto-continuing to next batch. Build the next ${SCAFFOLD_BATCH_SIZE}+ files without stopping.`,
+                    },
+                  ].slice(-historySliceLimit);
+                  allSteps.push(`🔄 Auto-continuing scaffold: ${progressPercent}% done, building next batch...`);
+                  // Don't break the loop - let agent continue
+                }
+              }
+            }
+            
             changeItems.forEach((item) => {
               const prev = allFileChanges.get(item.path);
               if (!prev) {
@@ -4841,8 +4901,12 @@ ${finalCode}
                           lastToolCallSig,
                           websiteBuildMode,
                           appBuildMode,
+                          scaffoldMode,
                           commandPipelineMode,
                           batchChangeMode,
+                          scaffoldEstimatedFiles,
+                          scaffoldBatchFilesBuilt,
+                          scaffoldTotalFilesBuilt,
                           totalWriteSuccesses,
                           noWriteRounds,
                           pendingBatchVerification,

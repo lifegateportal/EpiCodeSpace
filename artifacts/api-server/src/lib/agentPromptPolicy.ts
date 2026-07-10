@@ -29,6 +29,43 @@ Do not expose private chain-of-thought or hidden scratchpad reasoning. Instead, 
 `;
 }
 
+function buildProjectScaffoldBlock() {
+  return `
+[PROJECT SCAFFOLDING DIRECTIVE]
+You are in PROJECT SCAFFOLDING MODE — optimized for building entire projects from scratch without interruption.
+
+[SCAFFOLD EXECUTION FLOW]
+1. SCOUT PHASE: First response MUST be a scope assessment:
+   - List all files needed for MVP (minimum 5, typical 10-20)
+   - Organize by priority: core → features → polish
+   - Estimate: "Building 12 files total: 5 core, 4 features, 3 config"
+
+2. BUILD PHASE: Build files in batches without stopping:
+   - Write 5-8 files per batch before checkpointing
+   - Do NOT verify after each file
+   - Do NOT stop after one file to ask "shall I continue?"
+   - Progress updates: "✅ Built 3/12 files (batch 1/3)"
+
+3. CHECKPOINT PHASE: After each batch of 5+ files:
+   - Run verification ONCE for the entire batch
+   - Summarize what was built
+   - Auto-continue to next batch OR prompt user if >50% complete
+
+[SCAFFOLD GOLDEN RULES]
+1. NEVER stop building after 1-2 files — minimum batch is 5 files
+2. NEVER ask permission mid-batch — build the full batch first
+3. NEVER run verification after each file — batch verification only
+4. Auto-continue to next batch if <50% of project complete
+5. Checkpoint and prompt user only after: batch complete AND >50% project done
+6. No activeWorkFile lock — write to any file in the project scope
+
+[SCAFFOLD STOP CONDITIONS]
+- Batch of 5+ files complete AND >50% of estimated project built
+- Hard blocker (missing requirements, API keys, etc.)
+- User sends "stop" or "pause"
+`;
+}
+
 function buildDeepSeekBlock() {
   return `
 [DEEPSEEK EXECUTION POLICY]
@@ -77,6 +114,7 @@ export const MODE_INSTRUCTIONS: Record<string, string> = {
   ask: '\n\nMode: ASK — Answer questions, explain code, provide guidance. Do NOT call tools.',
   agent: "\n\nMode: AGENT — Use tools to make actual changes. Gather only the minimum context needed, then implement. For project-wide fixes, batch related edits across the affected files before running build/typecheck/lint/test verification. MULTI-STEP WORK: Mark each task complete immediately when done, never jump ahead before finishing the current task.",
   plan: '\n\nMode: PLAN — Read files to understand the codebase, then create a numbered step-by-step plan. Do NOT use writeFile/editFile/deleteFile until the user approves.',
+  scaffold: '\n\nMode: SCAFFOLD — Project scaffolding mode. Build entire projects in batches without stopping. Scout scope first, build 5+ files per batch, checkpoint only after batch completion. Do NOT verify after each file. Batch verification after every 5 files.',
 };
 
 export function buildSystemPrompt(
@@ -84,17 +122,19 @@ export function buildSystemPrompt(
   context: any,
   persona: string,
   policyPreview: string,
+  scaffoldMode?: boolean,
 ) {
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
-  const deepseekBlock = agent === 'deepseek' ? buildDeepSeekBlock() : '';
-  const backendArchitectBlock = agent === 'backend-architect'
+  const scaffoldBlock = scaffoldMode ? buildProjectScaffoldBlock() : '';
+  const deepseekBlock = agent === 'deepseek' && !scaffoldMode ? buildDeepSeekBlock() : '';
+  const backendArchitectBlock = agent === 'backend-architect' && !scaffoldMode
     ? buildBackendArchitectBlock()
     : '';
 
   return `[IDENTITY]
 You are ${persona} operating within EpiCodeSpace.
-${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
+${scaffoldBlock}${deepseekBlock}${backendArchitectBlock}[ENVIRONMENT]
 - Active file: ${filePath}
 - Workspace: ${fileCount} file${fileCount !== 1 ? 's' : ''}
 

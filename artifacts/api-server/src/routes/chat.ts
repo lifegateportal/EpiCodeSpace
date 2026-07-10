@@ -121,12 +121,13 @@ const WRITE_TOOLS = new Set([
 ]);
 
 function shouldUseToolsForMode(mode: string) {
-  return mode === 'agent' || mode === 'plan';
+  return mode === 'agent' || mode === 'plan' || mode === 'scaffold';
 }
 
 function getToolsForMode(mode: string) {
   if (mode === 'ask') return [] as typeof WORKSPACE_TOOLS;
   if (mode === 'plan') return WORKSPACE_TOOLS.filter((t) => READ_ONLY_TOOLS.has(t.name));
+  if (mode === 'scaffold') return WORKSPACE_TOOLS; // Full tools for scaffolding
   return WORKSPACE_TOOLS;
 }
 
@@ -492,7 +493,7 @@ router.post('/chat', async (req, res) => {
     if (!agent || !messages?.length) { res.status(400).json({ error: 'Missing agent or messages' }); return; }
     if (typeof agent !== 'string' || agent.length > 64) { res.status(400).json({ error: 'Invalid agent' }); return; }
     if (!Array.isArray(messages) || messages.length > 120) { res.status(400).json({ error: 'Invalid messages' }); return; }
-    const validModes = ['ask', 'agent', 'plan'];
+    const validModes = ['ask', 'agent', 'plan', 'scaffold'];
     const safeMode = validModes.includes(mode) ? mode : 'ask';
 
     const baseConfig = PROVIDER_CONFIG[agent];
@@ -538,13 +539,15 @@ router.post('/chat', async (req, res) => {
     }
 
     const contextStr = buildContextMessage(context);
+    const safeMode = (mode === 'ask' || mode === 'agent' || mode === 'plan' || mode === 'scaffold') ? mode : 'ask';
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
     const providerTools = getToolsForMode(safeMode);
     const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
     const policyPreview = Object.entries(TOOL_POLICY)
       .map(([tool, tier]) => `${tool}:${tier}`)
       .join(', ');
-    const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview) + modeInstr;
+    const scaffoldMode = safeMode === 'scaffold';
+    const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview, scaffoldMode) + modeInstr;
     const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
