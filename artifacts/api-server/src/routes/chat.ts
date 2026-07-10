@@ -539,7 +539,6 @@ router.post('/chat', async (req, res) => {
     }
 
     const contextStr = buildContextMessage(context);
-    const safeMode = (mode === 'ask' || mode === 'agent' || mode === 'plan' || mode === 'scaffold') ? mode : 'ask';
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
     const providerTools = getToolsForMode(safeMode);
     const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
