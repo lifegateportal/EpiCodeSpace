@@ -65,7 +65,7 @@ const shouldServeFrontend = process.env["NODE_ENV"] !== "development" && existsS
 if (shouldServeFrontend) {
   app.use(express.static(frontendRoot));
 
-  app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+  app.get(/^(?!\/(?:api|r)(?:\/|$)).*/, (_req, res) => {
     res.sendFile(frontendIndex);
   });
 

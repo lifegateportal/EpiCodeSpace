@@ -7,8 +7,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     
-    // Proxy /api/* requests to backend
-    if (url.pathname.startsWith('/api/')) {
+    // Proxy API and repo git endpoints to backend
+    const isApiRequest = url.pathname.startsWith('/api/');
+    const isRepoRequest = url.pathname === '/r' || url.pathname.startsWith('/r/');
+
+    if (isApiRequest || isRepoRequest) {
       const backendUrl = new URL(url.pathname + url.search, BACKEND_API_URL);
       
       // Forward the request to backend
@@ -20,18 +23,22 @@ export default {
       
       // Get response from backend
       const response = await fetch(backendRequest);
-      
-      // Add CORS headers if needed
-      const headers = new Headers(response.headers);
-      headers.set('Access-Control-Allow-Origin', url.origin);
-      headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type');
-      
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      });
+
+      // Keep API CORS behavior for browser calls; repo git endpoints are used by git clients.
+      if (isApiRequest) {
+        const headers = new Headers(response.headers);
+        headers.set('Access-Control-Allow-Origin', url.origin);
+        headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        headers.set('Access-Control-Allow-Headers', 'Content-Type');
+
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      }
+
+      return response;
     }
     
     // For all other requests, fetch from origin (static site)
