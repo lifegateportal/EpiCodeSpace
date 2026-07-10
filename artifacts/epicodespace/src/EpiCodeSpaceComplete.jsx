@@ -39,6 +39,7 @@ import { FsClient } from './lib/fs/FsClient.ts';
 import { bridge } from './lib/runtime/WebContainerBridge.ts';
 import { useFileSystem, isOpfsEnabled } from './hooks/useFileSystem.js';
 import { isGistSyncEnabled, pushToGist, pullFromGist, GIST_TOKEN_KEY, GIST_ID_KEY } from './lib/gistSync.js';
+import { loadRepoFromUrl, parseRepoUrl } from './lib/repoSync.js';
 import { cloneRepo } from './lib/gitClone.js';
 
 /* ─── OPFS Toggle (advanced storage) ─────────────────────────────────────────
@@ -1841,7 +1842,26 @@ function EpiCodeSpaceApp() {
       if (!result.ok) console.warn('[GistSync] push failed:', result.error);
     }, 3000); // 3 s debounce — only push when user pauses
     return () => clearTimeout(gistSyncTimerRef.current);
-  }, [fileSystem, projectName]);
+  }, [fileSystem, projectName, projectRepoUrl]);
+
+  useEffect(() => {
+    const path = window.location.pathname || '';
+    if (!/^\/r\//i.test(path)) return;
+    const parsed = parseRepoUrl(path);
+    if (!parsed.ok) return;
+
+    let cancelled = false;
+    (async () => {
+      const result = await loadRepoFromUrl(path);
+      if (cancelled || !result?.ok || !result.files) return;
+      replaceAll(result.files);
+      if (result.projectName) setProjectName(result.projectName);
+      if (result.repoUrl) setProjectRepoUrl(result.repoUrl);
+      toast?.success?.(`Loaded repository: ${result.repoUrl || path}`);
+    })();
+
+    return () => { cancelled = true; };
+  }, [replaceAll, toast]);
 
   // ── Chat scroll behavior ─────────────────────────────────────────────────
   const handleChatScroll = useCallback(() => {
@@ -7391,6 +7411,7 @@ ${finalCode}
           fileSystem={fileSystem}
           projectName={projectName}
           projectRepoUrl={projectRepoUrl}
+          onRepoUrlChange={setProjectRepoUrl}
           onGistPull={(result) => {
             if (result?.files) {
               replaceAll(result.files);

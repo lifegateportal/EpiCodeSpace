@@ -12,6 +12,13 @@ import {
 import {
   checkR2Status, listR2Saves, saveToR2, loadFromR2, deleteR2Save,
 } from '../lib/r2Sync.js';
+import {
+  checkRepoStatus,
+  createRepoSnapshot,
+  saveRepoRevision,
+  loadRepoFromUrl,
+  parseRepoUrl,
+} from '../lib/repoSync.js';
 
 const AUTH_TYPES = [
   { id: 'none',   label: 'None'         },
@@ -621,8 +628,224 @@ function GistSyncPanel({ fileSystem, projectName, onPullSuccess }) {
   );
 }
 
+function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuccess, onRepoUrlChange }) {
+  const [open, setOpen] = useState(false);
+  const [owner, setOwner] = useState(() => {
+    try { return localStorage.getItem('epicodespace_repo_owner_v1') || 'me'; } catch { return 'me'; }
+  });
+  const [slug, setSlug] = useState(() => {
+    const fallback = (projectName || 'project')
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return fallback || 'project';
+  });
+  const [visibility, setVisibility] = useState('private');
+  const [repoInput, setRepoInput] = useState(projectRepoUrl || '');
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(null); // 'checking'|'creating'|'saving'|'loading'
+  const [apiStatus, setApiStatus] = useState(null);
+
+  useEffect(() => {
+    setRepoInput(projectRepoUrl || '');
+    const parsed = parseRepoUrl(projectRepoUrl || '');
+    if (parsed.ok) {
+      setOwner(parsed.owner);
+      setSlug(parsed.slug);
+    }
+  }, [projectRepoUrl]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setLoading('checking');
+      const res = await checkRepoStatus();
+      if (cancelled) return;
+      setApiStatus(res);
+      setLoading(null);
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const setOk = (msg) => setStatus({ ok: true, msg });
+  const setErr = (msg) => setStatus({ ok: false, msg });
+
+  const handleCreateRepo = useCallback(async () => {
+    setLoading('creating');
+    const res = await createRepoSnapshot({
+      owner,
+      slug,
+      visibility,
+      projectName,
+      files: fileSystem || {},
+      repoUrl: projectRepoUrl || '',
+      message: 'Initial revision',
+    });
+    setLoading(null);
+    if (!res.ok) {
+      setErr(res.error || 'Failed to create repo.');
+      return;
+    }
+    const url = res.urls?.repo || `/r/${owner}/${slug}`;
+    setRepoInput(url);
+    onRepoUrlChange?.(url);
+    try { localStorage.setItem('epicodespace_repo_owner_v1', owner); } catch { /* ignore */ }
+    setOk(`Repository created: ${url}`);
+  }, [owner, slug, visibility, projectName, fileSystem, projectRepoUrl, onRepoUrlChange]);
+
+  const handleSaveRevision = useCallback(async () => {
+    if (!repoInput.trim()) {
+      setErr('Set or create a repository URL first.');
+      return;
+    }
+    setLoading('saving');
+    const res = await saveRepoRevision({
+      repoUrl: repoInput.trim(),
+      files: fileSystem || {},
+      projectName,
+      message: 'Save revision',
+    });
+    setLoading(null);
+    if (!res.ok) {
+      setErr(res.error || 'Failed to save revision.');
+      return;
+    }
+    const revisionUrl = res.urls?.revision || 'Revision saved';
+    onRepoUrlChange?.(res.urls?.repo || repoInput.trim());
+    setOk(`Revision saved: ${revisionUrl}`);
+  }, [repoInput, fileSystem, projectName, onRepoUrlChange]);
+
+  const handleLoadByUrl = useCallback(async () => {
+    if (!repoInput.trim()) {
+      setErr('Enter a repository URL to load.');
+      return;
+    }
+    setLoading('loading');
+    const res = await loadRepoFromUrl(repoInput.trim());
+    setLoading(null);
+    if (!res.ok) {
+      setErr(res.error || 'Failed to load repository.');
+      return;
+    }
+    onPullSuccess?.(res);
+    onRepoUrlChange?.(res.repoUrl || repoInput.trim());
+    setOk(`Loaded ${Object.keys(res.files || {}).length} files from ${res.repoUrl}`);
+  }, [repoInput, onPullSuccess, onRepoUrlChange]);
+
+  const busy = !!loading;
+
+  return (
+    <div className="border border-fuchsia-500/20 rounded-xl overflow-hidden mb-2">
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-[#0d0520] hover:bg-[#130a28] transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Cloud size={13} className="text-cyan-400" />
+          <span className="text-xs font-medium text-white">Repo URL Sync</span>
+          {projectRepoUrl && <span className="text-[9px] bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded-full">LINKED</span>}
+        </div>
+        <span className="text-[10px] text-purple-500">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="bg-[#0a0418] px-4 py-3 space-y-3">
+          <p className="text-[10px] text-purple-400/70 leading-relaxed">
+            Create an Epicodespace repository URL, save immutable revisions, and load any repo URL on any device.
+          </p>
+
+          {apiStatus?.ok === false && (
+            <div className="flex items-start gap-1.5 text-[11px] text-red-400">
+              <AlertCircle size={11} className="mt-0.5 shrink-0" />
+              <span>{apiStatus.error}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={owner}
+              onChange={e => setOwner(e.target.value)}
+              placeholder="owner"
+              className="bg-[#15092a] border border-fuchsia-500/20 rounded-lg px-2 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none"
+            />
+            <input
+              value={slug}
+              onChange={e => setSlug(e.target.value)}
+              placeholder="project-slug"
+              className="bg-[#15092a] border border-fuchsia-500/20 rounded-lg px-2 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div className="flex gap-1">
+            {['private', 'unlisted', 'public'].map(v => (
+              <button
+                key={v}
+                onClick={() => setVisibility(v)}
+                className={`px-2 py-1 text-[10px] rounded border transition-colors ${
+                  visibility === v
+                    ? 'bg-cyan-600 border-cyan-500 text-white'
+                    : 'border-fuchsia-500/20 text-purple-400 hover:text-white'
+                }`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+
+          <input
+            value={repoInput}
+            onChange={e => setRepoInput(e.target.value)}
+            placeholder="/r/owner/project or https://.../r/owner/project"
+            className="w-full bg-[#15092a] border border-fuchsia-500/20 rounded-lg px-3 py-2 text-xs text-white placeholder-purple-500/50 focus:outline-none"
+          />
+
+          {status && (
+            <div className={`flex items-center gap-1.5 text-[11px] ${status.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+              {status.ok ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+              <span className="truncate">{status.msg}</span>
+            </div>
+          )}
+
+          {loading && (
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400">
+              <Loader2 size={11} className="animate-spin" />
+              {loading === 'checking' ? 'Checking repo API…' : loading === 'creating' ? 'Creating repo…' : loading === 'saving' ? 'Saving revision…' : 'Loading repo…'}
+            </div>
+          )}
+
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={handleCreateRepo}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-cyan-500/40 text-cyan-300 hover:text-white rounded-lg transition-colors disabled:opacity-40"
+            >
+              <Plus size={11} /> Create Repo URL
+            </button>
+            <button
+              onClick={handleSaveRevision}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-fuchsia-500/20 text-fuchsia-300 hover:text-white rounded-lg transition-colors disabled:opacity-40"
+            >
+              <CloudUpload size={11} /> Save Revision
+            </button>
+            <button
+              onClick={handleLoadByUrl}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-orange-500/30 text-orange-300 hover:text-white rounded-lg transition-colors disabled:opacity-40"
+            >
+              <CloudDownload size={11} /> Load URL
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
-export default function ConnectionsManager({ connections, onChange, onClose, onGistPull, fileSystem, projectName, projectRepoUrl }) {
+export default function ConnectionsManager({ connections, onChange, onClose, onGistPull, fileSystem, projectName, projectRepoUrl, onRepoUrlChange }) {
   const [showAdd, setShowAdd] = useState(connections.length === 0);
 
   const handleSave = useCallback((conn) => {
@@ -660,6 +883,13 @@ export default function ConnectionsManager({ connections, onChange, onClose, onG
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+          <RepoSyncPanel
+            fileSystem={fileSystem}
+            projectName={projectName}
+            projectRepoUrl={projectRepoUrl}
+            onPullSuccess={onGistPull}
+            onRepoUrlChange={onRepoUrlChange}
+          />
           {/* R2 Storage sync */}
           <R2SyncPanel fileSystem={fileSystem} projectName={projectName} projectRepoUrl={projectRepoUrl} onPullSuccess={onGistPull} />
           {/* Gist Sync */}
