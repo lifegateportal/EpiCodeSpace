@@ -28,10 +28,33 @@ export async function listR2Saves() {
  * snapshot=true   → creates  `{slug}/{iso-timestamp}.json`
  */
 export async function saveToR2(fileSystem, projectName, { snapshot = false, repoUrl = '' } = {}) {
-  const ts   = new Date().toISOString().replace(/[:.]/g, '-');
-  const slug = (projectName || 'workspace').replace(/[^a-zA-Z0-9._-]/g, '_');
-  const key  = snapshot ? `${slug}/${ts}.json` : `${slug}/latest.json`;
-  const payload = { projectName, repoUrl, files: fileSystem, savedAt: new Date().toISOString() };
+  const now = new Date();
+  const iso = now.toISOString();
+  const ts = iso.replace(/[:.]/g, '-');
+  const yyyy = String(now.getUTCFullYear());
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  const slug = (projectName || 'workspace')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'workspace';
+  const key = snapshot
+    ? `${slug}/snapshots/${yyyy}/${mm}/${dd}/${ts}.json`
+    : `${slug}/latest.json`;
+  const payload = {
+    schemaVersion: 2,
+    kind: 'epicodespace.workspace-save',
+    meta: {
+      projectName,
+      projectSlug: slug,
+      repoUrl,
+      snapshot,
+      savedAt: iso,
+    },
+    files: fileSystem,
+  };
   try {
     const data = await r2Fetch('/save', {
       method: 'POST',
@@ -50,12 +73,16 @@ export async function loadFromR2(key) {
   try {
     const data = await r2Fetch(`/load?key=${encodeURIComponent(key)}`);
     if (!data.ok) return { ok: false, error: data.error };
+    const payload = data.payload || {};
+    const meta = payload.meta || {};
+    const isV2 = payload && payload.schemaVersion === 2;
+
     return {
       ok: true,
-      projectName: data.payload.projectName || 'My Project',
-      repoUrl: data.payload.repoUrl || '',
-      files: data.payload.files || {},
-      savedAt: data.payload.savedAt,
+      projectName: isV2 ? (meta.projectName || 'My Project') : (payload.projectName || 'My Project'),
+      repoUrl: isV2 ? (meta.repoUrl || '') : (payload.repoUrl || ''),
+      files: payload.files || {},
+      savedAt: isV2 ? meta.savedAt : payload.savedAt,
     };
   } catch (err) { return { ok: false, error: err.message }; }
 }

@@ -357,7 +357,7 @@ function R2SyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSucce
     } else {
       setStatus({ ok: false, msg: r.error });
     }
-  }, [fileSystem, projectName, fetchSaves]);
+  }, [fileSystem, projectName, projectRepoUrl, fetchSaves]);
 
   const handleLoad = useCallback(async (key) => {
     setStatus('loading');
@@ -376,6 +376,19 @@ function R2SyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSucce
     setDeleting(null);
     fetchSaves();
   }, [fetchSaves]);
+
+  const describeSaveKey = useCallback((rawKey) => {
+    const key = String(rawKey || '').replace(/^workspaces\//, '');
+    const parts = key.split('/').filter(Boolean);
+    const project = parts[0] || 'workspace';
+    const isLatest = parts[1] === 'latest.json' || key.endsWith('/latest.json');
+    const isSnapshot = parts[1] === 'snapshots' || key.includes('/snapshots/');
+    const kind = isLatest ? 'latest' : (isSnapshot ? 'snapshot' : 'save');
+    return {
+      title: `${project} · ${kind}`,
+      path: key,
+    };
+  }, []);
 
   const r2Ready = r2Status && typeof r2Status === 'object' && r2Status.ok;
 
@@ -470,7 +483,8 @@ function R2SyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSucce
               {saves.map(s => (
                 <div key={s.key} className="flex items-center gap-2 bg-[#15092a] border border-fuchsia-500/10 rounded-lg px-3 py-2">
                   <div className="flex-1 min-w-0">
-                    <p className="text-[10px] text-white font-mono truncate">{s.key}</p>
+                    <p className="text-[10px] text-white truncate">{describeSaveKey(s.key).title}</p>
+                    <p className="text-[9px] text-purple-500/50 font-mono truncate">{describeSaveKey(s.key).path}</p>
                     <p className="text-[9px] text-purple-500/60">
                       {s.lastModified ? new Date(s.lastModified).toLocaleString() : ''}{' '}
                       {s.size ? `· ${(s.size / 1024).toFixed(1)} KB` : ''}
@@ -490,7 +504,7 @@ function R2SyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSucce
           )}
 
           <p className="text-[10px] text-purple-500/40">
-            "Save Now" overwrites the latest save. "Snapshot" creates a timestamped backup.
+            Saves are organized under workspaces/{'{project}'}/latest.json and workspaces/{'{project}'}/snapshots/YYYY/MM/DD/.
           </p>
         </div>
       )}
