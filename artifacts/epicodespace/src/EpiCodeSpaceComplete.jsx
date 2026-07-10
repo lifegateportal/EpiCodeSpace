@@ -859,11 +859,16 @@ function looksLikeBatchChangeRequest(text) {
 function userExplicitlyRequestedDeletion(text, targetPath = '') {
   const raw = String(text || '').toLowerCase();
   const target = String(targetPath || '').toLowerCase();
-  if (!raw) return false;
-  const asksToDelete = /\b(delete|remove|rm|erase|drop|truncate|wipe)\b/.test(raw);
-  if (!asksToDelete) return false;
-  if (!target) return true;
-  return raw.includes(target) || raw.includes(target.split('/').pop() || '');
+  if (!raw || !target) return false; // NEVER delete without explicit target
+  
+  // User MUST mention the specific file by full path OR filename
+  const fileName = target.split('/').pop() || '';
+  const mentionsFile = raw.includes(target) || (fileName && raw.includes(fileName));
+  if (!mentionsFile) return false;
+  
+  // User MUST use explicit deletion keywords for that file
+  const hasDeleteKeyword = /\b(delete|remove|rm)\b/.test(raw);
+  return hasDeleteKeyword && mentionsFile;
 }
 
 function userExplicitlyApprovedDestructiveSweep(text) {
@@ -4355,6 +4360,7 @@ ${finalCode}
             let writeRequiredBeforeMoreReads = enforceDeepSeekWriteAfterRead && consecReadOnlyRounds > 0;
             let changedPathsInRound = [];
             let roundDeleteAttempts = 0;
+            const existingFilesAtRoundStart = new Set(Object.keys(currentFS));
 
             const proposedWritePaths = data.tool_calls
               .filter((tc) => isWriteTool(tc.name))
@@ -4373,7 +4379,12 @@ ${finalCode}
               const tcPath = toolCallPath(tc);
               if (tc.name === 'deleteFile') roundDeleteAttempts += 1;
               const activeFileReadBlocked = tc.name === 'readFile' && tcPath === activeFile;
-              const deleteBlocked = tc.name === 'deleteFile' && !userExplicitlyRequestedDeletion(userMessage, tcPath);
+              
+              // CRITICAL: Block deletion of existing files unless user EXPLICITLY requested it for this specific file
+              const fileExistsInWorkspace = tcPath && existingFilesAtRoundStart.has(tcPath);
+              const deleteBlocked = tc.name === 'deleteFile' && (
+                fileExistsInWorkspace && !userExplicitlyRequestedDeletion(userMessage, tcPath)
+              );
               const destructiveSweepApproved = userExplicitlyApprovedDestructiveSweep(userMessage);
               const multiDeleteSweepBlocked = tc.name === 'deleteFile' && roundDeleteAttempts > 1 && !destructiveSweepApproved;
               const workspaceReplaceBlocked = tc.name === 'searchAndReplace' && !tc.arguments?.targetFile && !destructiveSweepApproved;
@@ -4411,8 +4422,8 @@ ${finalCode}
                 ? {
                     ok: false,
                     blocked: true,
-                    systemMessage: 'Destructive file deletion is blocked unless the user explicitly asked to delete that specific file. Repair in place instead.',
-                    error: `Blocked deleteFile: ${tcPath}`,
+                    systemMessage: `CRITICAL PROTECTION: File '${tcPath}' already exists in the workspace and deletion is BLOCKED. The user did NOT explicitly ask to delete this file. NEVER delete existing work without explicit user consent. Fix/update the file in place using patchLines or editFile instead. Recreating from scratch is NOT allowed.`,
+                    error: `BLOCKED: Cannot delete existing file '${tcPath}' - no explicit user consent`,
                   }
                 : multiDeleteSweepBlocked
                 ? {
@@ -4486,7 +4497,7 @@ ${finalCode}
                 : activeFileReadBlocked
                   ? '🚫 blocked (active file already in context)'
                 : deleteBlocked
-                  ? '🚫 blocked (destructive delete requires explicit user request)'
+                  ? '�️ PROTECTED: File exists, deletion blocked without explicit user consent'
                 : multiDeleteSweepBlocked
                   ? '🚫 blocked (multi-file delete sweep requires explicit approval)'
                 : destructiveReplaceBlocked
