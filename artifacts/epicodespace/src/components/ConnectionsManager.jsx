@@ -15,6 +15,7 @@ import {
 import {
   checkRepoStatus,
   createRepoSnapshot,
+  deleteOwnerRepos,
   saveRepoRevision,
   loadRepoFromUrl,
   parseRepoUrl,
@@ -666,7 +667,7 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
   });
   const [repoInput, setRepoInput] = useState(projectRepoUrl || '');
   const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(null); // 'checking'|'creating'|'saving'|'loading'
+  const [loading, setLoading] = useState(null); // 'checking'|'creating'|'saving'|'loading'|'resetting'
   const [apiStatus, setApiStatus] = useState(null);
 
   useEffect(() => {
@@ -764,6 +765,35 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
     setOk(`Loaded ${Object.keys(res.files || {}).length} files from ${res.repoUrl}`);
   }, [repoInput, onPullSuccess, onRepoUrlChange]);
 
+  const handleResetOwnerLinks = useCallback(async () => {
+    const parsed = parseRepoUrl(repoInput.trim());
+    const ownerToReset = parsed.ok ? parsed.owner : String(owner || '').trim();
+
+    if (!ownerToReset) {
+      setErr('Owner is required to reset links.');
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete all Repo URL links for owner "${ownerToReset}"? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setLoading('resetting');
+    const res = await deleteOwnerRepos(ownerToReset);
+    setLoading(null);
+
+    if (!res.ok) {
+      setErr(res.error || 'Failed to reset owner links.');
+      return;
+    }
+
+    if (!projectRepoUrl || (parsed.ok && parsed.owner === ownerToReset)) {
+      setRepoInput('');
+      onRepoUrlChange?.('');
+    }
+
+    setOk(`Deleted ${res.deletedCount || 0} old links for owner ${ownerToReset}. Create fresh Repo URLs now.`);
+  }, [repoInput, owner, projectRepoUrl, onRepoUrlChange]);
+
   const busy = !!loading;
 
   return (
@@ -841,7 +871,15 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
           {loading && (
             <div className="flex items-center gap-1.5 text-[11px] text-purple-400">
               <Loader2 size={11} className="animate-spin" />
-              {loading === 'checking' ? 'Checking repo API…' : loading === 'creating' ? 'Creating repo…' : loading === 'saving' ? 'Saving revision…' : 'Loading repo…'}
+              {loading === 'checking'
+                ? 'Checking repo API…'
+                : loading === 'creating'
+                  ? 'Creating repo…'
+                  : loading === 'saving'
+                    ? 'Saving revision…'
+                    : loading === 'resetting'
+                      ? 'Resetting owner links…'
+                      : 'Loading repo…'}
             </div>
           )}
 
@@ -866,6 +904,13 @@ function RepoSyncPanel({ fileSystem, projectName, projectRepoUrl = '', onPullSuc
               className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-orange-500/30 text-orange-300 hover:text-white rounded-lg transition-colors disabled:opacity-40"
             >
               <CloudDownload size={11} /> Load URL
+            </button>
+            <button
+              onClick={handleResetOwnerLinks}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] bg-[#15092a] border border-red-500/30 text-red-300 hover:text-white rounded-lg transition-colors disabled:opacity-40"
+            >
+              <Trash2 size={11} /> Reset Owner Links
             </button>
           </div>
         </div>

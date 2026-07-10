@@ -4,6 +4,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  DeleteObjectCommand,
   type _Object,
 } from '@aws-sdk/client-s3';
 
@@ -201,6 +202,37 @@ async function writeJson(client: S3Client, key: string, payload: unknown): Promi
   );
 }
 
+async function listAllKeys(client: S3Client, prefix: string): Promise<string[]> {
+  const out: string[] = [];
+  let token: string | undefined;
+
+  do {
+    const data = await client.send(new ListObjectsV2Command({
+      Bucket: bucket(),
+      Prefix: prefix,
+      ContinuationToken: token,
+    }));
+
+    for (const entry of data.Contents || []) {
+      if (entry.Key) out.push(entry.Key);
+    }
+
+    token = data.IsTruncated ? data.NextContinuationToken : undefined;
+  } while (token);
+
+  return out;
+}
+
+async function deleteKeys(client: S3Client, keys: string[]): Promise<number> {
+  if (!keys.length) return 0;
+  let deletedCount = 0;
+  for (const key of keys) {
+    await client.send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+    deletedCount += 1;
+  }
+  return deletedCount;
+}
+
 function normalizeVisibility(value: string): RepoVisibility {
   if (value === 'public' || value === 'unlisted') return value;
   return 'private';
@@ -326,6 +358,33 @@ router.post('/repos', async (req: Request, res: Response) => {
     });
   } catch (err: unknown) {
     res.status(500).json({ ok: false, error: (err as Error).message || 'Create repo failed.' });
+  }
+});
+
+router.delete('/repos', async (req: Request, res: Response) => {
+  const client = makeClient();
+  if (!client || !bucket()) {
+    res.status(503).json({ ok: false, error: 'R2 not configured.' });
+    return;
+  }
+
+  const ownerRaw = String(req.query.owner || '');
+  if (!ownerRaw.trim()) {
+    res.status(400).json({ ok: false, error: 'owner is required.' });
+    return;
+  }
+
+  const owner = sanitizeSegment(ownerRaw, 'owner');
+  const slugRaw = String(req.query.slug || '').trim();
+  const slug = slugRaw ? sanitizeSegment(slugRaw, 'project') : '';
+  const prefix = slug ? `${PREFIX}${owner}/${slug}/` : `${PREFIX}${owner}/`;
+
+  try {
+    const keys = await listAllKeys(client, prefix);
+    const deletedCount = await deleteKeys(client, keys);
+    res.json({ ok: true, owner, slug: slug || null, deletedCount });
+  } catch (err: unknown) {
+    res.status(500).json({ ok: false, error: (err as Error).message || 'Failed to delete repos.' });
   }
 });
 

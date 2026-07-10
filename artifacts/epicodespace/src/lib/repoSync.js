@@ -118,3 +118,19 @@ export async function getRepoInfo(repoUrl) {
     return { ok: false, error: toError(err, 'Failed to load repo info.') };
   }
 }
+
+export async function deleteOwnerRepos(owner, slug = '') {
+  const cleanOwner = String(owner || '').trim();
+  if (!cleanOwner) return { ok: false, error: 'Owner is required.' };
+
+  const params = new URLSearchParams({ owner: cleanOwner });
+  if (String(slug || '').trim()) params.set('slug', String(slug).trim());
+
+  try {
+    return await apiFetch(`?${params.toString()}`, {
+      method: 'DELETE',
+    });
+  } catch (err) {
+    return { ok: false, error: toError(err, 'Failed to delete repo links.') };
+  }
+}
