@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import router from "./routes";
 import { previewProxy } from "./lib/previewProxy";
 import { logger } from "./lib/logger";
+import repoGitRouter from "./routes/repoGit";
 
 const app: Express = express();
 const frontendRoot = path.resolve(__dirname, "../../epicodespace/dist/public");
@@ -49,6 +50,10 @@ app.use(cors());
 // requests are streamed directly without Express consuming their bodies.
 // Handles /api/preview/<sessionId>/* → localhost:<detectedPort>/*
 app.use('/api/preview', previewProxy);
+
+// Git Smart HTTP endpoint for EpiCodeSpace snapshot repositories.
+// Must run before JSON body parsing so packet streams stay unmodified.
+app.use('/r', repoGitRouter);
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
