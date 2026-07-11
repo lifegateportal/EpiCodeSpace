@@ -338,6 +338,15 @@ export default function FileExplorer({
     if (fileSystem[oldPath]) onRenameFile?.(oldPath, newPath);
   };
 
+  const renameProject = useCallback(() => {
+    const current = String(projectName || '').trim() || 'My Project';
+    const raw = prompt('Rename project:', current);
+    if (raw === null) return;
+    const next = raw.trim();
+    if (!next || next === current) return;
+    onProjectRename?.(next);
+  }, [onProjectRename, projectName]);
+
   const deleteNode = async (node) => {
     const confirmed = await toast.confirm(
       `Delete ${node.type === 'folder' ? 'folder' : 'file'} "${node.path}"?`,
@@ -631,10 +640,18 @@ export default function FileExplorer({
         <span
           className="tracking-wide uppercase truncate cursor-pointer"
           title={`${projectName} — double-click to rename`}
-          onDoubleClick={() => { const name = prompt('Rename project:', projectName); if (name) onProjectRename?.(name); }}
+          onDoubleClick={renameProject}
         >
           {projectName}
         </span>
+        <button
+          onClick={renameProject}
+          aria-label="Rename project"
+          title="Rename project"
+          className="p-0.5 text-purple-500/50 hover:text-purple-200 transition-colors"
+        >
+          <FileEdit size={11} />
+        </button>
       </div>
 
       {/* Repo URL row */}
