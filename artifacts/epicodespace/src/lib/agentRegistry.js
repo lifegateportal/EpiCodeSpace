@@ -16,14 +16,9 @@ const OPENAI_MODELS = [
   { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant (if available)' },
 ];
 
-const BACKEND_OPENAI_MODELS = [
-  { id: 'gpt-5',        name: 'GPT-5',         tier: 'premium',  description: 'Best for backend architecture and integration-heavy work' },
-  { id: 'gpt-4.1',      name: 'GPT-4.1',      tier: 'standard', description: 'Strong large-context coding fallback' },
-  { id: 'o3',           name: 'o3',            tier: 'premium',  description: 'Deep reasoning fallback for hard backend debugging' },
-  { id: 'gpt-4o',       name: 'GPT-4o',       tier: 'standard', description: 'Reliable general fallback' },
-  { id: 'gpt-4o-mini',  name: 'GPT-4o mini',  tier: 'fast',     description: 'Cheap + fast fallback' },
-  { id: 'o3-mini',      name: 'o3 mini',       tier: 'fast',     description: 'Quick reasoning fallback' },
-  { id: 'gpt-5-mini',   name: 'GPT-5 mini',   tier: 'standard', description: 'Fast GPT-5 variant (if available)' },
+const BACKEND_DEEPSEEK_MODELS = [
+  { id: 'deepseek-chat',     name: 'DeepSeek V3', tier: 'standard', description: 'Default backend execution model' },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1', tier: 'premium',  description: 'Reasoning model for complex backend planning and debugging' },
 ];
 
 const CLAUDE_MODELS = [
@@ -63,7 +58,7 @@ export const AGENT_REGISTRY = {
     color: 'text-cyan-400',
     description: 'Strict backend API, database, and integration specialist',
     capabilities: ['architecture', 'debug', 'review', 'docs', 'code_gen'],
-    models: BACKEND_OPENAI_MODELS,
+    models: BACKEND_DEEPSEEK_MODELS,
   },
   claude: {
     id: 'claude',

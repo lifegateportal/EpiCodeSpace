@@ -15,9 +15,9 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
     transform: 'openai',
   },
   'backend-architect': {
-    url: 'https://api.openai.com/v1/chat/completions',
-    envKey: 'OPENAI_API_KEY',
-    model: 'gpt-5',
+    url: 'https://api.deepseek.com/chat/completions',
+    envKey: 'DEEPSEEK_API_KEY',
+    model: 'deepseek-chat',
     transform: 'openai',
   },
   claude: {
@@ -42,7 +42,7 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
 
 const ALLOWED_MODELS: Record<string, string[]> = {
   'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
-  'backend-architect': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
+  'backend-architect': ['deepseek-chat', 'deepseek-reasoner'],
   claude:          ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
   gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
   deepseek:        ['deepseek-chat', 'deepseek-reasoner'],
