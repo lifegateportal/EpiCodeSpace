@@ -233,31 +233,43 @@ function prependContextToContent(content: any, contextStr: string) {
   return `${prefix}${String(content ?? '')}`;
 }
 
-function sanitizeOpenAIContent(content: any) {
-  // Clean content to only include fields expected by OpenAI-compatible APIs
+function sanitizeOpenAIContent(content: any, opts?: { allowImages?: boolean }) {
+  // Clean content to only include fields expected by OpenAI-compatible APIs.
+  // Some providers (notably DeepSeek chat endpoint) reject image blocks.
+  const allowImages = opts?.allowImages !== false;
+
   if (typeof content === 'string') return content;
-  
-  if (!Array.isArray(content)) return content;
-  
-  return content.map((part: any) => {
-    if (!part || typeof part !== 'object') return part;
-    
-    // Text part
+  if (!Array.isArray(content)) return String(content ?? '');
+
+  const cleaned: any[] = [];
+  let droppedImage = false;
+
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+
     if (part.type === 'text' && typeof part.text === 'string') {
-      return { type: 'text', text: part.text };
+      cleaned.push({ type: 'text', text: part.text });
+      continue;
     }
-    
-    // Image URL part
-    if (part.type === 'image_url' && part.image_url?.url) {
-      return { 
-        type: 'image_url', 
-        image_url: { url: part.image_url.url } 
-      };
+
+    if (part.type === 'image_url' && typeof part.image_url?.url === 'string') {
+      if (allowImages) {
+        cleaned.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+      } else {
+        droppedImage = true;
+      }
+      continue;
     }
-    
-    // Pass through anything else (but this shouldn't happen)
-    return part;
-  });
+
+    // Best-effort normalization for unknown block shapes.
+    if (typeof part.text === 'string') cleaned.push({ type: 'text', text: part.text });
+  }
+
+  if (cleaned.length === 0 && droppedImage) {
+    return [{ type: 'text', text: '[Image omitted: this model only accepts text input.]' }];
+  }
+
+  return cleaned.length > 0 ? cleaned : '';
 }
 
 function dataUrlToGeminiInlineData(url: string) {
@@ -652,11 +664,12 @@ router.post('/chat', async (req, res) => {
       appendToolResults(apiMessages, toolResults, pendingToolCalls, activeConfig.transform);
     }
     
-    // Sanitize message content for OpenAI-compatible APIs (removes extra fields like stage_url)
+    // Sanitize message content for OpenAI-compatible APIs.
     if (activeConfig.transform === 'openai') {
+      const allowImagesForActiveProvider = !(activeAgent === 'deepseek' || activeAgent === 'backend-architect');
       apiMessages = apiMessages.map((m: any) => ({
         role: m.role,
-        content: sanitizeOpenAIContent(m.content),
+        content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForActiveProvider }),
       }));
     }
 
@@ -672,6 +685,13 @@ router.post('/chat', async (req, res) => {
       activeConfig = fallback.config;
       activeApiKey = fallback.apiKey;
       fallbackReason = 'provider_auth_error';
+      if (activeConfig.transform === 'openai') {
+        const allowImagesForFallbackProvider = !(activeAgent === 'deepseek' || activeAgent === 'backend-architect');
+        apiMessages = apiMessages.map((m: any) => ({
+          role: m.role,
+          content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForFallbackProvider }),
+        }));
+      }
       const fallbackPersona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
       const fallbackPolicyPreview = Object.entries(TOOL_POLICY)
         .map(([tool, tier]) => `${tool}:${tier}`)
