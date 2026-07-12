@@ -42,10 +42,10 @@ const PROVIDER_CONFIG: Record<string, { url: string; envKey: string; model: stri
 
 const ALLOWED_MODELS: Record<string, string[]> = {
   'epicode-agent': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3', 'o3-mini', 'gpt-5', 'gpt-5-mini'],
-  'backend-architect': ['deepseek-chat', 'deepseek-reasoner'],
+  'backend-architect': ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro', 'deepseek-v4-flash'],
   claude:          ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
   gemini:          ['gemini-2.5-pro', 'gemini-2.5-flash'],
-  deepseek:        ['deepseek-chat', 'deepseek-reasoner', 'deepseek-vl'],
+  deepseek:        ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro', 'deepseek-v4-flash'],
 };
 
 const AGENT_PERSONAS: Record<string, string> = {
@@ -54,7 +54,8 @@ const AGENT_PERSONAS: Record<string, string> = {
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek V3, a highly capable coding and reasoning assistant — be thorough, direct, and produce complete working code',
-  'deepseek-vl':  'DeepSeek VL, a vision-language model specialized in understanding images and visual content — work independently without analysis phases',
+  'deepseek-v4-pro':   'DeepSeek V4 Pro, a vision-capable model specialized in understanding images and visual content — work independently without analysis phases',
+  'deepseek-v4-flash': 'DeepSeek V4 Flash, a vision-capable low-latency model specialized in fast image understanding and concise execution',
 };
 
 const WORKSPACE_TOOLS = [
@@ -666,7 +667,9 @@ router.post('/chat', async (req, res) => {
     
     // Sanitize message content for OpenAI-compatible APIs.
     if (activeConfig.transform === 'openai') {
-      const allowImagesForActiveProvider = !(activeAgent === 'deepseek' || activeAgent === 'backend-architect');
+      const isDeepSeekAgent = activeAgent === 'deepseek' || activeAgent === 'backend-architect';
+      const isDeepSeekVisionModel = activeConfig.model === 'deepseek-v4-pro' || activeConfig.model === 'deepseek-v4-flash';
+      const allowImagesForActiveProvider = !isDeepSeekAgent || isDeepSeekVisionModel;
       apiMessages = apiMessages.map((m: any) => ({
         role: m.role,
         content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForActiveProvider }),
@@ -686,7 +689,9 @@ router.post('/chat', async (req, res) => {
       activeApiKey = fallback.apiKey;
       fallbackReason = 'provider_auth_error';
       if (activeConfig.transform === 'openai') {
-        const allowImagesForFallbackProvider = !(activeAgent === 'deepseek' || activeAgent === 'backend-architect');
+        const isDeepSeekAgent = activeAgent === 'deepseek' || activeAgent === 'backend-architect';
+        const isDeepSeekVisionModel = activeConfig.model === 'deepseek-v4-pro' || activeConfig.model === 'deepseek-v4-flash';
+        const allowImagesForFallbackProvider = !isDeepSeekAgent || isDeepSeekVisionModel;
         apiMessages = apiMessages.map((m: any) => ({
           role: m.role,
           content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForFallbackProvider }),

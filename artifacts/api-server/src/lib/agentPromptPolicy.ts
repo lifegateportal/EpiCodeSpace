@@ -130,8 +130,8 @@ export function buildSystemPrompt(
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
   const scaffoldBlock = scaffoldMode ? buildProjectScaffoldBlock() : '';
-  // DeepSeek VL works independently — no DeepSeek block needed
-  const isVisionModel = model === 'deepseek-vl';
+  // DeepSeek v4 vision models work independently — no DeepSeek block needed
+  const isVisionModel = model === 'deepseek-v4-pro' || model === 'deepseek-v4-flash';
   const deepseekBlock = agent === 'deepseek' && !scaffoldMode && !isVisionModel ? buildDeepSeekBlock() : '';
   const backendArchitectBlock = agent === 'backend-architect' && !scaffoldMode
     ? buildBackendArchitectBlock()

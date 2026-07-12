@@ -1244,8 +1244,8 @@ function toModelUserContent(text, image, agentId, modelId) {
     ];
   }
   if (agentId === 'deepseek' || agentId === 'backend-architect') {
-    // DeepSeek only supports vision on deepseek-vl.
-    if (modelId === 'deepseek-vl') {
+    // DeepSeek only supports vision on v4 vision-capable models.
+    if (modelId === 'deepseek-v4-pro' || modelId === 'deepseek-v4-flash') {
       return [
         { type: 'text', text: safeText },
         { type: 'image_url', image_url: { url: image.dataUrl } },
@@ -1261,16 +1261,16 @@ function supportsVision(agentId, modelId) {
   const visionAgents = ['claude', 'epicode-agent', 'gemini'];
   if (visionAgents.includes(agentId)) return true;
   
-  // DeepSeek only supports vision with deepseek-vl model
-  if (agentId === 'deepseek' && modelId === 'deepseek-vl') return true;
-  if (agentId === 'backend-architect' && modelId === 'deepseek-vl') return true;
+  // DeepSeek supports vision with v4 models.
+  if (agentId === 'deepseek' && (modelId === 'deepseek-v4-pro' || modelId === 'deepseek-v4-flash')) return true;
+  if (agentId === 'backend-architect' && (modelId === 'deepseek-v4-pro' || modelId === 'deepseek-v4-flash')) return true;
   
   return false;
 }
 
 function getVisionModel(agentId) {
   // Return the vision-capable model for each agent
-  if (agentId === 'deepseek' || agentId === 'backend-architect') return 'deepseek-vl';
+  if (agentId === 'deepseek' || agentId === 'backend-architect') return 'deepseek-v4-pro';
   return null; // Other agents support vision by default
 }
 
@@ -3714,8 +3714,8 @@ ${finalCode}
     const resumeState = resumeMsg?.resumeState || null;
     const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
-    // DeepSeek VL works independently — no R1 preflight analysis needed
-    const isVisionModel = submissionModel === 'deepseek-vl';
+    // DeepSeek v4 vision models work independently — no R1 preflight analysis needed
+    const isVisionModel = submissionModel === 'deepseek-v4-pro' || submissionModel === 'deepseek-v4-flash';
     const reasonerPreflightRequested =
       chatMode === 'agent' &&
       !isVisionModel &&
@@ -3798,7 +3798,7 @@ ${finalCode}
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
           : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = ((isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent' && submissionModel !== 'deepseek-vl')
+      const effectiveModel = ((isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent' && submissionModel !== 'deepseek-v4-pro' && submissionModel !== 'deepseek-v4-flash')
         ? DEEPSEEK_EXECUTION_MODEL
         : submissionModel;
       const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
