@@ -214,6 +214,65 @@ function buildContextMessage(context: any) {
   return parts.length ? '\n\nWorkspace context:\n' + parts.join('\n') : '';
 }
 
+function prependContextToContent(content: any, contextStr: string) {
+  const prefix = `${contextStr}\n\n---\n\n`;
+
+  if (typeof content === 'string') return `${prefix}${content}`;
+
+  if (Array.isArray(content)) {
+    if (content.length === 0) return [{ type: 'text', text: prefix.trimEnd() }];
+    const first = content[0];
+    if (first && typeof first === 'object' && typeof first.text === 'string') {
+      return [{ ...first, text: `${prefix}${first.text}` }, ...content.slice(1)];
+    }
+    return [{ type: 'text', text: prefix.trimEnd() }, ...content];
+  }
+
+  return `${prefix}${String(content ?? '')}`;
+}
+
+function dataUrlToGeminiInlineData(url: string) {
+  if (typeof url !== 'string') return null;
+  const m = url.match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+  if (!m) return null;
+  const mimeType = m[1] || 'image/jpeg';
+  const data = m[2] || '';
+  if (!data) return null;
+  return { inlineData: { mimeType, data } };
+}
+
+function toGeminiParts(content: any) {
+  if (typeof content === 'string') return [{ text: content }];
+
+  if (!Array.isArray(content)) {
+    if (content && typeof content.text === 'string') return [{ text: content.text }];
+    return [{ text: String(content ?? '') }];
+  }
+
+  const parts: any[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+
+    if (typeof part.text === 'string') {
+      parts.push({ text: part.text });
+      continue;
+    }
+
+    if (part.type === 'image_url' && typeof part.image_url?.url === 'string') {
+      const inline = dataUrlToGeminiInlineData(part.image_url.url);
+      if (inline) parts.push(inline);
+      continue;
+    }
+
+    if (part.type === 'image' && part.source?.type === 'base64' && typeof part.source?.data === 'string') {
+      parts.push({ inlineData: { mimeType: part.source?.media_type || 'image/jpeg', data: part.source.data } });
+      continue;
+    }
+  }
+
+  return parts.length > 0 ? parts : [{ text: '' }];
+}
+
 function isAuthOrKeyError(err: any) {
   if (!err) return false;
   const s = `${err.status || ''} ${err.message || ''} ${err.body || ''}`.toLowerCase();
@@ -338,7 +397,7 @@ async function callGemini(config: any, apiKey: string, systemPrompt: string, mes
   const url = `${config.url.replace('{model}', config.model)}?key=${apiKey}`;
   const contents = messages.map((m: any) => {
     if (m._geminiParts) return { role: m._geminiRole, parts: m._geminiParts };
-    return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
+    return { role: m.role === 'assistant' ? 'model' : 'user', parts: toGeminiParts(m.content) };
   });
   const body: any = { contents, systemInstruction: { parts: [{ text: systemPrompt }] }, generationConfig: { maxOutputTokens: 16384, temperature: 0.7 } };
   if (useTools && tools.length > 0) { body.tools = [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })) }]; }
@@ -554,7 +613,10 @@ router.post('/chat', async (req, res) => {
     if (contextStr) {
       const lastUserIdx = apiMessages.length - 1;
       if (lastUserIdx >= 0 && apiMessages[lastUserIdx].role === 'user') {
-        apiMessages[lastUserIdx] = { ...apiMessages[lastUserIdx], content: `${contextStr}\n\n---\n\n${apiMessages[lastUserIdx].content}` };
+        apiMessages[lastUserIdx] = {
+          ...apiMessages[lastUserIdx],
+          content: prependContextToContent(apiMessages[lastUserIdx].content, contextStr),
+        };
       }
     }
     if (toolResults && pendingToolCalls) {
