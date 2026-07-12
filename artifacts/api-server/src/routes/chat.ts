@@ -223,13 +223,41 @@ function prependContextToContent(content: any, contextStr: string) {
   if (Array.isArray(content)) {
     if (content.length === 0) return [{ type: 'text', text: prefix.trimEnd() }];
     const first = content[0];
-    if (first && typeof first === 'object' && typeof first.text === 'string') {
-      return [{ ...first, text: `${prefix}${first.text}` }, ...content.slice(1)];
+    // Only prepend to text parts
+    if (first && first.type === 'text' && typeof first.text === 'string') {
+      return [{ type: 'text', text: `${prefix}${first.text}` }, ...content.slice(1)];
     }
     return [{ type: 'text', text: prefix.trimEnd() }, ...content];
   }
 
   return `${prefix}${String(content ?? '')}`;
+}
+
+function sanitizeOpenAIContent(content: any) {
+  // Clean content to only include fields expected by OpenAI-compatible APIs
+  if (typeof content === 'string') return content;
+  
+  if (!Array.isArray(content)) return content;
+  
+  return content.map((part: any) => {
+    if (!part || typeof part !== 'object') return part;
+    
+    // Text part
+    if (part.type === 'text' && typeof part.text === 'string') {
+      return { type: 'text', text: part.text };
+    }
+    
+    // Image URL part
+    if (part.type === 'image_url' && part.image_url?.url) {
+      return { 
+        type: 'image_url', 
+        image_url: { url: part.image_url.url } 
+      };
+    }
+    
+    // Pass through anything else (but this shouldn't happen)
+    return part;
+  });
 }
 
 function dataUrlToGeminiInlineData(url: string) {
@@ -622,6 +650,14 @@ router.post('/chat', async (req, res) => {
     }
     if (toolResults && pendingToolCalls) {
       appendToolResults(apiMessages, toolResults, pendingToolCalls, activeConfig.transform);
+    }
+    
+    // Sanitize message content for OpenAI-compatible APIs (removes extra fields like stage_url)
+    if (activeConfig.transform === 'openai') {
+      apiMessages = apiMessages.map((m: any) => ({
+        role: m.role,
+        content: sanitizeOpenAIContent(m.content),
+      }));
     }
 
     let result: any;
