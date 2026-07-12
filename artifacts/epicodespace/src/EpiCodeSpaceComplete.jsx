@@ -1221,7 +1221,7 @@ function extractImageFileFromDataTransfer(dt) {
   return fromFiles || null;
 }
 
-function toModelUserContent(text, image, agentId) {
+function toModelUserContent(text, image, agentId, modelId) {
   if (!image) return text;
   const safeText = text || 'Describe this image.';
   if (agentId === 'claude') {
@@ -1244,11 +1244,14 @@ function toModelUserContent(text, image, agentId) {
     ];
   }
   if (agentId === 'deepseek' || agentId === 'backend-architect') {
-    // DeepSeek vision uses OpenAI-compatible format
-    return [
-      { type: 'text', text: safeText },
-      { type: 'image_url', image_url: { url: image.dataUrl } },
-    ];
+    // DeepSeek only supports vision on deepseek-vl.
+    if (modelId === 'deepseek-vl') {
+      return [
+        { type: 'text', text: safeText },
+        { type: 'image_url', image_url: { url: image.dataUrl } },
+      ];
+    }
+    return safeText;
   }
   return safeText;
 }
@@ -3644,10 +3647,14 @@ ${finalCode}
     if ((!userMessage && !chatImage) || isTyping) return;
     const resumeFromMessageId = options?.resumeFromMessageId || null;
     
-    // Auto-switch to vision model if image attached but current model doesn't support vision
-    if (chatImage && !supportsVision(activeAgent, activeModel)) {
+    let submissionModel = activeModel;
+
+    // Auto-switch to vision model if image attached but current model doesn't support vision.
+    // Keep a request-scoped model so this submission uses the new model immediately.
+    if (chatImage && !supportsVision(activeAgent, submissionModel)) {
       const visionModel = getVisionModel(activeAgent);
       if (visionModel) {
+        submissionModel = visionModel;
         setActiveModels(prev => ({ ...prev, [activeAgent]: visionModel }));
         toast?.info?.(`Switched to ${visionModel} for image support`);
       } else {
@@ -3661,7 +3668,7 @@ ${finalCode}
     chatAbortRef.current = new AbortController();
     // Expand slash commands for API (display keeps original)
     const expandedMessage = normalizeLargeErrorBlock(expandSlashCommand(userMessage, activeFile));
-    const apiUserContent = toModelUserContent(expandedMessage, chatImage, activeAgent);
+    const apiUserContent = toModelUserContent(expandedMessage, chatImage, activeAgent, submissionModel);
     const displayContent = userMessage || `Image attached: ${chatImage?.name || 'image'}`;
     const userMsg = { id: makeMessageId('user'), role: 'user', content: displayContent, agent: activeAgent, timestamp: Date.now(), imageDataUrl: chatImage?.dataUrl || null };
     setMessages(prev => [...prev, userMsg]);
@@ -3708,7 +3715,7 @@ ${finalCode}
     const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
     // DeepSeek VL works independently — no R1 preflight analysis needed
-    const isVisionModel = activeModel === 'deepseek-vl';
+    const isVisionModel = submissionModel === 'deepseek-vl';
     const reasonerPreflightRequested =
       chatMode === 'agent' &&
       !isVisionModel &&
@@ -3791,9 +3798,9 @@ ${finalCode}
         : isBackendArchitectAgent
           ? MAX_ROUNDS_BACKEND
           : MAX_ROUNDS_DEFAULT;
-      const effectiveModel = (isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent'
+      const effectiveModel = ((isDeepSeekAgent || commandPipelineMode) && chatMode === 'agent' && submissionModel !== 'deepseek-vl')
         ? DEEPSEEK_EXECUTION_MODEL
-        : activeModel;
+        : submissionModel;
       const MAX_SUPPORT_READ_FILES = isDeepSeekAgent ? 6 : isBackendArchitectAgent ? 10 : 3;
       let consecToolRounds = 0; // consecutive tool-call rounds without user input
       let consecReadOnlyRounds = Number(resumeState?.consecReadOnlyRounds || 0); // rounds where ONLY read tools were called (no writes)
