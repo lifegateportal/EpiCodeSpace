@@ -239,6 +239,7 @@ function sanitizeOpenAIContent(content: any, opts?: { allowImages?: boolean }) {
   // Some providers (notably DeepSeek chat endpoint) reject image blocks.
   const allowImages = opts?.allowImages !== false;
 
+  if (content == null) return null;
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return String(content ?? '');
 
@@ -671,7 +672,7 @@ router.post('/chat', async (req, res) => {
       const isDeepSeekVisionModel = activeConfig.model === 'deepseek-v4-pro' || activeConfig.model === 'deepseek-v4-flash';
       const allowImagesForActiveProvider = !isDeepSeekAgent || isDeepSeekVisionModel;
       apiMessages = apiMessages.map((m: any) => ({
-        role: m.role,
+        ...m,
         content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForActiveProvider }),
       }));
     }
@@ -693,7 +694,7 @@ router.post('/chat', async (req, res) => {
         const isDeepSeekVisionModel = activeConfig.model === 'deepseek-v4-pro' || activeConfig.model === 'deepseek-v4-flash';
         const allowImagesForFallbackProvider = !isDeepSeekAgent || isDeepSeekVisionModel;
         apiMessages = apiMessages.map((m: any) => ({
-          role: m.role,
+          ...m,
           content: sanitizeOpenAIContent(m.content, { allowImages: allowImagesForFallbackProvider }),
         }));
       }
