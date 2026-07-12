@@ -38,7 +38,7 @@ const GEMINI_MODELS = [
 const DEEPSEEK_MODELS = [
   { id: 'deepseek-chat',     name: 'DeepSeek V3',  tier: 'standard', description: 'Latest DeepSeek model — fast, smart, supports tools' },
   { id: 'deepseek-reasoner', name: 'DeepSeek R1',  tier: 'premium',  description: 'Reasoning model for deeper analysis and planning in complex coding tasks' },
-  { id: 'deepseek-vl',       name: 'DeepSeek VL',  tier: 'standard', description: 'Vision-language model — supports images' },
+  { id: 'deepseek-vl',       name: 'DeepSeek VL',  tier: 'standard', description: 'Vision-language model — works independently, perfect for image analysis' },
 ];
 
 /** @type {import('../types').AgentRegistry} */

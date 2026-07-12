@@ -54,6 +54,7 @@ const AGENT_PERSONAS: Record<string, string> = {
   claude:         'Claude by Anthropic, an expert at structured reasoning, code review, refactoring, and software architecture',
   gemini:         'Gemini 2.5 Pro by Google, a multimodal reasoning assistant skilled at code generation, architecture planning, and documentation',
   deepseek:       'DeepSeek V3, a highly capable coding and reasoning assistant — be thorough, direct, and produce complete working code',
+  'deepseek-vl':  'DeepSeek VL, a vision-language model specialized in understanding images and visual content — work independently without analysis phases',
 };
 
 const WORKSPACE_TOOLS = [
@@ -600,12 +601,12 @@ router.post('/chat', async (req, res) => {
     const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
     const providerTools = getToolsForMode(safeMode);
-    const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
+    const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS[resolvedModel] || AGENT_PERSONAS['epicode-agent'];
     const policyPreview = Object.entries(TOOL_POLICY)
       .map(([tool, tier]) => `${tool}:${tier}`)
       .join(', ');
     const scaffoldMode = safeMode === 'scaffold';
-    const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview, scaffoldMode) + modeInstr;
+    const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview, scaffoldMode, resolvedModel) + modeInstr;
     const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
@@ -639,7 +640,7 @@ router.post('/chat', async (req, res) => {
       const fallbackPolicyPreview = Object.entries(TOOL_POLICY)
         .map(([tool, tier]) => `${tool}:${tier}`)
         .join(', ');
-      const fallbackSystemPrompt = buildSystemPrompt(activeAgent, context, fallbackPersona, fallbackPolicyPreview) + modeInstr;
+      const fallbackSystemPrompt = buildSystemPrompt(activeAgent, context, fallbackPersona, fallbackPolicyPreview, scaffoldMode, activeConfig.model) + modeInstr;
       result = await callProvider(activeConfig, activeApiKey!, fallbackSystemPrompt, apiMessages, useTools, providerTools);
     }
 

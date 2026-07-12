@@ -125,11 +125,14 @@ export function buildSystemPrompt(
   persona: string,
   policyPreview: string,
   scaffoldMode?: boolean,
+  model?: string,
 ) {
   const filePath = context?.activeFile || 'no file open';
   const fileCount = context?.files?.length ?? 0;
   const scaffoldBlock = scaffoldMode ? buildProjectScaffoldBlock() : '';
-  const deepseekBlock = agent === 'deepseek' && !scaffoldMode ? buildDeepSeekBlock() : '';
+  // DeepSeek VL works independently — no DeepSeek block needed
+  const isVisionModel = model === 'deepseek-vl';
+  const deepseekBlock = agent === 'deepseek' && !scaffoldMode && !isVisionModel ? buildDeepSeekBlock() : '';
   const backendArchitectBlock = agent === 'backend-architect' && !scaffoldMode
     ? buildBackendArchitectBlock()
     : '';

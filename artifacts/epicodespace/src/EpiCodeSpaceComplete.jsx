@@ -3707,8 +3707,11 @@ ${finalCode}
     const resumeState = resumeMsg?.resumeState || null;
     const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
     const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
+    // DeepSeek VL works independently — no R1 preflight analysis needed
+    const isVisionModel = activeModel === 'deepseek-vl';
     const reasonerPreflightRequested =
       chatMode === 'agent' &&
+      !isVisionModel &&
       (commandPipelineSeed || activeAgent === 'backend-architect' || activeAgent === 'deepseek');
     const shouldAttachReasonerContext = reasonerPreflightRequested;
     if (shouldAttachReasonerContext) {
