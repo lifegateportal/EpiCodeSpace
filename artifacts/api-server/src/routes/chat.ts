@@ -274,6 +274,26 @@ function sanitizeOpenAIContent(content: any, opts?: { allowImages?: boolean }) {
   return cleaned.length > 0 ? cleaned : '';
 }
 
+function hasImageUrlBlocks(messages: any[]) {
+  return messages.some((m: any) => Array.isArray(m?.content) && m.content.some((p: any) => p?.type === 'image_url' && typeof p?.image_url?.url === 'string'));
+}
+
+function toDeepSeekImageBlocks(messages: any[]) {
+  return messages.map((m: any) => {
+    if (!Array.isArray(m?.content)) return m;
+    return {
+      ...m,
+      content: m.content.map((p: any) => {
+        if (p?.type === 'image_url' && typeof p?.image_url?.url === 'string') {
+          // DeepSeek v4 may expect "type: image" blocks instead of "image_url".
+          return { type: 'image', image_url: p.image_url.url };
+        }
+        return p;
+      }),
+    };
+  });
+}
+
 function dataUrlToGeminiInlineData(url: string) {
   if (typeof url !== 'string') return null;
   const m = url.match(/^data:([^;,]+);base64,([\s\S]+)$/i);
@@ -395,7 +415,24 @@ async function callOpenAI(config: any, apiKey: string, systemPrompt: string, mes
     body.tools = tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     body.tool_choice = 'auto';
   }
-  const res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, config.model);
+  let res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, config.model);
+
+  // DeepSeek v4 vision compatibility retry: some endpoints reject OpenAI's
+  // `type: image_url` blocks and expect `type: image` blocks.
+  if (!res.ok && /^deepseek-v4-(pro|flash)$/.test(String(config.model || '')) && hasImageUrlBlocks(messages)) {
+    const errText = await res.text();
+    const isImageVariantError = /unknown variant\s+`?image_url`?|unknown variant\s+image_url|expected\s+text/i.test(errText);
+    if (isImageVariantError) {
+      const compatBody: any = {
+        ...body,
+        messages: [{ role: 'system', content: systemPrompt }, ...toDeepSeekImageBlocks(messages)],
+      };
+      res = await fetchProvider(config.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(compatBody) }, `${config.model}-compat-image`);
+    } else {
+      const e: any = new Error(`${config.model} error ${res.status}: ${errText}`); e.status = res.status; e.body = errText; throw e;
+    }
+  }
+
   if (!res.ok) { const err = await res.text(); const e: any = new Error(`${config.model} error ${res.status}: ${err}`); e.status = res.status; e.body = err; throw e; }
   const data: any = await res.json();
   const choice = data.choices?.[0];
