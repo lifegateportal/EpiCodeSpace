@@ -1237,13 +1237,38 @@ function toModelUserContent(text, image, agentId) {
       },
     ];
   }
-  if (agentId === 'epicode-agent' || agentId === 'gemini' || agentId === 'deepseek' || agentId === 'backend-architect') {
+  if (agentId === 'epicode-agent' || agentId === 'gemini') {
+    return [
+      { type: 'text', text: safeText },
+      { type: 'image_url', image_url: { url: image.dataUrl } },
+    ];
+  }
+  if (agentId === 'deepseek' || agentId === 'backend-architect') {
+    // DeepSeek vision uses OpenAI-compatible format
     return [
       { type: 'text', text: safeText },
       { type: 'image_url', image_url: { url: image.dataUrl } },
     ];
   }
   return safeText;
+}
+
+function supportsVision(agentId, modelId) {
+  // Vision-capable agents and models
+  const visionAgents = ['claude', 'epicode-agent', 'gemini'];
+  if (visionAgents.includes(agentId)) return true;
+  
+  // DeepSeek only supports vision with deepseek-vl model
+  if (agentId === 'deepseek' && modelId === 'deepseek-vl') return true;
+  if (agentId === 'backend-architect' && modelId === 'deepseek-vl') return true;
+  
+  return false;
+}
+
+function getVisionModel(agentId) {
+  // Return the vision-capable model for each agent
+  if (agentId === 'deepseek' || agentId === 'backend-architect') return 'deepseek-vl';
+  return null; // Other agents support vision by default
 }
 
 function isIpadDevice() {
@@ -3618,6 +3643,19 @@ ${finalCode}
     const userMessage = (overrideMessage ?? chatInput).trim();
     if ((!userMessage && !chatImage) || isTyping) return;
     const resumeFromMessageId = options?.resumeFromMessageId || null;
+    
+    // Auto-switch to vision model if image attached but current model doesn't support vision
+    if (chatImage && !supportsVision(activeAgent, activeModel)) {
+      const visionModel = getVisionModel(activeAgent);
+      if (visionModel) {
+        setActiveModels(prev => ({ ...prev, [activeAgent]: visionModel }));
+        toast?.info?.(`Switched to ${visionModel} for image support`);
+      } else {
+        toast?.warn?.(`${activeAgent} doesn't support images. Try Claude, Gemini, or EpiCode Agent.`);
+        return;
+      }
+    }
+    
     // Abort any in-flight request before starting a new one
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
@@ -5231,7 +5269,7 @@ ${finalCode}
         setAgentRunState(AGENT_RUN_STATES.IDLE);
       }
     })();
-  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState, chatQuietMode]);
+  }, [chatInput, chatImage, isTyping, sessionTokens, fileSystem, activeFile, activeAgent, activeModel, activeConvoId, chatMode, pinnedFilePath, executeToolCall, applyToolMutations, conversations, summarizeFileChanges, agentRunState, chatQuietMode, toast, setActiveModels]);
 
   useEffect(() => {
     agentSubmitRef.current = handleAgentSubmit;
