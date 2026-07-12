@@ -3712,8 +3712,11 @@ ${finalCode}
       ? (convo?.messages || []).find((m) => m.id === resumeFromMessageId)
       : null;
     const resumeState = resumeMsg?.resumeState || null;
-    const commandPipelineRequested = chatMode === 'agent' && looksLikeCommandExecutionRequest(userMessage);
-    const commandPipelineSeed = commandPipelineRequested || !!resumeState?.commandPipelineMode;
+    // Never force command-pipeline rerouting when an image is attached.
+    // Image prompts must stay on the selected agent/model to preserve
+    // provider-specific multimodal handling.
+    const commandPipelineRequested = chatMode === 'agent' && !chatImage && looksLikeCommandExecutionRequest(userMessage);
+    const commandPipelineSeed = !chatImage && (commandPipelineRequested || !!resumeState?.commandPipelineMode);
     // DeepSeek v4 vision models work independently — no R1 preflight analysis needed
     const isVisionModel = submissionModel === 'deepseek-v4-pro' || submissionModel === 'deepseek-v4-flash';
     const reasonerPreflightRequested =
