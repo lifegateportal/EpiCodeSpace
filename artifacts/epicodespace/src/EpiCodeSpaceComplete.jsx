@@ -1237,7 +1237,7 @@ function toModelUserContent(text, image, agentId) {
       },
     ];
   }
-  if (agentId === 'epicode-agent' || agentId === 'gemini' || agentId === 'deepseek' || agentId === 'backend-architect') {
+  if (agentId === 'epicode-agent' || agentId === 'gemini') {
     return [
       { type: 'text', text: safeText },
       { type: 'image_url', image_url: { url: image.dataUrl } },
