@@ -241,24 +241,6 @@ function dataUrlToGeminiInlineData(url: string) {
   return { inlineData: { mimeType, data } };
 }
 
-function hasImageContent(messages: any[]) {
-  if (!Array.isArray(messages)) return false;
-  return messages.some((m) => {
-    const content = m?.content;
-    if (!Array.isArray(content)) return false;
-    return content.some((part: any) => {
-      if (!part || typeof part !== 'object') return false;
-      if (part.type === 'image' && part.source?.type === 'base64' && typeof part.source?.data === 'string' && part.source.data.length > 0) {
-        return true;
-      }
-      if (part.type === 'image_url' && typeof part.image_url?.url === 'string' && part.image_url.url.length > 0) {
-        return true;
-      }
-      return false;
-    });
-  });
-}
-
 function toGeminiParts(content: any) {
   if (typeof content === 'string') return [{ text: content }];
 
@@ -584,7 +566,6 @@ router.post('/chat', async (req, res) => {
       resolvedModel = model;
     }
     const config = { ...baseConfig, model: resolvedModel };
-    const includesImageInput = hasImageContent(messages);
     let activeAgent = agent;
     let activeConfig = config;
     let activeApiKey: string | undefined = resolveApiKey(config.envKey);
@@ -616,8 +597,7 @@ router.post('/chat', async (req, res) => {
       fallbackReason = `missing_${config.envKey}`;
     }
 
-    const isDeepSeekImageRequest = includesImageInput && (activeAgent === 'deepseek' || activeAgent === 'backend-architect');
-    const contextStr = isDeepSeekImageRequest ? '' : buildContextMessage(context);
+    const contextStr = buildContextMessage(context);
     const modeInstr = MODE_INSTRUCTIONS[safeMode] || MODE_INSTRUCTIONS.ask;
     const providerTools = getToolsForMode(safeMode);
     const persona = AGENT_PERSONAS[activeAgent] || AGENT_PERSONAS['epicode-agent'];
@@ -626,7 +606,7 @@ router.post('/chat', async (req, res) => {
       .join(', ');
     const scaffoldMode = safeMode === 'scaffold';
     const systemPrompt = buildSystemPrompt(activeAgent, context, persona, policyPreview, scaffoldMode) + modeInstr;
-    const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0 && !isDeepSeekImageRequest;
+    const useTools = shouldUseToolsForMode(safeMode) && providerTools.length > 0;
 
     let apiMessages = messages.map((m: any) => ({ role: m.role, content: m.content }));
     apiMessages = packMessagesForProvider(apiMessages, context, historyWindowForAgent(activeAgent, safeMode));
