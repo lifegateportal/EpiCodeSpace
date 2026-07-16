@@ -13,7 +13,7 @@ runButton = "Project"
 
 [agent]
 stack = "PNPM_WORKSPACE"
-expertMode = true
+expertMode = false
 
 [postMerge]
 path = "scripts/post-merge.sh"
